@@ -16,5 +16,8 @@
     "test:resource-scheduler": "node test/resource-scheduler-test.js",
     "test:resource-system": "node test/resource-system-test.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "xss": "^1.0.16"
   }
 }

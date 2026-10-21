@@ -19,11 +19,11 @@ async function githubCase(t, name, fn) {
 // A short real task deadline bounds every offline request.
 function githubContext(ms = 10000) { return { signal: new AbortController().signal, deadline: Date.now() + ms, taskId: 'github-test' } }
 
-// Provide only documented fields, including body text that must never reach cards or caches.
+// Keep raw Markdown separate from the explicitly requested official HTML representation.
 function githubFixture(kind = 'issue', patch = {}) {
   if (kind === 'repository') return { private: false, full_name: 'owner/repo', html_url: 'https://github.com/owner/repo', description: '<script>secret</script>', language: null, stargazers_count: 2, forks_count: 1, license: null, updated_at: '2026-10-21T00:00:00Z', archived: false, ...patch }
   if (kind === 'user') return { login: 'owner', name: null, html_url: 'https://github.com/owner', bio: null, type: 'Organization', avatar_url: 'https://avatars.githubusercontent.com/u/1', public_repos: 2, followers: 3, following: 0, created_at: '2020-01-01T00:00:00Z', ...patch }
-  return { html_url: `https://github.com/owner/repo/${kind === 'pull' ? 'pull' : 'issues'}/1`, title: '原文标题', number: 1, state: 'open', user: { login: 'owner', avatar_url: 'https://avatars.githubusercontent.com/u/1' }, labels: [{ name: 'bug', color: 'ff0000' }], body: 'PRIVATE_BODY_DO_NOT_CACHE', ...(kind === 'pull' ? { merged: false, draft: false } : {}), ...patch }
+  return { html_url: `https://github.com/owner/repo/${kind === 'pull' ? 'pull' : 'issues'}/1`, title: '原文标题', number: 1, state: 'open', created_at: '2026-10-21T00:00:00Z', user: { login: 'owner', avatar_url: 'https://avatars.githubusercontent.com/u/1' }, labels: [{ name: 'bug', color: 'ff0000' }], body: 'PRIVATE_BODY_DO_NOT_CACHE', body_html: '<p>发起者原文</p>', ...(kind === 'pull' ? { merged: false, draft: false } : {}), ...patch }
 }
 
 // Node's real Response exercises streamed size limits, headers and JSON decoding.
@@ -74,6 +74,49 @@ async function run(t) {
       assert.equal(calls.length, 2); assert.equal(calls[1].headers['If-None-Match'], 'v1'); assert.equal(three.fetchedAt, one.fetchedAt)
       assert.equal(calls[0].redirect, 'manual'); assert.equal(calls[0].headers['X-GitHub-Api-Version'], '2022-11-28')
     } finally { Date.now = originalNow }
+  })
+  await githubCase(t, 'official rendered HTML is requested explicitly, preserved, bounded and type checked', async () => {
+    const headers = []
+    const client = new GithubPreviewClient(async (url, options) => {
+      headers.push(options.headers.Accept)
+      return githubResponse(String(url).endsWith('/repos/owner/repo') ? githubFixture('repository') : githubFixture('issue'))
+    })
+    const issue = await client.lookup(parseGithubTarget('https://github.com/owner/repo/issues/1'), githubContext())
+    assert.equal(issue.bodyHtml, '<p>发起者原文</p>'); assert.equal(issue.createdAt, '2026-10-21T00:00:00Z')
+    assert.deepEqual(headers, ['application/vnd.github+json', 'application/vnd.github.html+json'])
+    for (const value of [undefined, 7, 'x'.repeat(256 * 1024 + 1)]) {
+      const invalid = new GithubPreviewClient(async url => githubResponse(String(url).endsWith('/repos/owner/repo') ? githubFixture('repository') : githubFixture('issue', { body_html: value })))
+      await assert.rejects(invalid.lookup(parseGithubTarget('https://github.com/owner/repo/issues/1'), githubContext()), /正文|body_html/)
+    }
+    const empty = new GithubPreviewClient(async url => githubResponse(String(url).endsWith('/repos/owner/repo') ? githubFixture('repository') : githubFixture('issue', { body_html: null })))
+    assert.equal((await empty.lookup(parseGithubTarget('https://github.com/owner/repo/issues/1'), githubContext())).bodyHtml, '')
+  })
+  await githubCase(t, 'expired rendered bodies refresh signed attachments without If-None-Match', async () => {
+    const originalNow = Date.now; let offset = 0, bodyRequests = 0
+    Date.now = () => originalNow() + offset
+    try {
+      const client = new GithubPreviewClient(async (url, options) => {
+        if (String(url).endsWith('/repos/owner/repo')) return githubResponse(githubFixture('repository'))
+        bodyRequests++; assert.equal(options.headers['If-None-Match'], undefined)
+        return githubResponse(githubFixture('issue', { body_html: '<p>signed-generation-' + bodyRequests + '</p>' }), 200, { etag: 'unchanged-issue' })
+      })
+      const target = parseGithubTarget('https://github.com/owner/repo/issues/1')
+      const first = await client.lookup(target, githubContext()); offset = 300001
+      const refreshed = await client.lookup(target, githubContext())
+      assert.equal(bodyRequests, 2); assert.notEqual(first.bodyHtml, refreshed.bodyHtml)
+    } finally { Date.now = originalNow }
+  })
+  await githubCase(t, 'body cache evicts by total bytes before the one-hundred-entry limit', async () => {
+    let firstRequests = 0
+    const client = new GithubPreviewClient(async url => {
+      if (String(url).endsWith('/repos/owner/repo')) return githubResponse(githubFixture('repository'))
+      const number = Number(String(url).split('/').at(-1))
+      if (number === 1) firstRequests++
+      return githubResponse(githubFixture('issue', { number, html_url: 'https://github.com/owner/repo/issues/' + number, body_html: 'a'.repeat(220 * 1024) }))
+    })
+    for (let number = 1; number <= 40; number++) await client.lookup(parseGithubTarget('https://github.com/owner/repo/issues/' + number), githubContext())
+    await client.lookup(parseGithubTarget('https://github.com/owner/repo/issues/1'), githubContext())
+    assert.equal(firstRequests, 2)
   })
   await githubCase(t, 'one retry, safe redirects, negative cache and rate suspension', async () => {
     let requests = 0
@@ -329,7 +372,7 @@ async function run(t) {
       try {
         const first = makeSession({ messageId: 'partial-one' }), second = makeSession({ guildId: '10002', messageId: 'partial-two' })
         await runtime.handle(first, 'https://github.com/owner/repo/issues/1'); await runtime.handle(second, 'https://github.com/owner/repo/issues/1')
-        assert.equal(captures, 2); assert(first.sent.join('').includes('页面未完整加载'))
+        assert.equal(captures, 2); assert(first.sent.join('').includes('正文附件未完整载入'))
       } finally { runtime.dispose() }
     })
     await githubCase(t, 'shared S0 gate preserves report ownership and enforces memory admission', async () => {
@@ -384,6 +427,29 @@ async function run(t) {
   })
   // Fake timers are explicit here because this case verifies real queue-expiry scheduling.
   await withScenario({ fakeTimers: true }, async ({ data, clock, makeSession }) => {
+    await githubCase(t, '30-second target deadline includes lookup and rendering, then returns text without late images', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      const settings = new GithubPreviewSettings(data.pathFor('target-deadline')); await settings.update('10001', true)
+      const started = githubDeferred(); let deadline, released = 0, cancelled = false
+      const runtime = new GithubPreviewRuntime(settings, {
+        lookup: async (target, context) => { deadline = context.deadline; await clock.tick(8000); return { target, title: 'title', url: target.url, facts: [], fetchedAt: Date.now() } },
+        acquire: async () => () => { released++ }, log: () => {},
+        screenshot: async (_metadata, context) => {
+          assert.equal(context.deadline, deadline); assert.equal(context.deadline - Date.now(), 22000)
+          started.resolve()
+          await new Promise(resolve => context.signal.addEventListener('abort', () => { cancelled = true; resolve() }, { once: true }))
+          return { images: [Buffer.from('late')], capturedAt: Date.now() }
+        },
+      })
+      try {
+        const session = makeSession({ messageId: 'target-deadline' })
+        const task = runtime.handle(session, 'https://github.com/owner/repo/issues/1'); await started.promise
+        await clock.tick(22001); await task
+        assert(cancelled); assert.equal(released, 1); assert.equal(session.sent.length, 1)
+        assert(session.sent.join('').includes('30秒')); assert(!session.sent.join('').includes('data:image'))
+      } finally { runtime.dispose() }
+    })
     await githubCase(t, 'bounded queue and expired tasks never execute later', async () => {
       const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
       const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
@@ -399,16 +465,20 @@ async function run(t) {
         hold.resolve(); await Promise.all(tasks); assert.equal(lookups, 1)
       } finally { hold.resolve(); runtime.dispose() }
     })
-    await githubCase(t, '45-second execution aborts in-flight work, releases its gate and does not send after deletion', async () => {
+    await githubCase(t, 'two targets share 45 seconds and the second target cannot reset the message deadline', async () => {
       const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
       const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
       const settings = new GithubPreviewSettings(data.pathFor('deadline')); await settings.update('10001', true)
-      const started = githubDeferred(); let cancelled = false, released = false
-      const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, title: 'title', url: target.url, facts: [], fetchedAt: Date.now() }), acquire: async () => () => { released = true }, screenshot: async (_metadata, context) => { started.resolve(); await new Promise(resolve => context.signal.addEventListener('abort', () => { cancelled = true; resolve() }, { once: true })); return { images: [Buffer.from('late')], capturedAt: Date.now() } }, log: () => {} })
+      const started = [githubDeferred(), githubDeferred()], deadlines = []; let cancelled = 0, released = false
+      const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, title: 'title', url: target.url, facts: [], fetchedAt: Date.now() }), acquire: async () => () => { released = true }, screenshot: async (_metadata, context) => { const index = deadlines.length; deadlines.push(context.deadline); started[index].resolve(); await new Promise(resolve => context.signal.addEventListener('abort', () => { cancelled++; resolve() }, { once: true })); return { images: [Buffer.from('late')], capturedAt: Date.now() } }, log: () => {} })
       const session = makeSession({ messageId: 'deadline' })
       try {
-        const task = runtime.handle(session, 'https://github.com/owner/repo/issues/1'); await started.promise
-        await clock.tick(45001); await task; assert(cancelled); assert(released); assert.equal(session.sent.length, 0)
+        const task = runtime.handle(session, 'https://github.com/owner/repo/issues/1 https://github.com/owner/repo/issues/2'); await started[0].promise
+        await clock.tick(30001); await started[1].promise
+        assert.equal(deadlines[1] - deadlines[0], 15000)
+        await clock.tick(15000); await task
+        assert.equal(cancelled, 2); assert(released); assert.equal(session.sent.length, 1)
+        assert(!session.sent.join('').includes('data:image'))
       } finally { runtime.dispose() }
     })
   })

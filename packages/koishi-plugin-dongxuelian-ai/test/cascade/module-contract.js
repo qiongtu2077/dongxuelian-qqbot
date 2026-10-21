@@ -18,6 +18,8 @@ async function runModuleContract(context) {
     githubClient: path.join(LIB, 'github-preview', 'client'),
     githubScreenshot: path.join(LIB, 'github-preview', 'page-screenshot'),
     githubRenderer: path.join(LIB, 'github-preview', 'renderer'),
+    githubBody: path.join(LIB, 'github-preview', 'body-content'),
+    githubIssueRenderer: path.join(LIB, 'github-preview', 'issue-renderer'),
     githubRuntime: path.join(LIB, 'github-preview', 'runtime'),
     dailyReportArtifacts: path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'analysis-artifacts'),
     dailyReportStorage: path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'report-storage'),
@@ -226,7 +228,7 @@ async function runModuleContract(context) {
   }
 
   const c = modules.constants
-  check('GitHub limits are an immutable configuration object', !!modules.githubModels && Object.isFrozen(modules.githubModels.GITHUB_LIMITS) && modules.githubModels.GITHUB_LIMITS.loadMs === 25000 && modules.githubModels.GITHUB_LIMITS.padding === 24)
+  check('GitHub limits preserve a 30-second target budget and white padding', !!modules.githubModels && Object.isFrozen(modules.githubModels.GITHUB_LIMITS) && modules.githubModels.GITHUB_LIMITS.targetMs === 30000 && modules.githubModels.GITHUB_LIMITS.padding === 24)
   const u = modules.utils
   const p = modules.persona
   const api = modules.api
@@ -243,6 +245,8 @@ async function runModuleContract(context) {
     githubClient: ['GithubPreviewClient', 'GithubQueryError'],
     githubScreenshot: ['allowGithubPageRequest', 'inspectGithubRegion', 'waitForGithubRegion', 'findGithubBrowser', 'encodeGithubClips', 'screenshotGithubPage'],
     githubRenderer: ['escapeGithubText', 'loadGithubAvatar', 'buildGithubCardHtml', 'renderGithubCard', 'githubTextFallback'],
+    githubBody: ['cleanGithubBody', 'isGithubBodyImageUrl', 'prepareGithubBody'],
+    githubIssueRenderer: ['buildGithubIssueHtml', 'splitGithubImage', 'renderGithubIssue'],
     githubRuntime: ['GithubPreviewRuntime', 'acquireGithubResources'],
     nicknameScopeSchema: ['normalizeScopeStore', 'serializeScopeStore', 'setAliasEntry'],
     frontmatter: [

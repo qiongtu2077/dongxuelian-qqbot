@@ -3,148 +3,125 @@ const assert = require('node:assert/strict')
 const fs = require('fs'), os = require('os'), path = require('path')
 const browserData = fs.mkdtempSync(path.join(os.tmpdir(), 'github-preview-browser-'))
 process.env.DONGXUELIAN_AI_DATA_DIR = browserData
-const puppeteer = require('puppeteer-core')
-const sharp = require('sharp')
-const { inspectGithubRegion, encodeGithubClips, findGithubBrowser, waitForGithubRegion, screenshotGithubPage } = require('../lib/github-preview/page-screenshot')
-const { GITHUB_LIMITS } = require('../lib/github-preview/models')
-const { parseGithubTarget } = require('../lib/github-preview/input')
-const { acquireGithubResources } = require('../lib/github-preview/runtime')
+const puppeteer = require('puppeteer-core'), sharp = require('sharp')
+const { cleanGithubBody, prepareGithubBody, isGithubBodyImageUrl } = require('../lib/github-preview/body-content')
+const { buildGithubIssueHtml, renderGithubIssue, splitGithubImage } = require('../lib/github-preview/issue-renderer')
+const { renderHtmlToImage } = require('../../koishi-plugin-daily-report/lib/html-renderer')
 const { readResourceActivityLease } = require('../lib/resource-scheduler/resource-activity-lease')
+const { GITHUB_LIMITS } = require('../lib/github-preview/models')
 
-// Reproduce the independently verified issue and PR structures without accessing GitHub.
-function githubPageFixture(kind, bodyHeight = 500, extra = '') {
-  const issue = kind === 'issue'
-  return `<!doctype html><html><head><meta charset="utf-8"><base href="https://github.com/"><style>
-  *{box-sizing:border-box}body{margin:0;background:white;font:18px sans-serif}nav{height:200px;background:magenta}
-  h1{position:absolute;left:40px;top:220px;margin:0;width:1200px;height:60px;font-size:30px}
-  #opening{position:absolute;left:40px;top:330px;width:820px;background:#eee}header{height:70px}header img{width:40px;height:40px}
-  #body{height:${bodyHeight}px;background:rgb(18,45,78);color:white;padding:10px}.labels{position:absolute;left:900px;top:360px;width:300px;height:90px;background:#bff}
-  #reply{position:absolute;left:40px;top:${400 + bodyHeight}px;width:820px;height:400px;background:magenta}.hidden{display:none}
-  </style></head><body><nav>EXCLUDED NAVIGATION</nav>
-  <div class="hidden"><h1><bdi data-testid="issue-title">hidden duplicate</bdi><span class="markdown-title">hidden duplicate</span></h1><div data-testid="issue-body" class="js-command-palette-pull-body">hidden body</div></div>
-  <h1>${issue ? '<bdi data-testid="issue-title">' : '<span class="markdown-title">'}Opening title${issue ? '</bdi>' : '</span>'}</h1>
-  <div id="opening" ${issue ? 'data-testid="issue-body"' : 'class="js-command-palette-pull-body"'}><header><a href="${issue ? 'https://github.com/owner' : '/owner'}">owner</a><img alt="owner" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Crect width='40' height='40' fill='blue'/%3E%3C/svg%3E"></header>
-  <div ${issue ? 'id="issue-body-viewer"' : 'class="js-comment-body"'}><div id="body">Opening post only ${extra}</div></div></div>
-  <aside class="labels ${issue ? '' : 'discussion-sidebar-item'}" ${issue ? 'data-testid="sidebar-labels-section"' : 'data-channel-event-name="labels_updated"'}>Labels <span>bug</span></aside>
-  <div id="reply"><a href="/other">Other author</a>EXCLUDED LATER REPLY / REVIEW</div></body></html>`
+// Use a real absolute deadline, with all network samples supplied by explicit transports.
+function context(ms = 10000) { return { signal: new AbortController().signal, deadline: Date.now() + ms, taskId: 'github-local-browser' } }
+
+// The initiating post is independent of replies and contains original public metadata only.
+function metadata(kind = 'issue', bodyHtml = '<p>发起者原文，保留内容。</p>') {
+  const url = `https://github.com/owner/repo/${kind === 'pull' ? 'pull' : 'issues'}/1`
+  return { target: { kind, owner: 'owner', repo: 'repo', number: 1, url }, url, title: '原文标题与黄色编号', state: kind === 'pull' ? '已合并' : '开启中', author: 'author', createdAt: '2026-10-21T00:00:00Z', fetchedAt: Date.now(), labels: [{ name: 'bug', color: 'f5d531' }], facts: [], bodyHtml }
 }
 
-// Every pixel in all four added strips must be white, while content remains byte-for-byte equal.
-async function verifyGithubPadding(image, page, region, offset = 0, height = region.height) {
-  const meta = await sharp(image).metadata()
-  assert.equal(meta.width, region.width + 48); assert.equal(meta.height, height + 48)
-  assert(meta.height <= 2000)
-  const { data, info } = await sharp(image).removeAlpha().raw().toBuffer({ resolveWithObject: true })
-  for (let y = 0; y < info.height; y++) for (let x = 0; x < info.width; x++) if (x < 24 || x >= info.width - 24 || y < 24 || y >= info.height - 24) {
-    const at = (y * info.width + x) * info.channels
-    assert.equal(data[at], 255); assert.equal(data[at + 1], 255); assert.equal(data[at + 2], 255)
+// Verify white outer strips and ensure content pixels survive contiguous splitting unchanged.
+async function verifyPadding(images, original) {
+  const parts = []
+  for (const image of images) {
+    const { width, height } = await sharp(image).metadata()
+    assert(height <= 2000)
+    for (const rect of [{ left: 0, top: 0, width, height: 24 }, { left: 0, top: height - 24, width, height: 24 }, { left: 0, top: 24, width: 24, height: height - 48 }, { left: width - 24, top: 24, width: 24, height: height - 48 }]) {
+      const pixels = await sharp(image).extract(rect).removeAlpha().raw().toBuffer()
+      assert(pixels.every(value => value === 255))
+    }
+    parts.push(await sharp(image).extract({ left: 24, top: 24, width: width - 48, height: height - 48 }).removeAlpha().raw().toBuffer())
   }
-  const original = await page.screenshot({ type: 'png', captureBeyondViewport: true, clip: { x: region.x, y: region.y + offset, width: region.width, height } })
-  assert.deepEqual(await sharp(image).extract({ left: 24, top: 24, width: region.width, height }).removeAlpha().raw().toBuffer(), await sharp(Buffer.from(original)).removeAlpha().raw().toBuffer())
+  if (original) assert.deepEqual(Buffer.concat(parts), await sharp(original).removeAlpha().raw().toBuffer())
 }
 
-// Replay a fixed document response through real Chrome and the complete production lifecycle.
-async function verifyGithubLifecycle(kind, status = 200, cancel = false, stuckClose = false) {
+// Exercise parsing and bounded downloads without making DNS or HTTP calls to real services.
+async function verifyBody() {
+  const dirty = '<script>SECRET_EXECUTION</script><p onclick="evil()">原文</p><details><summary>展开</summary>细节</details><input type="checkbox" checked><table><tr><td>保留表格</td></tr></table><img src="https://user-images.githubusercontent.com/a.png" onerror="evil()"><a href="javascript:evil()">链接文字</a>'
+  const clean = cleanGithubBody(dirty, metadata().url)
+  assert(!clean.html.includes('SECRET_EXECUTION')); assert(!clean.html.includes('onclick')); assert(!clean.html.includes('javascript:'))
+  assert(clean.html.includes('<details open>')); assert(clean.html.includes('☑')); assert(clean.html.includes('保留表格'))
+  assert.equal(clean.images.length, 1)
+  for (const url of ['http://127.0.0.1/x', 'https://user-images.githubusercontent.com.evil/x', 'data:image/png;base64,a', 'https://github.com/login', 'https://example.org/x']) assert.equal(isGithubBodyImageUrl(url), false)
+  const png = await sharp({ create: { width: 50, height: 50, channels: 3, background: '#f5d531' } }).png().toBuffer()
+  let calls = 0
+  const url = 'https://user-images.githubusercontent.com/a.png'
+  const body = await prepareGithubBody(`<img src="${url}" alt="原图"><img src="${url}"><img src="https://example.org/no.png"><p>尾部仍在</p>`, metadata().url, context(), async (_url, options) => {
+    calls++; assert.equal(options.headers, undefined); assert.equal(options.redirect, 'manual')
+    return new Response(png, { headers: { 'content-type': 'image/png' } })
+  }, async () => [])
+  assert.equal(calls, 1); assert.equal(body.missing, 1); assert(body.html.includes('data:image/webp;base64,')); assert(body.html.includes('尾部仍在'))
+  calls = 0
+  const redirect = await prepareGithubBody(`<img src="${url}">`, metadata().url, context(), async () => { calls++; return new Response(null, { status: 302, headers: { location: 'https://127.0.0.1/a.png' } }) }, async () => [])
+  assert.equal(calls, 1); assert.equal(redirect.missing, 1)
+  const dnsStart = performance.now()
+  const dns = await prepareGithubBody(`<img src="${url}">`, metadata().url, context(5150), async () => { throw new Error('must not fetch') }, () => new Promise(() => {}))
+  assert.equal(dns.missing, 1); assert(performance.now() - dnsStart < 1000)
+  const oversized = await prepareGithubBody(`<img src="${url}">`, metadata().url, context(), async () => new Response(Buffer.alloc(2 * 1024 * 1024 + 1), { headers: { 'content-type': 'image/png' } }), async () => [])
+  assert.equal(oversized.missing, 1)
+  console.log('PASS official HTML structure, task state, expanded details, deduplicated assets, redirects, DNS cancellation and byte caps')
+}
+
+// Run the production browser lifecycle, observing attempted requests and owned-browser cleanup.
+async function verifyRender(kind, options = {}) {
   const originalLaunch = puppeteer.launch
-  let owned, abortTimer, closeOwned, cleanupStarted
+  let owned, closeOwned, cleanupStarted, requests = 0
   const controller = new AbortController()
-  const target = parseGithubTarget(`https://github.com/owner/repo/${kind === 'issue' ? 'issues' : 'pull'}/1`)
-  const context = { signal: controller.signal, deadline: Date.now() + 10000, taskId: 'github-browser-fixture' }
-  puppeteer.launch = async options => {
-    owned = await originalLaunch(options)
+  let abortTimer
+  puppeteer.launch = async launchOptions => {
+    owned = await originalLaunch(launchOptions)
     closeOwned = owned.close.bind(owned)
-    if (stuckClose) owned.close = () => { cleanupStarted = performance.now(); return new Promise(() => {}) }
+    if (options.stuckClose) owned.close = () => { cleanupStarted = performance.now(); return new Promise(() => {}) }
     const newPage = owned.newPage.bind(owned)
     owned.newPage = async () => {
-      const page = await newPage(); await page.setRequestInterception(true)
-      page.on('request', request => {
-        if (request.isInterceptResolutionHandled()) return
-        if (request.isNavigationRequest() && request.url() === target.url) {
-          void request.respond({ status, contentType: 'text/html', body: cancel ? '<h1>no opening post</h1>' : githubPageFixture(kind) })
-          if (cancel) abortTimer = setTimeout(() => controller.abort(new Error('fixture group deleted')), 150)
-        } else void request.abort()
-      })
+      const page = await newPage()
+      page.on('request', request => { if (/^https?:/.test(request.url())) requests++ })
+      if (options.stall) page.screenshot = () => new Promise(() => {})
+      if (options.guardFailure) page.setRequestInterception = async () => { throw new Error('guard setup failed') }
+      if (options.cancel) abortTimer = setTimeout(() => controller.abort(new Error('group removed')), 100)
       return page
     }
     return owned
   }
-  let release
+  const started = performance.now(), work = { ...context(options.stall ? GITHUB_LIMITS.targetMs : 10000), signal: controller.signal }
   try {
-    release = await acquireGithubResources(context, 'fixture')
-    const task = screenshotGithubPage({ target, url: target.url, title: 'Opening title', author: 'owner', facts: [], fetchedAt: Date.now() }, context)
-    if (cancel) await assert.rejects(task, /fixture group deleted/)
-    else if (status !== 200) await assert.rejects(task, /页面状态/)
-    else { const result = await task; assert.equal(result.incomplete, false); assert.equal(result.images.length, 1) }
-    if (stuckClose) {
-      await new Promise(resolve => setTimeout(resolve, 100))
-      // Measure shutdown itself; browser startup and rendering do not belong to its budget.
-      assert(performance.now() - cleanupStarted < 4500)
+    const promise = renderGithubIssue(metadata(kind), work)
+    if (options.stall) { await assert.rejects(promise); assert(performance.now() - started >= 29500); assert(performance.now() - started < 34000) }
+    else if (options.cancel) await assert.rejects(promise, /group removed/)
+    else if (options.guardFailure) await assert.rejects(promise, /guard setup failed/)
+    else {
+      const result = await promise
+      assert.equal(result.incomplete, false); assert.equal(result.images.length, 1)
+      const dimensions = await sharp(result.images[0]).metadata()
+      assert.equal(dimensions.width, 928); assert(dimensions.height < 800)
+      await verifyPadding(result.images)
     }
-    assert.equal(owned.connected, false)
+    if (options.stuckClose) await new Promise(resolve => setTimeout(resolve, 150))
+    assert.equal(requests, 0); assert.equal(owned.connected, false)
     assert.equal(readResourceActivityLease('render_active'), null)
-    console.log(`PASS ${kind}: complete lifecycle status=${status} cancelled=${cancel}, browser closed and render lease released`)
-  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; if (owned?.connected) await closeOwned(); if (release) release() }
+    if (options.stuckClose) assert(performance.now() - cleanupStarted < 4500)
+    console.log(`PASS ${kind} local rendering ${JSON.stringify(options)}: elapsed=${Math.round(performance.now() - started)}ms, offline and reclaimed`)
+  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; if (owned?.connected) await closeOwned() }
 }
 
-// Run with a real installed browser; missing browsers fail this explicit release-verification entry.
+// Validate real layout, external-resource blocking, clipping and the hard timeout without GitHub access.
 async function main() {
-  const browser = await puppeteer.launch({ executablePath: findGithubBrowser(), headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] })
-  try {
-    const page = await browser.newPage(); await page.setViewport({ width: 1280, height: 900, deviceScaleFactor: 1 })
-    for (const kind of ['issue', 'pull']) {
-      await page.setContent(githubPageFixture(kind))
-      const region = await page.evaluate(inspectGithubRegion, kind, 'owner')
-      assert(region?.ready); assert.equal(region.y, 220); assert.equal(region.height, 680); assert.equal(region.x, 40); assert.equal(region.width, 1200)
-      assert.equal(region.imageCount, 1); assert.equal(region.title, 'Opening title')
-      assert.equal(await page.evaluate(inspectGithubRegion, kind, 'other'), null)
-      const images = await encodeGithubClips(page, region, performance.now() + 5000)
-      assert.equal(images.length, 1); await verifyGithubPadding(images[0], page, region)
-      console.log(`PASS ${kind}: exact opening boundaries, author/avatar/labels, hidden duplicates, 24px padding and unchanged content`)
-      await page.setContent(githubPageFixture(kind, 4200))
-      const longRegion = await page.evaluate(inspectGithubRegion, kind, 'owner')
-      const split = await encodeGithubClips(page, longRegion, performance.now() + 5000)
-      assert.equal(split.length, 3)
-      const contentHeight = Math.ceil(longRegion.height / split.length)
-      for (let i = 0; i < split.length; i++) await verifyGithubPadding(split[i], page, longRegion, i * contentHeight, Math.min(contentHeight, longRegion.height - i * contentHeight))
-      await assert.rejects(encodeGithubClips(page, { ...longRegion, height: 6001 }, performance.now() + 5000), /正文过长/)
-      console.log(`PASS ${kind}: contiguous split images and oversized-body fallback`)
-      await page.setContent(githubPageFixture(kind, 34.5))
-      await page.evaluate(() => {
-        document.querySelector('.labels').style.top = '800px'; document.querySelector('.labels').style.height = '50px'
-        const auxiliary = document.createElement('div')
-        auxiliary.style.cssText = 'position:absolute;left:900px;top:330px;width:300px;height:300px;background:magenta'
-        auxiliary.textContent = 'Other sidebar content must not overlap moved Labels'
-        document.body.appendChild(auxiliary)
-      })
-      const short = await page.evaluate(inspectGithubRegion, kind, 'owner')
-      assert(short?.ready); assert.equal(short.height, 215)
-      const labelBottom = await page.$eval('.labels', element => element.getBoundingClientRect().bottom)
-      assert(labelBottom <= short.y + short.height)
-      assert.equal(await page.$eval('[data-github-preview-sidebar-backdrop]', element => element.getBoundingClientRect().height), 105)
-      const shortImages = await encodeGithubClips(page, short, performance.now() + 5000)
-      const pixel = await sharp(shortImages[0]).extract({ left: 900 - short.x + 24, top: 330 - short.y + 24, width: 1, height: 1 }).removeAlpha().raw().toBuffer()
-      assert.deepEqual([...pixel], [255, 255, 255])
-      const edge = await sharp(shortImages[0]).extract({ left: 900 - short.x + 24, top: short.height - 1 + 24, width: 1, height: 1 }).removeAlpha().raw().toBuffer()
-      assert.deepEqual([...edge], [255, 255, 255])
-      console.log(`PASS ${kind}: short/empty-state body keeps original labels inside exact lower edge`)
-      await page.setContent(githubPageFixture(kind, 500, '<img src="https://example.invalid/never.png" loading="lazy" width="50" height="50">'), { waitUntil: 'domcontentloaded' })
-      const incomplete = await page.evaluate(inspectGithubRegion, kind, 'owner')
-      assert(incomplete); assert.equal(incomplete.ready, false)
-      assert.equal(await page.$eval('#body img', image => image.loading), 'eager')
-    }
-    // One real 25-second incomplete-load wait verifies the upper bound without a fake wall clock.
-    const metadata = { target: { kind: 'pull' }, author: 'owner' }, controller = new AbortController()
-    const started = performance.now()
-    const ready = await waitForGithubRegion(page, metadata, { signal: controller.signal, deadline: Date.now() + 35000, taskId: 'github-browser-test' }, started + GITHUB_LIMITS.loadMs)
-    assert.equal(ready, false); assert(performance.now() - started >= 24900); assert(performance.now() - started < 26000)
-    console.log('PASS shared 25-second loading deadline, incomplete image detection and lazy-load activation')
-  } finally { await browser.close() }
-  await verifyGithubLifecycle('issue')
-  await verifyGithubLifecycle('pull')
-  await verifyGithubLifecycle('issue', 404)
-  await verifyGithubLifecycle('pull', 200, true)
-  await verifyGithubLifecycle('issue', 200, false, true)
-  console.log('PASS stuck graceful close reclaims only the recorded browser PID within the cleanup budget')
+  await verifyBody()
+  for (const kind of ['issue', 'pull']) await verifyRender(kind)
+  const raw = await sharp({ create: { width: 100, height: 4500, channels: 3, background: '#f5d531' } }).png().toBuffer()
+  const split = await splitGithubImage(raw, context())
+  assert.equal(split.length, 3); await verifyPadding(split, raw)
+  const huge = await sharp({ create: { width: 100, height: 5857, channels: 3, background: '#fff' } }).png().toBuffer()
+  await assert.rejects(splitGithubImage(huge, context()), /正文过长/)
+  const work = context()
+  const html = buildGithubIssueHtml(metadata('pull'), '<pre><code>' + 'very-long-code-'.repeat(80) + '</code></pre><table><tr><td>' + 'long-cell'.repeat(80) + '</td></tr></table>', null)
+  const image = await renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, networkPolicy: 'offline', captureSelector: '#github-preview' })
+  assert((await sharp(image).metadata()).height > 400)
+  await assert.rejects(renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, networkPolicy: 'offline', captureSelector: '#missing-root' }), /根元素不存在/)
+  await verifyRender('pull', { cancel: true })
+  await verifyRender('issue', { guardFailure: true })
+  await verifyRender('issue', { stuckClose: true })
+  await verifyRender('issue', { stall: true })
+  console.log('PASS continuous splits, 24px white margins, original pixels, wrapped tables/code, missing roots, cancellation, stuck close and real 30-second deadline')
 }
 main().catch(error => { console.error(error.stack); process.exitCode = 1 }).finally(() => {
   if (path.dirname(path.resolve(browserData)) !== path.resolve(os.tmpdir()) || !path.basename(browserData).startsWith('github-preview-browser-')) throw new Error('unexpected browser fixture directory')

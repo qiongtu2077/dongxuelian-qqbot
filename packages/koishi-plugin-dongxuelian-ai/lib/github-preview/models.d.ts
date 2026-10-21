@@ -26,12 +26,15 @@ export interface GithubMetadata {
         name: string;
         color: string;
     }[];
+    bodyHtml?: string;
+    createdAt?: string;
     facts: [string, string][];
     stale?: boolean;
 }
 export interface GithubImageResult {
     images: Buffer[];
     incomplete?: boolean;
+    note?: string;
     capturedAt: number;
 }
 export interface GithubWorkContext {
@@ -41,6 +44,8 @@ export interface GithubWorkContext {
 }
 export declare const GITHUB_LIMITS: Readonly<{
     loadMs: 25000;
+    targetMs: 30000;
+    assetMs: 10000;
     captureMs: 5000;
     runMs: 45000;
     queueMs: 15000;
@@ -58,6 +63,9 @@ export declare const GITHUB_LIMITS: Readonly<{
     viewportWidth: 1280;
     minMemoryMb: 650;
     stopMemoryMb: 350;
+    bodyBytes: number;
+    metadataBytes: number;
+    htmlBytes: number;
 }>;
 export declare function assertGithubWork(context: Pick<GithubWorkContext, 'signal' | 'deadline'>): void;
 export declare function waitGithubWork(ms: number, signal: AbortSignal): Promise<void>;

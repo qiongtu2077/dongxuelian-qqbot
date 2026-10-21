@@ -36,10 +36,16 @@ function githubObject(value, field) {
         throw new GithubQueryError('官方对象字段异常：' + field);
     return value;
 }
-// Only keep display and identity metadata; issue/PR bodies never enter caches.
+// Keep only bounded official display fields, including the requested HTML representation.
 function selectGithubFields(raw) {
     const fields = ['full_name', 'name', 'login', 'html_url', 'private', 'description', 'language', 'stargazers_count', 'forks_count', 'archived', 'updated_at', 'license', 'type', 'bio', 'avatar_url', 'public_repos', 'followers', 'following', 'created_at', 'title', 'number', 'state', 'merged', 'draft', 'pull_request', 'labels'];
     const result = {};
+    if (raw.body_html !== undefined) {
+        const body = githubString(raw, 'body_html', true);
+        if (Buffer.byteLength(body, 'utf8') > models_1.GITHUB_LIMITS.bodyBytes)
+            throw new GithubQueryError('正文超过大小限制，请查看原文');
+        result.body_html = body;
+    }
     for (const field of fields)
         if (raw[field] !== undefined)
             result[field] = raw[field];
@@ -98,7 +104,11 @@ class GithubPreviewClient {
     // Revalidate metadata using ETag; enforce rate limits, bounded retries and safe redirects.
     async requestSerial(route, context) {
         (0, models_1.assertGithubWork)(context);
-        const cached = this.cache.get(route);
+        const accept = /\/(issues|pulls)\/\d+$/.test(route) ? 'application/vnd.github.html+json' : 'application/vnd.github+json';
+        // Rendered bodies contain short-lived signed image URLs: refresh HTML without conditional reuse.
+        const conditional = accept === 'application/vnd.github+json';
+        const cacheKey = accept + ':' + route;
+        const cached = this.cache.get(cacheKey);
         if (cached && Date.now() - cached.checkedAt < (cached.missing ? 60000 : models_1.GITHUB_LIMITS.cacheMs)) {
             if (cached.missing)
                 throw new GithubQueryError('资源不存在或当前不可访问', 404);
@@ -117,7 +127,7 @@ class GithubPreviewClient {
                 let url = 'https://api.github.com' + route;
                 try {
                     for (let redirects = 0; redirects < 4; redirects++) {
-                        response = await this.transport(url, { redirect: 'manual', signal: controller.signal, headers: { 'User-Agent': 'LianLianBot-GitHub-Preview', Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}), ...(cached?.etag ? { 'If-None-Match': cached.etag } : {}) } });
+                        response = await this.transport(url, { redirect: 'manual', signal: controller.signal, headers: { 'User-Agent': 'LianLianBot-GitHub-Preview', Accept: accept, 'X-GitHub-Api-Version': '2022-11-28', ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}), ...(conditional && cached?.etag ? { 'If-None-Match': cached.etag } : {}) } });
                         if (![301, 302, 307, 308].includes(response.status))
                             break;
                         const next = new URL(response.headers.get('location') || '', url);
@@ -143,7 +153,7 @@ class GithubPreviewClient {
             if (!response)
                 throw new GithubQueryError('GitHub 未返回响应', 0, true);
             console.info(`github-preview api target=${route} status=${response.status} elapsedMs=${Date.now() - requestStarted}`);
-            if (response.status === 304 && cached?.value) {
+            if (response.status === 304 && conditional && cached?.value) {
                 cached.checkedAt = Date.now();
                 await response.body?.cancel();
                 return cached;
@@ -162,13 +172,13 @@ class GithubPreviewClient {
                     this.blockedUntil = Math.max(Date.now() + (retryAfter || 60) * 1000, resetAt);
                 }
                 if (status === 404)
-                    this.remember(route, { missing: true, fetchedAt: Date.now(), checkedAt: Date.now() });
+                    this.remember(cacheKey, { missing: true, fetchedAt: Date.now(), checkedAt: Date.now() });
                 const message = rateLimited ? 'GitHub 请求受限，请稍后重试' : { 401: 'GitHub 认证配置不可用', 403: 'GitHub 拒绝访问', 404: '资源不存在或当前不可访问', 410: '资源已移除' }[status] || 'GitHub 服务请求失败';
                 throw new GithubQueryError(message, status, rateLimited || status >= 500);
             }
             const value = selectGithubFields(await readGithubJson(response));
             const entry = { value, etag: response.headers.get('etag') || undefined, fetchedAt: Date.now(), checkedAt: Date.now() };
-            this.remember(route, entry);
+            this.remember(cacheKey, entry);
             return entry;
         }
         catch (error) {
@@ -183,11 +193,11 @@ class GithubPreviewClient {
             context.signal.removeEventListener('abort', cancelGithubApiRequest);
         }
     }
-    // Keep the metadata cache bounded without retaining body text or credentials.
+    // Bound count and encoded bytes now that official HTML is retained alongside metadata.
     remember(route, value) {
         this.cache.delete(route);
         this.cache.set(route, value);
-        while (this.cache.size > models_1.GITHUB_LIMITS.cacheEntries)
+        while (this.cache.size > models_1.GITHUB_LIMITS.cacheEntries || [...this.cache.values()].reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry), 'utf8'), 0) > models_1.GITHUB_LIMITS.metadataBytes)
             this.cache.delete(this.cache.keys().next().value);
     }
     // Resolve verified public metadata and normalize Issue aliases to real PR targets.
@@ -212,6 +222,13 @@ class GithubPreviewClient {
         const canonical = (0, input_1.parseGithubTarget)(url);
         if (!canonical || canonical.kind !== target.kind)
             throw new GithubQueryError('官方资源地址与类型不匹配');
+        if (target.number !== undefined && (canonical.number !== target.number || value.number !== target.number))
+            throw new GithubQueryError('官方资源编号不匹配');
+        if (repository) {
+            const publicRepository = (0, input_1.parseGithubTarget)(githubString(repository, 'html_url'));
+            if (!publicRepository || publicRepository.kind !== 'repository' || canonical.owner.toLowerCase() !== publicRepository.owner.toLowerCase() || canonical.repo?.toLowerCase() !== publicRepository.repo?.toLowerCase())
+                throw new GithubQueryError('官方资源与已验证公开仓库不匹配');
+        }
         const metadata = { target: canonical, title: '', url, fetchedAt: entry.fetchedAt, facts: [] };
         if (target.kind === 'user') {
             metadata.title = githubString(value, 'name', true) || githubString(value, 'login');
@@ -229,6 +246,8 @@ class GithubPreviewClient {
         }
         else {
             metadata.title = githubString(value, 'title');
+            metadata.bodyHtml = githubString(value, 'body_html', true);
+            metadata.createdAt = githubString(value, 'created_at');
             const state = githubString(value, 'state');
             if (!['open', 'closed'].includes(state))
                 throw new GithubQueryError('官方状态字段异常');

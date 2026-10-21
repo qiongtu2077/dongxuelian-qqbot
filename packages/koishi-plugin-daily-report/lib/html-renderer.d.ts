@@ -60,6 +60,8 @@ interface RenderContext {
     workDeadlineMs?: number;
     signal?: AbortSignal;
     now?: () => number;
+    networkPolicy?: 'offline';
+    captureSelector?: string;
 }
 interface RenderMemoryStatus {
     availableMb: number | null;

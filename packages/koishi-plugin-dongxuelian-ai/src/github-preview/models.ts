@@ -9,16 +9,18 @@ export interface GithubTarget { kind: GithubKind; owner: string; repo?: string; 
 export interface GithubMetadata {
   target: GithubTarget; title: string; url: string; fetchedAt: number; state?: string
   description?: string; author?: string; avatar?: string; labels?: { name: string; color: string }[]
+  bodyHtml?: string; createdAt?: string
   facts: [string, string][]; stale?: boolean
 }
-export interface GithubImageResult { images: Buffer[]; incomplete?: boolean; capturedAt: number }
+export interface GithubImageResult { images: Buffer[]; incomplete?: boolean; note?: string; capturedAt: number }
 export interface GithubWorkContext { signal: AbortSignal; deadline: number; taskId: string }
 export const GITHUB_LIMITS = Object.freeze({
-  loadMs: 25000, captureMs: 5000, runMs: 45000, queueMs: 15000, maxQueued: 20,
+  loadMs: 25000, targetMs: 30000, assetMs: 10000, captureMs: 5000, runMs: 45000, queueMs: 15000, maxQueued: 20,
   maxTargets: 3, cooldownMs: 120000, cacheMs: 300000, staleMs: 1800000,
   cacheEntries: 100, cacheBytes: 20 * 1024 * 1024, imageBytes: 10 * 1024 * 1024,
   padding: 24, imageHeight: 2000, maxImages: 3, viewportWidth: 1280,
   minMemoryMb: 650, stopMemoryMb: 350,
+  bodyBytes: 256 * 1024, metadataBytes: 8 * 1024 * 1024, htmlBytes: 512 * 1024,
 })
 
 // Stop immediately after cancellation or the shared task deadline.

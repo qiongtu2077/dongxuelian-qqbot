@@ -36,10 +36,15 @@ function githubObject(value: unknown, field: string): GithubObject {
   return value as GithubObject
 }
 
-// Only keep display and identity metadata; issue/PR bodies never enter caches.
+// Keep only bounded official display fields, including the requested HTML representation.
 function selectGithubFields(raw: GithubObject): GithubObject {
   const fields = ['full_name', 'name', 'login', 'html_url', 'private', 'description', 'language', 'stargazers_count', 'forks_count', 'archived', 'updated_at', 'license', 'type', 'bio', 'avatar_url', 'public_repos', 'followers', 'following', 'created_at', 'title', 'number', 'state', 'merged', 'draft', 'pull_request', 'labels']
   const result: GithubObject = {}
+  if (raw.body_html !== undefined) {
+    const body = githubString(raw, 'body_html', true)
+    if (Buffer.byteLength(body, 'utf8') > GITHUB_LIMITS.bodyBytes) throw new GithubQueryError('正文超过大小限制，请查看原文')
+    result.body_html = body
+  }
   for (const field of fields) if (raw[field] !== undefined) result[field] = raw[field]
   if (raw.user) { const user = githubObject(raw.user, 'user'); result.user = { login: user.login, avatar_url: user.avatar_url } }
   return result
@@ -82,7 +87,11 @@ export class GithubPreviewClient {
   // Revalidate metadata using ETag; enforce rate limits, bounded retries and safe redirects.
   private async requestSerial(route: string, context: GithubWorkContext): Promise<GithubCacheEntry> {
     assertGithubWork(context)
-    const cached = this.cache.get(route)
+    const accept = /\/(issues|pulls)\/\d+$/.test(route) ? 'application/vnd.github.html+json' : 'application/vnd.github+json'
+    // Rendered bodies contain short-lived signed image URLs: refresh HTML without conditional reuse.
+    const conditional = accept === 'application/vnd.github+json'
+    const cacheKey = accept + ':' + route
+    const cached = this.cache.get(cacheKey)
     if (cached && Date.now() - cached.checkedAt < (cached.missing ? 60000 : GITHUB_LIMITS.cacheMs)) {
       if (cached.missing) throw new GithubQueryError('资源不存在或当前不可访问', 404)
       return cached
@@ -99,7 +108,7 @@ export class GithubPreviewClient {
         let url = 'https://api.github.com' + route
         try {
         for (let redirects = 0; redirects < 4; redirects++) {
-          response = await this.transport(url, { redirect: 'manual', signal: controller.signal, headers: { 'User-Agent': 'LianLianBot-GitHub-Preview', Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}), ...(cached?.etag ? { 'If-None-Match': cached.etag } : {}) } })
+          response = await this.transport(url, { redirect: 'manual', signal: controller.signal, headers: { 'User-Agent': 'LianLianBot-GitHub-Preview', Accept: accept, 'X-GitHub-Api-Version': '2022-11-28', ...(this.token ? { Authorization: 'Bearer ' + this.token } : {}), ...(conditional && cached?.etag ? { 'If-None-Match': cached.etag } : {}) } })
           if (![301, 302, 307, 308].includes(response.status)) break
           const next = new URL(response.headers.get('location') || '', url)
           await response.body?.cancel()
@@ -118,7 +127,7 @@ export class GithubPreviewClient {
       }
       if (!response) throw new GithubQueryError('GitHub 未返回响应', 0, true)
       console.info(`github-preview api target=${route} status=${response.status} elapsedMs=${Date.now() - requestStarted}`)
-      if (response.status === 304 && cached?.value) {
+      if (response.status === 304 && conditional && cached?.value) {
         cached.checkedAt = Date.now()
         await response.body?.cancel()
         return cached
@@ -135,13 +144,13 @@ export class GithubPreviewClient {
           const resetAt = remaining === '0' ? Number(response.headers.get('x-ratelimit-reset') || 0) * 1000 : 0
           this.blockedUntil = Math.max(Date.now() + (retryAfter || 60) * 1000, resetAt)
         }
-        if (status === 404) this.remember(route, { missing: true, fetchedAt: Date.now(), checkedAt: Date.now() })
+        if (status === 404) this.remember(cacheKey, { missing: true, fetchedAt: Date.now(), checkedAt: Date.now() })
         const message = rateLimited ? 'GitHub 请求受限，请稍后重试' : ({ 401: 'GitHub 认证配置不可用', 403: 'GitHub 拒绝访问', 404: '资源不存在或当前不可访问', 410: '资源已移除' } as Record<number, string>)[status] || 'GitHub 服务请求失败'
         throw new GithubQueryError(message, status, rateLimited || status >= 500)
       }
       const value = selectGithubFields(await readGithubJson(response))
       const entry = { value, etag: response.headers.get('etag') || undefined, fetchedAt: Date.now(), checkedAt: Date.now() }
-      this.remember(route, entry)
+      this.remember(cacheKey, entry)
       return entry
     } catch (error) {
       if (context.signal.aborted) throw context.signal.reason
@@ -150,10 +159,10 @@ export class GithubPreviewClient {
     } finally { clearTimeout(timer); context.signal.removeEventListener('abort', cancelGithubApiRequest) }
   }
 
-  // Keep the metadata cache bounded without retaining body text or credentials.
+  // Bound count and encoded bytes now that official HTML is retained alongside metadata.
   private remember(route: string, value: GithubCacheEntry): void {
     this.cache.delete(route); this.cache.set(route, value)
-    while (this.cache.size > GITHUB_LIMITS.cacheEntries) this.cache.delete(this.cache.keys().next().value!)
+    while (this.cache.size > GITHUB_LIMITS.cacheEntries || [...this.cache.values()].reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry), 'utf8'), 0) > GITHUB_LIMITS.metadataBytes) this.cache.delete(this.cache.keys().next().value!)
   }
 
   // Resolve verified public metadata and normalize Issue aliases to real PR targets.
@@ -174,6 +183,11 @@ export class GithubPreviewClient {
     const url = githubString(value, 'html_url')
     const canonical = parseGithubTarget(url)
     if (!canonical || canonical.kind !== target.kind) throw new GithubQueryError('官方资源地址与类型不匹配')
+    if (target.number !== undefined && (canonical.number !== target.number || value.number !== target.number)) throw new GithubQueryError('官方资源编号不匹配')
+    if (repository) {
+      const publicRepository = parseGithubTarget(githubString(repository, 'html_url'))
+      if (!publicRepository || publicRepository.kind !== 'repository' || canonical.owner.toLowerCase() !== publicRepository.owner.toLowerCase() || canonical.repo?.toLowerCase() !== publicRepository.repo?.toLowerCase()) throw new GithubQueryError('官方资源与已验证公开仓库不匹配')
+    }
     const metadata: GithubMetadata = { target: canonical, title: '', url, fetchedAt: entry.fetchedAt, facts: [] }
     if (target.kind === 'user') {
       metadata.title = githubString(value, 'name', true) || githubString(value, 'login')
@@ -188,6 +202,8 @@ export class GithubPreviewClient {
       if (value.archived === true) metadata.facts.push(['归档', '已归档'])
     } else {
       metadata.title = githubString(value, 'title')
+      metadata.bodyHtml = githubString(value, 'body_html', true)
+      metadata.createdAt = githubString(value, 'created_at')
       const state = githubString(value, 'state')
       if (!['open', 'closed'].includes(state)) throw new GithubQueryError('官方状态字段异常')
       if (target.kind === 'pull' && (typeof value.merged !== 'boolean' || typeof value.draft !== 'boolean')) throw new GithubQueryError('官方合并请求状态字段异常')

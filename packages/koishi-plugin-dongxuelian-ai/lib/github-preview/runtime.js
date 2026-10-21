@@ -8,7 +8,7 @@ const path = require("path");
 const input_1 = require("./input");
 const repositories_1 = require("./repositories");
 const client_1 = require("./client");
-const page_screenshot_1 = require("./page-screenshot");
+const issue_renderer_1 = require("./issue-renderer");
 const renderer_1 = require("./renderer");
 const { h } = require('koishi');
 const { hasAdminPermission } = require('../core/utils');
@@ -57,7 +57,7 @@ class GithubPreviewRuntime {
         this.settings = settings;
         this.repositories = repositories;
         const client = new client_1.GithubPreviewClient();
-        this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: page_screenshot_1.screenshotGithubPage, render: renderer_1.renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies };
+        this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: issue_renderer_1.renderGithubIssue, render: renderer_1.renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies };
         this.unsubscribe = settings.onRemoved(group => this.cancelGroup(group));
         this.unsubscribeRepositories = repositories.onChanged(group => this.cancelGroup(group));
     }
@@ -197,8 +197,9 @@ class GithubPreviewRuntime {
     cacheImage(key, entry) {
         if (entry.result.incomplete || entry.bytes > models_1.GITHUB_LIMITS.imageBytes)
             return;
+        // Finished images need only their caption fields, not another retained copy of the HTML body.
         this.images.delete(key);
-        this.images.set(key, entry);
+        this.images.set(key, { ...entry, metadata: { ...entry.metadata, bodyHtml: undefined } });
         while (this.images.size > models_1.GITHUB_LIMITS.cacheEntries || [...this.images.values()].reduce((sum, item) => sum + item.bytes, 0) > models_1.GITHUB_LIMITS.cacheBytes)
             this.images.delete(this.images.keys().next().value);
     }
@@ -237,7 +238,7 @@ class GithubPreviewRuntime {
                     await this.deliver(job, '剩余链接未处理：本次查询已到处理时限。', context);
                     break;
                 }
-                const cacheKey = target.key + ':page-v1:padding-' + models_1.GITHUB_LIMITS.padding;
+                const cacheKey = target.key + (['issue', 'pull'].includes(target.kind) ? ':body-industrial-v1:' : ':card-v1:') + 'padding-' + models_1.GITHUB_LIMITS.padding;
                 const cached = this.images.get(cacheKey);
                 let metadata, result, note = '', text = '';
                 if (cached && Date.now() - cached.result.capturedAt < models_1.GITHUB_LIMITS.cacheMs) {
@@ -246,19 +247,25 @@ class GithubPreviewRuntime {
                     note = '缓存数据，捕获于 ' + new Date(result.capturedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
                 }
                 else {
+                    const targetController = new AbortController();
+                    const cancelTarget = () => targetController.abort(context.signal.reason);
+                    context.signal.addEventListener('abort', cancelTarget, { once: true });
+                    const work = { ...context, signal: targetController.signal, deadline: Math.min(context.deadline, Date.now() + models_1.GITHUB_LIMITS.targetMs) };
+                    const targetTimer = setTimeout(() => targetController.abort(new Error('GitHub 单个目标处理超时（最多30秒）')), Math.max(0, work.deadline - Date.now()));
                     try {
-                        metadata = await this.deps.lookup(target, context);
-                        (0, models_1.assertGithubWork)(context);
+                        metadata = await this.deps.lookup(target, work);
+                        (0, models_1.assertGithubWork)(work);
                         if (!release)
-                            release = await this.deps.acquire(context, job.group);
-                        (0, models_1.assertGithubWork)(context);
-                        result = ['issue', 'pull'].includes(metadata.target.kind) ? await this.deps.screenshot(metadata, context) : await this.deps.render(metadata, context);
-                        (0, models_1.assertGithubWork)(context);
+                            release = await this.deps.acquire(work, job.group);
+                        (0, models_1.assertGithubWork)(work);
+                        result = ['issue', 'pull'].includes(metadata.target.kind) ? await this.deps.screenshot(metadata, work) : await this.deps.render(metadata, work);
+                        (0, models_1.assertGithubWork)(work);
                         this.cacheImage(cacheKey, { result, metadata, bytes: result.images.reduce((sum, image) => sum + image.length, 0) });
                         if (result.incomplete)
-                            note = '页面未完整加载，以下为当前截图。';
+                            note = result.note || '正文附件未完整载入，请查看原文。';
                     }
                     catch (error) {
+                        result = undefined;
                         if (!this.valid(job))
                             break;
                         if (error instanceof client_1.GithubQueryError && error.transient && cached && Date.now() - cached.result.capturedAt < models_1.GITHUB_LIMITS.staleMs) {
@@ -268,7 +275,11 @@ class GithubPreviewRuntime {
                         }
                         else
                             text = `${metadata ? (0, renderer_1.githubTextFallback)(metadata) : target.url}\n${error instanceof client_1.GithubQueryError ? error.message : error instanceof Error ? error.message : '查询失败'}${metadata ? '\n图片生成失败，已返回文字信息。' : ''}`;
-                        this.deps.log(`github-preview stage_failed target=${target.key} stage=${metadata ? 'render' : 'metadata'} status=${error instanceof client_1.GithubQueryError ? error.status : 0}`);
+                        this.deps.log(`github-preview stage_failed target=${target.key} stage=${metadata ? 'render' : 'metadata'} status=${error instanceof client_1.GithubQueryError ? error.status : 0} elapsedMs=${Date.now() - started} reason=${error instanceof Error ? error.message : 'unknown'}`);
+                    }
+                    finally {
+                        clearTimeout(targetTimer);
+                        context.signal.removeEventListener('abort', cancelTarget);
                     }
                 }
                 if (!this.valid(job))

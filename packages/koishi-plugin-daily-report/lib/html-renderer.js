@@ -151,7 +151,18 @@ function assertRenderRuntime(context) {
     if (context.workDeadlineMs !== undefined && (context.now || Date.now)() >= context.workDeadlineMs)
         throw new Error('日报图片渲染预算已耗尽，保留完整文字并保存结果');
 }
-async function enableRenderRequestGuards(page) {
+// Offline callers fail closed; ordinary reports retain their existing request policy.
+async function enableRenderRequestGuards(page, offline = false) {
+    if (offline) {
+        if (!page.setRequestInterception || !page.on)
+            throw new Error('离线渲染资源拦截不可用');
+        await page.setRequestInterception(true);
+        page.on('request', req => {
+            const allowed = req.url().startsWith('data:image/') && req.resourceType() === 'image';
+            void Promise.resolve(allowed ? req.continue() : req.abort()).catch(() => { });
+        });
+        return;
+    }
     if (!page || typeof page.setRequestInterception !== 'function' || typeof page.on !== 'function')
         return;
     await page.setRequestInterception(true).catch(() => {
@@ -418,6 +429,8 @@ function findBrowser() {
 // Puppeteer截图服从统一截止，超高不裁图，所有终止路径释放浏览器与槽位。
 async function renderHtmlToImage(htmlContent, context = {}) {
     assertRenderRuntime(context);
+    if (context.captureSelector && !/^#[a-zA-Z][\w-]*$/.test(context.captureSelector))
+        throw new Error('渲染根元素参数无效');
     const now = context.now || Date.now;
     const renderDeadline = Math.min(context.deadlineMs ?? Number.POSITIVE_INFINITY, context.workDeadlineMs ?? Number.POSITIVE_INFINITY, now() + RENDER_TIMEOUT);
     const htmlBytes = Buffer.byteLength(String(htmlContent || ''), 'utf8');
@@ -492,23 +505,39 @@ async function renderHtmlToImage(htmlContent, context = {}) {
         writeDailyRenderCleanupEvent('daily_chromium_launched', { taskId: context.taskId || '', browserPid: getBrowserProcessPid(browser),
             parentPid: process.pid, executablePath: browserPath });
         const page = await browser.newPage();
-        await enableRenderRequestGuards(page);
+        await enableRenderRequestGuards(page, context.networkPolicy === 'offline');
         await page.setViewport({ width: 880, height: 800 });
         const contentTimeout = Math.max(1, Math.min(RENDER_SET_CONTENT_TIMEOUT, renderDeadline - now()));
         await page.setContent(htmlContent, { waitUntil: 'domcontentloaded', timeout: contentTimeout });
         await page.evaluate(() => document.fonts && document.fonts.ready ? document.fonts.ready.then(() => true) : true).catch(() => { });
-        await waitForRenderAssets(page);
+        if (context.networkPolicy === 'offline') {
+            await page.evaluate(async () => {
+                await Promise.all(Array.from(document.images).map(image => image.decode()));
+                return true;
+            });
+        }
+        else
+            await waitForRenderAssets(page);
         await applyProfileNameDots(page);
         assertRenderRuntime(context);
         if (controller.signal.aborted)
             throw controller.signal.reason;
-        const bodyH = await page.evaluate(() => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0));
-        const captureH = Math.max(800, Number(bodyH) + 40);
+        const root = context.captureSelector ? await page.evaluate(selector => {
+            const element = document.querySelector(selector);
+            if (!element)
+                throw new Error('渲染根元素不存在');
+            const rect = element.getBoundingClientRect();
+            return { x: Math.floor(rect.left), y: Math.floor(rect.top), width: Math.ceil(rect.right) - Math.floor(rect.left), height: Math.ceil(rect.bottom) - Math.floor(rect.top), overflow: element.scrollWidth > element.clientWidth + 1 };
+        }, context.captureSelector) : null;
+        if (root && (root.overflow || root.x < 0 || root.y < 0 || root.width <= 0 || root.width + root.x > 880 || root.height <= 0))
+            throw new Error('渲染内容溢出或范围无效，请查看原文');
+        const bodyH = root ? root.y + root.height : await page.evaluate(() => Math.max(document.body ? document.body.scrollHeight : 0, document.documentElement ? document.documentElement.scrollHeight : 0));
+        const captureH = root ? Number(bodyH) : Math.max(800, Number(bodyH) + 40);
         if (!Number.isFinite(captureH) || captureH > MAX_CAPTURE_HEIGHT)
-            throw new Error(`日报图片全文高度超出截图保护值：${captureH}，改用完整文字`);
+            throw new Error(root ? '正文内容超出截图高度限制，请查看原文' : `日报图片全文高度超出截图保护值：${captureH}，改用完整文字`);
         await page.setViewport({ width: 880, height: captureH });
         logRenderStep('screenshot start', `height=${captureH}`);
-        const screenshot = await page.screenshot({ type: 'png', clip: { x: 0, y: 0, width: 880, height: captureH } });
+        const screenshot = await page.screenshot({ type: 'png', clip: root ? { x: root.x, y: root.y, width: root.width, height: root.height } : { x: 0, y: 0, width: 880, height: captureH } });
         assertRenderRuntime(context);
         if (controller.signal.aborted)
             throw controller.signal.reason;

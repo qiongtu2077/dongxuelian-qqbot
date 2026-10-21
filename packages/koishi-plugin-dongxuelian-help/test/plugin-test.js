@@ -90,8 +90,8 @@ async function run() {
   result = await runHelpCase(ctx, '杂项功能')
   check('misc help includes group essence ranking', result.result.includes('统计群精华'), String(result.result))
   check('misc help explains GitHub default-off groups and all four commands', ['默认关闭', 'GitHub查询群添加', 'GitHub查询群删除', 'GitHub查询群查看', 'GitHub查询状态'].every(text => result.result.includes(text)), String(result.result))
-  check('misc help explains single repository binding, exact number messages and twenty-five-second loading', ['GitHub群项目导入', 'GitHub群项目查看', 'GitHub群项目删除', '每群最多绑定一个', '整条发送 #数字', '最多25秒'].every(text => result.result.includes(text)), String(result.result))
-  check('misc help explains Issue/PR screenshots and bounded loading', result.result.includes('Issue / PR') && /25\s*秒/.test(result.result) && result.result.includes('正文'), String(result.result))
+  check('misc help explains single repository binding, exact numbers and thirty-second local rendering', ['GitHub群项目导入', 'GitHub群项目查看', 'GitHub群项目删除', '每群最多绑定一个', '整条发送 #数字', '最多30秒', '占位'].every(text => result.result.includes(text)), String(result.result))
+  check('misc help explains Issue/PR official rendering and bounded work', result.result.includes('Issue / PR') && /30\s*秒/.test(result.result) && result.result.includes('官方') && result.result.includes('正文'), String(result.result))
   check('misc help returns root-level misc branch', typeof result.result === 'string' && result.result.includes('【杂项功能】') && result.result.includes('今日情绪'), String(result.result))
 
   result = await runHelpCase(ctx, '【杂项功能】')

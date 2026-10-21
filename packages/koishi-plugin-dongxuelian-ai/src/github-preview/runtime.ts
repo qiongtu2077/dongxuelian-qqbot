@@ -10,7 +10,7 @@ import path = require('path')
 import { extractGithubTargets, isGithubPreviewCommand, resolveGithubNumber } from './input'
 import { GithubGroupRepositories, handleGithubRepositoryCommand } from './repositories'
 import { GithubPreviewClient, GithubQueryError } from './client'
-import { screenshotGithubPage } from './page-screenshot'
+import { renderGithubIssue } from './issue-renderer'
 import { renderGithubCard, githubTextFallback } from './renderer'
 const { h } = require('koishi') as typeof import('koishi')
 const { hasAdminPermission } = require('../core/utils') as typeof import('../core/utils')
@@ -73,7 +73,7 @@ export class GithubPreviewRuntime {
     this.settings = settings
     this.repositories = repositories
     const client = new GithubPreviewClient()
-    this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: screenshotGithubPage, render: renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies }
+    this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: renderGithubIssue, render: renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies }
     this.unsubscribe = settings.onRemoved(group => this.cancelGroup(group))
     this.unsubscribeRepositories = repositories.onChanged(group => this.cancelGroup(group))
   }
@@ -178,7 +178,8 @@ export class GithubPreviewRuntime {
   // Keep only complete images, bounded by item count and total encoded bytes.
   private cacheImage(key: string, entry: GithubStoredImage): void {
     if (entry.result.incomplete || entry.bytes > GITHUB_LIMITS.imageBytes) return
-    this.images.delete(key); this.images.set(key, entry)
+    // Finished images need only their caption fields, not another retained copy of the HTML body.
+    this.images.delete(key); this.images.set(key, { ...entry, metadata: { ...entry.metadata, bodyHtml: undefined } })
     while (this.images.size > GITHUB_LIMITS.cacheEntries || [...this.images.values()].reduce((sum, item) => sum + item.bytes, 0) > GITHUB_LIMITS.cacheBytes) this.images.delete(this.images.keys().next().value!)
   }
 
@@ -204,26 +205,32 @@ export class GithubPreviewRuntime {
       for (const target of job.targets) {
         if (!this.valid(job)) break
         if (context.deadline - Date.now() < 1000) { await this.deliver(job, '剩余链接未处理：本次查询已到处理时限。', context); break }
-        const cacheKey = target.key + ':page-v1:padding-' + GITHUB_LIMITS.padding
+        const cacheKey = target.key + (['issue', 'pull'].includes(target.kind) ? ':body-industrial-v1:' : ':card-v1:') + 'padding-' + GITHUB_LIMITS.padding
         const cached = this.images.get(cacheKey)
         let metadata: GithubMetadata | undefined, result: GithubImageResult | undefined, note = '', text = ''
         if (cached && Date.now() - cached.result.capturedAt < GITHUB_LIMITS.cacheMs) { metadata = cached.metadata; result = cached.result; note = '缓存数据，捕获于 ' + new Date(result.capturedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }
         else {
+          const targetController = new AbortController()
+          const cancelTarget = (): void => targetController.abort(context.signal.reason)
+          context.signal.addEventListener('abort', cancelTarget, { once: true })
+          const work = { ...context, signal: targetController.signal, deadline: Math.min(context.deadline, Date.now() + GITHUB_LIMITS.targetMs) }
+          const targetTimer = setTimeout(() => targetController.abort(new Error('GitHub 单个目标处理超时（最多30秒）')), Math.max(0, work.deadline - Date.now()))
           try {
-            metadata = await this.deps.lookup(target, context)
-            assertGithubWork(context)
-            if (!release) release = await this.deps.acquire(context, job.group)
-            assertGithubWork(context)
-            result = ['issue', 'pull'].includes(metadata.target.kind) ? await this.deps.screenshot(metadata, context) : await this.deps.render(metadata, context)
-            assertGithubWork(context)
+            metadata = await this.deps.lookup(target, work)
+            assertGithubWork(work)
+            if (!release) release = await this.deps.acquire(work, job.group)
+            assertGithubWork(work)
+            result = ['issue', 'pull'].includes(metadata.target.kind) ? await this.deps.screenshot(metadata, work) : await this.deps.render(metadata, work)
+            assertGithubWork(work)
             this.cacheImage(cacheKey, { result, metadata, bytes: result.images.reduce((sum, image) => sum + image.length, 0) })
-            if (result.incomplete) note = '页面未完整加载，以下为当前截图。'
+            if (result.incomplete) note = result.note || '正文附件未完整载入，请查看原文。'
           } catch (error) {
+            result = undefined
             if (!this.valid(job)) break
             if (error instanceof GithubQueryError && error.transient && cached && Date.now() - cached.result.capturedAt < GITHUB_LIMITS.staleMs) { result = cached.result; metadata = cached.metadata; note = '缓存数据，捕获于 ' + new Date(result.capturedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }
             else text = `${metadata ? githubTextFallback(metadata) : target.url}\n${error instanceof GithubQueryError ? error.message : error instanceof Error ? error.message : '查询失败'}${metadata ? '\n图片生成失败，已返回文字信息。' : ''}`
-            this.deps.log(`github-preview stage_failed target=${target.key} stage=${metadata ? 'render' : 'metadata'} status=${error instanceof GithubQueryError ? error.status : 0}`)
-          }
+            this.deps.log(`github-preview stage_failed target=${target.key} stage=${metadata ? 'render' : 'metadata'} status=${error instanceof GithubQueryError ? error.status : 0} elapsedMs=${Date.now() - started} reason=${error instanceof Error ? error.message : 'unknown'}`)
+          } finally { clearTimeout(targetTimer); context.signal.removeEventListener('abort', cancelTarget) }
         }
         if (!this.valid(job)) break
         // Sending lives outside processing catches: adapter errors cannot trigger duplicate fallbacks.
