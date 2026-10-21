@@ -7,7 +7,7 @@ const { decideModePolicy } = require('../bot-mode/mode-policy') as typeof import
 const { decideAdmission, writeAdmissionEvent } = require('./admission') as typeof import('./admission')
 const { readResourceSnapshot } = require('./resource-snapshot') as typeof import('./resource-snapshot')
 
-type EntryCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event'
+type EntryCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event' | 'github_query'
 type EntryPolicyAction = 'pass' | 'queue_daily' | 'status_only' | 'resource_notice' | 'silent_drop' | 'reject' | 'defer'
 type TaskAdmissionAction = 'run_now' | 'queue' | 'downgrade' | 'defer' | 'reject' | 'silent_drop'
 type ResourceDirectiveAction =

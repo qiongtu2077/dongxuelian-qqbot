@@ -7,6 +7,11 @@ const path = require('path')
 function buildCoverageMap(AI_ROOT) {
   return [
   {
+    behavior: 'GitHub public preview whitelist cancellation and bounded queue',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'github-preview.test.js'),
+    needles: ['real middleware default off', 'deleting and re-adding cancels', 'incomplete images never', 'bounded queue and expired tasks'],
+  },
+  {
     behavior: 'model failure evidence Chinese notification bounded judgment and failed media usage',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'model-diagnostics.test.js'),
     needles: ['HTTP code includes Chinese status', 'whole chain allows only one expansion', 'in-flight cancel makes no notification', 'TTS invalid audio preserves actual failed-call usage'],

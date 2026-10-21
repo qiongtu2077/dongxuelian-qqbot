@@ -18,6 +18,9 @@ function decideModePolicy(commandType, snapshot) {
             return { action: 'silent_drop', reason: 'maintenance mode' };
         return { action: 'reject', reason: 'maintenance mode' };
     }
+    // GitHub management is low cost; screenshot work still passes S1/S0 admission downstream.
+    if (commandType === 'github_query')
+        return { action: 'pass', reason: 'github preview uses its own bounded resource admission' };
     if (mode === 'report_silent') {
         if (commandType === 'media_event')
             return { action: 'defer', reason: 'daily report is running' };

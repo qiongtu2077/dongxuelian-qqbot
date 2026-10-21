@@ -11,6 +11,13 @@ async function runModuleContract(context) {
   const modules = {}
   section('2. module loading and exports')
   const modPaths = {
+    githubModels: path.join(LIB, 'github-preview', 'models'),
+    githubInput: path.join(LIB, 'github-preview', 'input'),
+    githubSettings: path.join(LIB, 'github-preview', 'settings'),
+    githubClient: path.join(LIB, 'github-preview', 'client'),
+    githubScreenshot: path.join(LIB, 'github-preview', 'page-screenshot'),
+    githubRenderer: path.join(LIB, 'github-preview', 'renderer'),
+    githubRuntime: path.join(LIB, 'github-preview', 'runtime'),
     dailyReportArtifacts: path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'analysis-artifacts'),
     dailyReportStorage: path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'report-storage'),
     dailyReportBackgroundLedger: path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'report-background-ledger'),
@@ -218,6 +225,7 @@ async function runModuleContract(context) {
   }
 
   const c = modules.constants
+  check('GitHub limits are an immutable configuration object', !!modules.githubModels && Object.isFrozen(modules.githubModels.GITHUB_LIMITS) && modules.githubModels.GITHUB_LIMITS.loadMs === 25000 && modules.githubModels.GITHUB_LIMITS.padding === 24)
   const u = modules.utils
   const p = modules.persona
   const api = modules.api
@@ -227,6 +235,13 @@ async function runModuleContract(context) {
   const index = modules.index
 
   const expectedExports = {
+    githubModels: ['assertGithubWork', 'waitGithubWork'],
+    githubInput: ['parseGithubTarget', 'extractGithubTargets', 'isGithubPreviewCommand'],
+    githubSettings: ['GithubPreviewSettings', 'normalizeGithubGroup'],
+    githubClient: ['GithubPreviewClient', 'GithubQueryError'],
+    githubScreenshot: ['allowGithubPageRequest', 'inspectGithubRegion', 'waitForGithubRegion', 'findGithubBrowser', 'encodeGithubClips', 'screenshotGithubPage'],
+    githubRenderer: ['escapeGithubText', 'loadGithubAvatar', 'buildGithubCardHtml', 'renderGithubCard', 'githubTextFallback'],
+    githubRuntime: ['GithubPreviewRuntime', 'acquireGithubResources'],
     nicknameScopeSchema: ['normalizeScopeStore', 'serializeScopeStore', 'setAliasEntry'],
     frontmatter: [
       'normalizeFrontmatterSource', 'parseFrontmatterLines', 'parseFrontmatterDocument',

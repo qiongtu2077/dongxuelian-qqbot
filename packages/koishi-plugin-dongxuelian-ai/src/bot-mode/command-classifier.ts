@@ -4,9 +4,10 @@
  * 边界: 不读取资源状态，不执行任何业务逻辑。
  */
 
-type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event'
+type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event' | 'github_query'
 
 interface ClassifyCommandInput {
+  githubPreview?: boolean
   plain?: string
   directAt?: boolean
   isPrivate?: boolean
@@ -50,6 +51,7 @@ function classifyCommand(input: ClassifyCommandInput = {}): BotCommandType {
   const plain = String(input.plain || '').trim()
   if (isDailyCommand(plain)) return 'daily_command'
   if (isStatusCommand(plain)) return 'status_command'
+  if (input.githubPreview) return 'github_query'
   if (isAgentCommand(plain)) return 'agent_command'
   if (isMediaEvent(input.analyzed)) return 'media_event'
   if (isInteractiveChat(input)) return 'interactive_chat'

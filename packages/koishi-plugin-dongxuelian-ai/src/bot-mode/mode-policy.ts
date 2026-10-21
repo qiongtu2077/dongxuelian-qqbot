@@ -5,7 +5,7 @@
  */
 
 type BotModeAction = 'pass' | 'queue_daily' | 'status_only' | 'resource_notice' | 'silent_drop' | 'reject' | 'defer'
-type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event'
+type BotCommandType = 'daily_command' | 'status_command' | 'agent_command' | 'normal_chat' | 'interactive_chat' | 'media_event' | 'github_query'
 
 interface BotModeSnapshotLike {
   botMode?: unknown
@@ -30,6 +30,9 @@ function decideModePolicy(commandType: BotCommandType, snapshot: BotModeSnapshot
     if (isChatLike || commandType === 'media_event') return { action: 'silent_drop', reason: 'maintenance mode' }
     return { action: 'reject', reason: 'maintenance mode' }
   }
+
+  // GitHub management is low cost; screenshot work still passes S1/S0 admission downstream.
+  if (commandType === 'github_query') return { action: 'pass', reason: 'github preview uses its own bounded resource admission' }
 
   if (mode === 'report_silent') {
     if (commandType === 'media_event') return { action: 'defer', reason: 'daily report is running' }

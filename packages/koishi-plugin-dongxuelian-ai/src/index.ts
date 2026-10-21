@@ -183,6 +183,8 @@ const {
 } = require('./behavior/random-state') as typeof import('./behavior/random-state') // 随机回复状态、pending timer 与 freshness
 const { buildAmbientWaterSendOptions } = require('./behavior/random-reply-mode') as typeof import('./behavior/random-reply-mode') // 随机非锚定水群发送策略
 const { classifyCommand, isStatusCommand } = require('./bot-mode/command-classifier') as typeof import('./bot-mode/command-classifier')
+const { GithubPreviewRuntime } = require('./github-preview/runtime') as typeof import('./github-preview/runtime')
+const { isGithubPreviewCommand } = require('./github-preview/input') as typeof import('./github-preview/input')
 const {
   decideEntryDirective,
 } = require('./resource-scheduler/resource-directive') as typeof import('./resource-scheduler/resource-directive')
@@ -479,6 +481,8 @@ function readOneBotRawEvent(session: { event?: unknown }): Record<string, unknow
 
 // 注册插件生命周期与消息处理中间件。
 function apply(ctx: IndexContext): void {
+  const githubPreview = new GithubPreviewRuntime(undefined, { log: message => ctx.logger('github-preview').warn(message) })
+  ctx.on('dispose', () => githubPreview.dispose())
   registerCapabilityFailureContext(ctx as Parameters<typeof registerCapabilityFailureContext>[0])
   ctx.on('dispose', resetCapabilityFailureNotifier)
   ctx.on('dispose', flushTokenUsage)
@@ -547,7 +551,7 @@ function apply(ctx: IndexContext): void {
     logDebug(ctx, 'middleware', `entry userId=${session.userId} isDirect=${!!session.isDirect} guildId=${session.guildId} type=${session.type} subtype=${session.subtype} contentLen=${(session.content || '').length}`)
     logDebug(ctx, 'middleware', `plain=${JSON.stringify(plain).slice(0, 100)} directAt=${directAt} isDirect=${!!session.isDirect}`)
 
-    if (isReservedCommand(plain)) {
+    if (isReservedCommand(plain) && !isGithubPreviewCommand(plain)) {
       markExplicitInteraction('reserved-command')
       return next()
     }
@@ -556,6 +560,7 @@ function apply(ctx: IndexContext): void {
     const quoteInfoForBotMode = getQuoteInfo(session, { replyToId: analyzed.replyToId })
     const quotedBotSelf = !!quoteInfoForBotMode.isSelf
     const botCommandType = classifyCommand({
+      githubPreview: githubPreview.accepts(session, plain),
       plain,
       analyzed,
       directAt,
@@ -564,6 +569,11 @@ function apply(ctx: IndexContext): void {
       quotedSelf: quotedBotSelf,
     })
     const { directive: botDirective } = decideEntryDirective(botCommandType)
+    if (botCommandType === 'github_query' && botDirective.action === 'pass') {
+      if (!hasAdminPermission(session) && (await loadUserBlacklist()).has(entryUserId)) return next()
+      markExplicitInteraction('github-query')
+      return await githubPreview.handle(session, plain)
+    }
     if (botDirective.action === 'queue_daily') {
       markExplicitInteraction('daily-command')
       return next()

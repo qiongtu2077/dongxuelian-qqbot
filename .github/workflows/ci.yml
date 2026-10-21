@@ -28,3 +28,6 @@ jobs:
 
       - name: Run the repository trust entry
         run: npm run test:full
+
+      - name: Verify GitHub preview browser boundaries
+        run: node packages/koishi-plugin-dongxuelian-ai/test/github-preview-browser-test.js

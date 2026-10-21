@@ -31,6 +31,8 @@ function classifyCommand(input = {}) {
         return 'daily_command';
     if (isStatusCommand(plain))
         return 'status_command';
+    if (input.githubPreview)
+        return 'github_query';
     if (isAgentCommand(plain))
         return 'agent_command';
     if (isMediaEvent(input.analyzed))

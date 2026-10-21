@@ -136,6 +136,11 @@ function renderAiHelp(): string {
 function renderMiscHelp(): string {
   return [
     '【杂项功能】',
+    'GitHub 链接查询（默认关闭，仅已添加群开启）',
+    '发送 Issue / PR 链接：截取标题至发起者首条正文，加载最多25秒，四周留白',
+    '发送 GitHub 项目 / 用户主页：返回官方信息卡片',
+    'GitHub查询群添加 <群号> / GitHub查询群删除 <群号>（bot管理员）',
+    'GitHub查询群查看（bot管理员） / GitHub查询状态（本群）',
     'AI状态',
     'AI诊断',
     'AI重载',
