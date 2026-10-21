@@ -124,6 +124,7 @@ async function runModuleContract(context) {
     retaliation: path.join(LIB, 'behavior', 'retaliation'),
     sendGuard: path.join(LIB, 'reply', 'send-guard'),
     healthCheck: path.join(LIB, 'diagnostics', 'health-check'),
+    modelConnectivity: path.join(LIB, 'diagnostics', 'model-connectivity'),
     agentEngine: path.join(LIB, 'agent', 'engine'),
     agentMessages: path.join(LIB, 'agent', 'messages'),
     agentConfig: path.join(LIB, 'agent', 'config'),
@@ -579,6 +580,7 @@ async function runModuleContract(context) {
     healthCheck: [
       'runHealthCheck', 'formatHealthReport', 'resetHealthCache',
     ],
+    modelConnectivity: ['runTextConnectivityCheck'],
     retaliation: [
       'calculateRetaliationScore',
     ],

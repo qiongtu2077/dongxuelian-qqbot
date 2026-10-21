@@ -1,4 +1,4 @@
-declare function buildResourceStatusReply(): Promise<string>;
+declare function buildResourceStatusReply(checkConnectivity?: boolean): Promise<string>;
 declare const _default: {
     buildResourceStatusReply: typeof buildResourceStatusReply;
 };

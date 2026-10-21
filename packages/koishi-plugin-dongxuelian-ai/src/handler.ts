@@ -6,12 +6,12 @@
  */
 const path = require('path')
 const {
-  DATA_DIR, PLUGIN_VERSION,
+  DATA_DIR,
   PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE,
   SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE,
   HOSTILE_MODE_FILE,
   SUMMARY_WHITELIST_FILE,
-  RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP,
+  RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_RAMP,
 } = require('./core/constants') as typeof import('./core/constants')
 const {
   personaUsersCache,
@@ -28,7 +28,7 @@ const {
   hasAdminPermission, isReservedCommand,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
   safeChannelKey,
-  formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus,
+  formatPercent, getSearchCapability, formatSearchStatus,
   extractAtIds,
   sanitizeUserName,
   sanitizeUserInput,
@@ -53,6 +53,7 @@ const { handlePlanCommand } = require('./commands/plan-command') as typeof impor
 const { handleAgentCommand } = require('./commands/agent-command') as typeof import('./commands/agent-command')
 const { handleEmotionCommand } = require('./commands/emotion-command') as typeof import('./commands/emotion-command')
 const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./behavior/random-voice-rate') as typeof import('./behavior/random-voice-rate')
+const { buildResourceStatusReply } = require('./bot-mode/status-reply') as typeof import('./bot-mode/status-reply')
 
 type HandlerCommandResult = ReturnType<typeof handled> | ReturnType<typeof notHandled>
 
@@ -615,8 +616,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
   const {
     plain, channelKey, currentUserId, adminCommandMatched,
     loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache,
-    resetConfigCache, getSkillsCount, getThinkingEnabled,
-    getRandomTriggerBaseRate, getRandomWhitelistStatus,
+    resetConfigCache, getSkillsCount,
     channelMissCount,
   } = state
 
@@ -651,25 +651,7 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
   }
 
   if (plain === 'AI状态') {
-    const config = await loadConfig(true)
-    await loadRuntimeSettings(true)
-    await loadSkills()
-    await loadSkillsContentCache()
-    const personaEntry = getGroupPersona(channelKey)
-    return handled([
-      `AI版本：${PLUGIN_VERSION}`,
-      `主模型：${getModelDisplayName(config.provider, config.model) || '(未设置)'}`,
-      `备用模型：Qwen3.5 → Qwen3.6 → DeepSeek V4 Flash → GLM 4.6`,
-      `思考模式：${getThinkingEnabled() ? '开' : '关'}`,
-      `Base URL：${config.baseURL || '(未设置)'}`,
-      `联网：${config.searchEnabled ? '开' : '关'}`,
-      `联网模式：${getSearchCapability(config).label}`,
-      `Skills：${getSkillsCount()} 个`,
-      `当前群人格：${personaEntry?.persona || '默认'}`,
-      `当前群基础触发率：${formatPercent(getRandomTriggerBaseRate(channelKey))}`,
-      `当前群白名单状态：${getRandomWhitelistStatus(channelKey) ? '允许主动回复' : '禁止主动回复'}`,
-      `随机触发率规则：热身${RANDOM_TRIGGER_WARMUP}条后每条+${formatPercent(RANDOM_TRIGGER_RAMP)}`,
-    ].join('\n'))
+    return handled(await buildResourceStatusReply(true))
   }
 
   if (plain === 'AI诊断') {

@@ -6,12 +6,12 @@
  * 接近 300 行，新增逻辑须谨慎。
  */
 const path = require('path');
-const { DATA_DIR, PLUGIN_VERSION, PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE, SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE, HOSTILE_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP, } = require('./core/constants');
+const { DATA_DIR, PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE, SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE, HOSTILE_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_RAMP, } = require('./core/constants');
 const { personaUsersCache, loadPersonaGroups, getGroupPersona, setGroupPersona, resetGroupPersona, getUserPersona, setUserPersona, resetUserPersona, resolvePersona, getAvailablePersonals, } = require('./persona/persona');
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation');
 const { sendForwardMsg } = require('./core/api');
 const { runHealthCheck, formatHealthReport } = require('./diagnostics/health-check');
-const { hasAdminPermission, isReservedCommand, readJsonFile, writeJsonFile, writeTextFile, safeUnlink, safeChannelKey, formatPercent, getModelDisplayName, getSearchCapability, formatSearchStatus, extractAtIds, sanitizeUserName, sanitizeUserInput, isJailbreakAttempt, pickJailbreakFallbackReply, sanitizeReply, stripMarkdownForQQ, trimReply, } = require('./core/utils');
+const { hasAdminPermission, isReservedCommand, readJsonFile, writeJsonFile, writeTextFile, safeUnlink, safeChannelKey, formatPercent, getSearchCapability, formatSearchStatus, extractAtIds, sanitizeUserName, sanitizeUserInput, isJailbreakAttempt, pickJailbreakFallbackReply, sanitizeReply, stripMarkdownForQQ, trimReply, } = require('./core/utils');
 const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply/reply-guard');
 const { logDebug } = require('./core/logging-config');
 const { handled, notHandled, } = require('./commands/command-result');
@@ -24,6 +24,7 @@ const { handlePlanCommand } = require('./commands/plan-command');
 const { handleAgentCommand } = require('./commands/agent-command');
 const { handleEmotionCommand } = require('./commands/emotion-command');
 const { DEFAULT_RANDOM_VOICE_RATE, getRandomVoiceRate } = require('./behavior/random-voice-rate');
+const { buildResourceStatusReply } = require('./bot-mode/status-reply');
 function getHandlerErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
@@ -468,7 +469,7 @@ async function handleCommand(session, ctx, state) {
     const conversationResult = await handleConversationCommandDomain(session, ctx, state);
     if (conversationResult.matched)
         return conversationResult;
-    const { plain, channelKey, currentUserId, adminCommandMatched, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, resetConfigCache, getSkillsCount, getThinkingEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus, channelMissCount, } = state;
+    const { plain, channelKey, currentUserId, adminCommandMatched, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, resetConfigCache, getSkillsCount, channelMissCount, } = state;
     // === TTS 语音合成命令 ===
     const voiceResult = await handleVoiceCommand(session, state, { ctx });
     if (voiceResult.matched)
@@ -500,25 +501,7 @@ async function handleCommand(session, ctx, state) {
         return handled(`未找到模型"${requestedName}"。可用模型：${allModels.join('、')}`);
     }
     if (plain === 'AI状态') {
-        const config = await loadConfig(true);
-        await loadRuntimeSettings(true);
-        await loadSkills();
-        await loadSkillsContentCache();
-        const personaEntry = getGroupPersona(channelKey);
-        return handled([
-            `AI版本：${PLUGIN_VERSION}`,
-            `主模型：${getModelDisplayName(config.provider, config.model) || '(未设置)'}`,
-            `备用模型：Qwen3.5 → Qwen3.6 → DeepSeek V4 Flash → GLM 4.6`,
-            `思考模式：${getThinkingEnabled() ? '开' : '关'}`,
-            `Base URL：${config.baseURL || '(未设置)'}`,
-            `联网：${config.searchEnabled ? '开' : '关'}`,
-            `联网模式：${getSearchCapability(config).label}`,
-            `Skills：${getSkillsCount()} 个`,
-            `当前群人格：${personaEntry?.persona || '默认'}`,
-            `当前群基础触发率：${formatPercent(getRandomTriggerBaseRate(channelKey))}`,
-            `当前群白名单状态：${getRandomWhitelistStatus(channelKey) ? '允许主动回复' : '禁止主动回复'}`,
-            `随机触发率规则：热身${RANDOM_TRIGGER_WARMUP}条后每条+${formatPercent(RANDOM_TRIGGER_RAMP)}`,
-        ].join('\n'));
+        return handled(await buildResourceStatusReply(true));
     }
     if (plain === 'AI诊断') {
         if (!hasAdminPermission(session))

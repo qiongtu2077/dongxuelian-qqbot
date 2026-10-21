@@ -2,8 +2,11 @@ const fs = require('fs')
 const path = require('path')
 const { withScenario } = require('./_setup')
 const { AI_ROOT } = require('../fake/file')
+const { mockFetch } = require('../fake/fetch')
+const { seedCapabilityConfig } = require('../helpers/ai-capability-fixture')
 const { checkSentNonEmpty, checkNoLeak, checkNextCalled } = require('../helpers/assert')
 
+// 为状态与探测场景提供稳定的空闲资源预算。
 async function withGreenResourceSnapshot(fn) {
   const previousAvailable = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
   const previousTotal = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
@@ -19,11 +22,100 @@ async function withGreenResourceSnapshot(fn) {
   }
 }
 
+// 验证命令经过真实中间件后的回复、权限和持久化行为。
 async function run(t) {
   t.section('scenario: command middleware')
 
+  await withScenario({}, async ({ data, makeSession, run }) => {
+    const customId = 'custom-status123'
+    data.writeJson('ai-providers-custom.json', [{
+      id: customId, name: '灵', baseURL: 'https://private-provider.example/v1', keyFile: 'ai-custom-status123-key.txt',
+    }])
+    data.writeText('ai-custom-status123-key.txt', 'sk-private-status-secret')
+    const config = seedCapabilityConfig(data, {
+      text: [{ provider: 'opencode', model: 'deepseek-v4-flash' }, { provider: 'dashscope', model: 'qwen3.7-plus' }],
+      vision: [{ provider: 'glm', model: 'glm-4.6v-flash' }],
+    })
+    config.providers[customId] = { models: [{ id: 'glm-5.3-flash', name: 'GLM', capabilities: ['text'] }] }
+    config.priorities.text.unshift({ provider: customId, model: 'glm-5.3-flash' })
+    data.writeJson('ai-capability-config.json', config)
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: '', reasoning_content: 'private-reasoning' }, finish_reason: 'length' }], usage: { completion_tokens: 1 } } },
+      { status: 401, json: { error: { message: 'sk-private-status-secret private-provider.example' } } },
+      { json: { choices: [{ message: { content: 'Hi' }, finish_reason: 'length' }], usage: { completion_tokens: 208 } } },
+    ])
+    const originalFetch = global.fetch
+    const originalNow = Date.now
+    let statusClockOffset = 0
+    Date.now = () => originalNow() + statusClockOffset
+    global.fetch = mocked.fetch
+    try {
+      await withGreenResourceSnapshot(async () => {
+        const first = await run(makeSession({ content: 'AI状态' }))
+        const text = first.sent.join('\n')
+        t.check('scenario status shows live custom provider and exact ordered models',
+          text.includes('文字：1. 灵 / glm-5.3-flash → 2. OpenCode / deepseek-v4-flash → 3. 千问 / qwen3.7-plus'), text)
+        t.check('scenario status distinguishes generation truncation from model failure',
+          text.includes('运行：在线') && text.includes('1. 已连通，长度截断') && text.includes('2. HTTP 401：认证失败') && text.includes('3. 已连通，已返回文本'), text)
+        t.check('scenario status reports upstream token overrun without promising one-token billing',
+          text.includes('输出用量 1 词元') && text.includes('输出用量 208 词元（超过请求上限）') && text.includes('实际用量以上游计量为准'), text)
+        t.check('scenario status shows each capability independently',
+          text.includes('识图：1. 智谱 / glm-4.6v-flash') && text.includes('语音识别：未配置') && text.includes('语音合成：未配置'), text)
+        checkNoLeak(t, 'scenario status excludes private endpoint and key details', first,
+          ['private-provider.example', 'sk-private-status-secret', 'private-reasoning', 'ai-custom-status123-key.txt', 'Bearer', 'Base URL'])
+        t.check('scenario status probes each text node once without fallback or tools',
+          mocked.calls.length === 3 && mocked.calls.every(call => call.requestBody.max_tokens === 1 && call.requestBody.messages.length === 1 && call.requestBody.messages[0].content === 'Hi' && !call.requestBody.tools && call.options.redirect === 'manual'), JSON.stringify(mocked.calls))
+        const cooling = await run(makeSession({ content: 'AI状态' }))
+        t.check('scenario status cooldown replies without another model request',
+          mocked.calls.length === 3 && /^查询冷却倒计时\d+秒$/.test(cooling.sent.join('\n')), JSON.stringify(cooling.sent))
+        config.priorities.text.reverse()
+        data.writeJson('ai-capability-config.json', config)
+        data.writeText('ai-dashscope-key.txt', '')
+        statusClockOffset += 120000
+        const updated = await run(makeSession({ content: 'AI状态', isDirect: true, guildId: '', channelId: 'private-status' }))
+        t.check('scenario status reads saved order immediately and marks missing key',
+          updated.sent.join('\n').includes('文字：1. 千问 / qwen3.7-plus（缺少密钥，跳过） → 2. OpenCode / deepseek-v4-flash → 3. 灵 / glm-5.3-flash'), JSON.stringify(updated.sent))
+        t.check('scenario status after cooldown probes updated configuration and skips missing keys', mocked.calls.length === 5, JSON.stringify(mocked.calls))
+        data.writeText('ai-openai-key.txt', 'rotated-status-key')
+        statusClockOffset += 120000
+        await run(makeSession({ content: 'AI状态' }))
+        t.check('scenario status after cooldown uses the rotated key', mocked.calls.length === 7 && mocked.calls[5].options.headers.Authorization === 'Bearer rotated-status-key', JSON.stringify(mocked.calls))
+        const resources = await run(makeSession({ content: '资源状态' }))
+        t.check('scenario resource-only query never starts model probes',
+          mocked.calls.length === 7 && resources.sent.join('\n').includes('未检测模型连通性'), JSON.stringify(resources.sent))
+      })
+    } finally {
+      global.fetch = originalFetch
+      Date.now = originalNow
+    }
+  })
+
+  await withScenario({}, async ({ data, makeSession, run }) => {
+    await withGreenResourceSnapshot(async () => {
+      const empty = seedCapabilityConfig(data, {})
+      const noModel = await run(makeSession({ content: 'AI状态' }))
+      t.check('scenario status survives empty text configuration', noModel.sent.join('\n').includes('文字：未配置'), JSON.stringify(noModel.sent))
+      data.writeText('ai-capability-config.json', '{broken sk-private-status-secret')
+      const invalid = await run(makeSession({ content: '资源状态' }))
+      t.check('scenario malformed model config preserves resource status',
+        invalid.sent.join('\n').includes('模型配置：读取失败') && invalid.sent.join('\n').includes('可用 1200 / 1600 MB'), JSON.stringify(invalid.sent))
+      checkNoLeak(t, 'scenario invalid status omits raw configuration error', invalid, ['broken', 'sk-private-status-secret'])
+      data.writeJson('ai-capability-config.json', empty)
+      data.writeText('ai-paused.txt', 'on')
+      const maintenance = await run(makeSession({ content: '资源状态' }))
+      t.check('scenario status stays readable during maintenance',
+        maintenance.sent.join('\n').includes('维护中，业务已暂停'), JSON.stringify(maintenance.sent))
+      const maintenanceChat = await run(makeSession({ content: '你好', isDirect: true, guildId: '', channelId: 'private-maintenance' }))
+      t.check('scenario maintenance still blocks ordinary chat', maintenanceChat.sent.join('\n') === 'on', JSON.stringify(maintenanceChat.sent))
+    })
+  })
+
   await withScenario({}, async ({ data, harness, makeSession, run }) => {
-    const status = await run(makeSession({ content: 'AI\u72b6\u6001' }))
+    const originalFetch = global.fetch
+    global.fetch = mockFetch().fetch
+    let status
+    try { status = await run(makeSession({ content: 'AI\u72b6\u6001' })) }
+    finally { global.fetch = originalFetch }
     checkSentNonEmpty(t, 'scenario AI status replies', status)
     checkNoLeak(t, 'scenario AI status does not leak key', status, ['sk-test-secret', 'Bearer'])
 
@@ -40,7 +132,7 @@ async function run(t) {
     let redHelp
     let mediaStatus
     try {
-      criticalStatus = await run(makeSession({ content: 'AI\u72b6\u6001' }))
+      criticalStatus = await run(makeSession({ content: '资源状态' }))
       privateNotice = await run(makeSession({ isDirect: true, guildId: '', channelId: 'private-red-1', content: '\u4f60\u597d' }))
       throttledNotice = await run(makeSession({ isDirect: true, guildId: '', channelId: 'private-red-1', content: '\u8fd8\u5728\u5417' }))
       agentNotice = await run(makeSession({ content: '\u83b2\u83b2 agent \u67e5\u4e00\u4e0b\u72b6\u6001' }))
@@ -70,10 +162,11 @@ async function run(t) {
       'scenario AI critical status keeps compact Chinese status reply',
       criticalStatus.sent.some(item => {
         const text = String(item)
-        return text.includes('运行状态：正常')
-          && text.includes('当前任务：无')
-          && text.includes('可用内存：299 / 1600 MB')
-          && text.includes('聊天 AI：OpenCode Go / DSv4')
+        return text.includes('内存不足，聊天与工具已暂停')
+          && text.includes('任务：无')
+          && text.includes('可用 299 / 1600 MB')
+          && text.includes('文字：1. OpenCode / deepseek-v4-flash')
+          && !text.includes('运行状态：正常')
       }),
       JSON.stringify(criticalStatus.sent)
     )

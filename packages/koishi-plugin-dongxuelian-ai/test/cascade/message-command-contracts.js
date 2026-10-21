@@ -123,11 +123,16 @@ async function runMessageCommandContracts(context) {
   delete repeatEnabled['cascade-repeat-prune']
 
   section('9. handler command routing')
-  const statusRun = await runHandler(CMD.aiStatus)
+  const originalStatusFetch = global.fetch
+  global.fetch = require('../fake/fetch').mockFetch().fetch
+  let statusRun
+  try { statusRun = await runHandler(CMD.aiStatus) }
+  finally { global.fetch = originalStatusFetch }
   check('AI status command matched', statusRun.result && statusRun.result.matched)
   check('AI status returns response', typeof statusRun.result.response === 'string' && statusRun.result.response.length > 0)
   check('AI status does not leak api key', !statusRun.result.response.includes('sk-secret-regression-test'))
-  check('AI status loaded config and skills', statusRun.state._calls.loadConfig === 1 && statusRun.state._calls.loadSkills === 1 && statusRun.state._calls.loadSkillsContentCache === 1)
+  check('AI status avoids unrelated runtime and skill reloads', statusRun.state._calls.loadConfig === 0 && statusRun.state._calls.loadSkills === 0 && statusRun.state._calls.loadSkillsContentCache === 0)
+  check('AI status separates resource state and text connectivity results', statusRun.result.response.includes('资源：') && statusRun.result.response.includes('模型顺序（按配置排列）') && statusRun.result.response.includes('文字连通性'))
 
   const reloadRun = await runHandler(CMD.aiReload)
   check('AI reload command matched', reloadRun.result && reloadRun.result.matched)

@@ -27,7 +27,7 @@ function isDailyCommand(plain: string): boolean {
 
 // 判断消息是否是低成本状态查询命令。
 function isStatusCommand(plain: string): boolean {
-  return /^(?:资源状态|资源中心|日报队列|日报状态|队列状态|系统资源|resource status)$/i.test(plain)
+  return /^(?:AI状态|资源状态|资源中心|日报队列|日报状态|队列状态|系统资源|resource status)$/i.test(plain)
 }
 
 // 判断消息是否是显式 Agent 命令。
