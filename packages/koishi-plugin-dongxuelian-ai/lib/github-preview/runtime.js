@@ -4,7 +4,9 @@ exports.GithubPreviewRuntime = void 0;
 exports.acquireGithubResources = acquireGithubResources;
 const models_1 = require("./models");
 const settings_1 = require("./settings");
+const path = require("path");
 const input_1 = require("./input");
+const repositories_1 = require("./repositories");
 const client_1 = require("./client");
 const page_screenshot_1 = require("./page-screenshot");
 const renderer_1 = require("./renderer");
@@ -44,23 +46,36 @@ async function acquireGithubResources(context, group) {
 }
 class GithubPreviewRuntime {
     // Own one bounded preview queue; dependencies are explicit for offline behavior tests.
-    constructor(settings = new settings_1.GithubPreviewSettings(), dependencies = {}) {
+    constructor(settings = new settings_1.GithubPreviewSettings(), dependencies = {}, repositories = new repositories_1.GithubGroupRepositories(path.dirname(settings.file))) {
         this.queue = [];
         this.pumping = false;
         this.disposed = false;
         this.cooldowns = new Map();
         this.messages = new Map();
         this.images = new Map();
+        this.lifetime = new AbortController();
         this.settings = settings;
+        this.repositories = repositories;
         const client = new client_1.GithubPreviewClient();
         this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: page_screenshot_1.screenshotGithubPage, render: renderer_1.renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies };
         this.unsubscribe = settings.onRemoved(group => this.cancelGroup(group));
+        this.unsubscribeRepositories = repositories.onChanged(group => this.cancelGroup(group));
     }
     // Only enabled guild messages and reserved management commands enter this feature.
     accepts(session, plain) {
         if (this.disposed || (session.selfId && String(session.userId || session.author?.id) === session.selfId))
             return false;
-        return (0, input_1.isGithubPreviewCommand)(plain) || (!session.isDirect && !!session.guildId && this.settings.enabled(session.guildId) && (0, input_1.extractGithubTargets)(plain).length > 0);
+        return (0, input_1.isGithubPreviewCommand)(plain) || (!session.isDirect && !!session.guildId && this.settings.enabled(session.guildId) && this.targets(session, plain).length > 0);
+    }
+    // Shorthand must occupy the raw message too; mentions, images and surrounding text cannot trigger it.
+    targets(session, plain) {
+        const links = (0, input_1.extractGithubTargets)(plain);
+        if (links.length)
+            return links;
+        if (session.content !== undefined && session.content !== plain)
+            return [];
+        const target = (0, input_1.resolveGithubNumber)(plain, this.repositories.get(session.guildId || ''));
+        return target ? [target] : [];
     }
     // --- 管理与入队 --- //
     // Authenticate management, then apply durable, idempotent changes without model calls.
@@ -69,6 +84,8 @@ class GithubPreviewRuntime {
             return !session.isDirect && session.guildId ? `本群 GitHub 查询：${this.settings.enabled(session.guildId) ? '开启' : '关闭'}` : '请在群中查看 GitHub 查询状态。';
         if (!hasAdminPermission(session))
             return '只有指定管理员能操作这个命令。';
+        if (/^GitHub群项目/i.test(plain))
+            return (0, repositories_1.handleGithubRepositoryCommand)(session.guildId, session.isDirect, plain, this.repositories, this.deps.lookup, this.lifetime.signal);
         if (/^GitHub查询群查看$/i.test(plain)) {
             const groups = this.settings.list();
             return groups.length ? 'GitHub 查询群：\n' + groups.join('\n') : 'GitHub 查询群为空，所有群均关闭。';
@@ -90,7 +107,7 @@ class GithubPreviewRuntime {
             return undefined;
         if ((0, input_1.isGithubPreviewCommand)(plain))
             return this.command(session, plain);
-        const group = session.guildId, targets = (0, input_1.extractGithubTargets)(plain);
+        const group = session.guildId, targets = this.targets(session, plain);
         const now = Date.now(), messageKey = session.messageId ? group + ':' + session.messageId : '';
         if (messageKey && this.messages.has(messageKey))
             return undefined;
@@ -140,13 +157,13 @@ class GithubPreviewRuntime {
                 this.cooldowns.delete(key);
         for (const job of [...this.queue])
             if (job.group === group) {
-                job.controller.abort(new Error('查询群已关闭'));
+                job.controller.abort(new Error('查询群配置已更改'));
                 clearTimeout(job.timer);
                 this.queue.splice(this.queue.indexOf(job), 1);
                 job.finish();
             }
         if (this.active?.group === group)
-            this.active.controller.abort(new Error('查询群已关闭'));
+            this.active.controller.abort(new Error('查询群配置已更改'));
     }
     // Drain globally in order; the in-memory queue never owns more than one running task.
     async pump() {
@@ -271,6 +288,8 @@ class GithubPreviewRuntime {
     dispose() {
         this.disposed = true;
         this.unsubscribe();
+        this.unsubscribeRepositories();
+        this.lifetime.abort(new Error('GitHub 查询已停止'));
         for (const group of new Set([...this.queue.map(job => job.group), ...(this.active ? [this.active.group] : [])]))
             this.cancelGroup(group);
         this.images.clear();

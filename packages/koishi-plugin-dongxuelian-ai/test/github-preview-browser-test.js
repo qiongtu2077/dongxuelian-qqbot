@@ -46,13 +46,14 @@ async function verifyGithubPadding(image, page, region, offset = 0, height = reg
 // Replay a fixed document response through real Chrome and the complete production lifecycle.
 async function verifyGithubLifecycle(kind, status = 200, cancel = false, stuckClose = false) {
   const originalLaunch = puppeteer.launch
-  let owned, abortTimer
+  let owned, abortTimer, closeOwned, cleanupStarted
   const controller = new AbortController()
   const target = parseGithubTarget(`https://github.com/owner/repo/${kind === 'issue' ? 'issues' : 'pull'}/1`)
   const context = { signal: controller.signal, deadline: Date.now() + 10000, taskId: 'github-browser-fixture' }
   puppeteer.launch = async options => {
     owned = await originalLaunch(options)
-    if (stuckClose) owned.close = () => new Promise(() => {})
+    closeOwned = owned.close.bind(owned)
+    if (stuckClose) owned.close = () => { cleanupStarted = performance.now(); return new Promise(() => {}) }
     const newPage = owned.newPage.bind(owned)
     owned.newPage = async () => {
       const page = await newPage(); await page.setRequestInterception(true)
@@ -74,11 +75,15 @@ async function verifyGithubLifecycle(kind, status = 200, cancel = false, stuckCl
     if (cancel) await assert.rejects(task, /fixture group deleted/)
     else if (status !== 200) await assert.rejects(task, /页面状态/)
     else { const result = await task; assert.equal(result.incomplete, false); assert.equal(result.images.length, 1) }
-    if (stuckClose) await new Promise(resolve => setTimeout(resolve, 100))
+    if (stuckClose) {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      // Measure shutdown itself; browser startup and rendering do not belong to its budget.
+      assert(performance.now() - cleanupStarted < 4500)
+    }
     assert.equal(owned.connected, false)
     assert.equal(readResourceActivityLease('render_active'), null)
     console.log(`PASS ${kind}: complete lifecycle status=${status} cancelled=${cancel}, browser closed and render lease released`)
-  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; if (owned?.connected) await owned.close(); if (release) release() }
+  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; if (owned?.connected) await closeOwned(); if (release) release() }
 }
 
 // Run with a real installed browser; missing browsers fail this explicit release-verification entry.
@@ -127,20 +132,18 @@ async function main() {
       assert(incomplete); assert.equal(incomplete.ready, false)
       assert.equal(await page.$eval('#body img', image => image.loading), 'eager')
     }
-    // One real 25-second incomplete-load wait verifies the upper bound without a fake wall clock.
+    // One real 10-second incomplete-load wait verifies the upper bound without a fake wall clock.
     const metadata = { target: { kind: 'pull' }, author: 'owner' }, controller = new AbortController()
     const started = performance.now()
     const ready = await waitForGithubRegion(page, metadata, { signal: controller.signal, deadline: Date.now() + 35000, taskId: 'github-browser-test' }, started + GITHUB_LIMITS.loadMs)
-    assert.equal(ready, false); assert(performance.now() - started >= 24900); assert(performance.now() - started < 26000)
-    console.log('PASS shared 25-second loading deadline, incomplete image detection and lazy-load activation')
+    assert.equal(ready, false); assert(performance.now() - started >= 9900); assert(performance.now() - started < 11000)
+    console.log('PASS shared 10-second loading deadline, incomplete image detection and lazy-load activation')
   } finally { await browser.close() }
   await verifyGithubLifecycle('issue')
   await verifyGithubLifecycle('pull')
   await verifyGithubLifecycle('issue', 404)
   await verifyGithubLifecycle('pull', 200, true)
-  const cleanupStarted = performance.now()
   await verifyGithubLifecycle('issue', 200, false, true)
-  assert(performance.now() - cleanupStarted < 4500)
   console.log('PASS stuck graceful close reclaims only the recorded browser PID within the cleanup budget')
 }
 main().catch(error => { console.error(error.stack); process.exitCode = 1 }).finally(() => {

@@ -5,6 +5,7 @@
  */
 import type { GithubTarget, GithubMetadata, GithubImageResult, GithubWorkContext } from './models';
 import { GithubPreviewSettings } from './settings';
+import { GithubGroupRepositories } from './repositories';
 export interface GithubSession {
     guildId?: string;
     channelId?: string;
@@ -12,6 +13,7 @@ export interface GithubSession {
     selfId?: string;
     isDirect?: boolean;
     messageId?: string;
+    content?: string;
     author?: {
         id?: string;
     };
@@ -32,6 +34,7 @@ interface GithubRuntimeDependencies {
 export declare function acquireGithubResources(context: GithubWorkContext, group: string): Promise<() => void>;
 export declare class GithubPreviewRuntime {
     readonly settings: GithubPreviewSettings;
+    readonly repositories: GithubGroupRepositories;
     private readonly deps;
     private queue;
     private active;
@@ -41,8 +44,11 @@ export declare class GithubPreviewRuntime {
     private messages;
     private images;
     private readonly unsubscribe;
-    constructor(settings?: GithubPreviewSettings, dependencies?: Partial<GithubRuntimeDependencies>);
+    private readonly unsubscribeRepositories;
+    private readonly lifetime;
+    constructor(settings?: GithubPreviewSettings, dependencies?: Partial<GithubRuntimeDependencies>, repositories?: GithubGroupRepositories);
     accepts(session: GithubSession, plain: string): boolean;
+    private targets;
     private command;
     handle(session: GithubSession, plain: string): Promise<string | undefined>;
     private valid;

@@ -7,7 +7,7 @@ const path = require('path')
 function buildCoverageMap(AI_ROOT) {
   return [
   {
-    behavior: 'GitHub public preview whitelist cancellation and bounded queue',
+    behavior: 'GitHub public previews, single group repository, exact number trigger, whitelist cancellation and bounded queue',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'github-preview.test.js'),
     needles: ['real middleware default off', 'deleting and re-adding cancels', 'incomplete images never', 'bounded queue and expired tasks'],
   },

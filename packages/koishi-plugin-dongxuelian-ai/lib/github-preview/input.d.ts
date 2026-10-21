@@ -6,4 +6,5 @@
 import type { GithubTarget } from './models';
 export declare function parseGithubTarget(raw: string): GithubTarget | null;
 export declare function extractGithubTargets(text: string): GithubTarget[];
+export declare function resolveGithubNumber(text: string, repository: GithubTarget | null): GithubTarget | null;
 export declare function isGithubPreviewCommand(text: string): boolean;

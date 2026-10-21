@@ -6,7 +6,9 @@
 import type { GithubTarget, GithubMetadata, GithubImageResult, GithubWorkContext } from './models'
 import { GITHUB_LIMITS, assertGithubWork, waitGithubWork } from './models'
 import { GithubPreviewSettings, normalizeGithubGroup } from './settings'
-import { extractGithubTargets, isGithubPreviewCommand } from './input'
+import path = require('path')
+import { extractGithubTargets, isGithubPreviewCommand, resolveGithubNumber } from './input'
+import { GithubGroupRepositories, handleGithubRepositoryCommand } from './repositories'
 import { GithubPreviewClient, GithubQueryError } from './client'
 import { screenshotGithubPage } from './page-screenshot'
 import { renderGithubCard, githubTextFallback } from './renderer'
@@ -16,7 +18,7 @@ const { admitTask } = require('../resource-scheduler/admission') as typeof impor
 const { acquireResourceGate, ResourceGateBusyTimeoutError } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 
 export interface GithubSession {
-  guildId?: string; channelId?: string; userId?: string; selfId?: string; isDirect?: boolean; messageId?: string
+  guildId?: string; channelId?: string; userId?: string; selfId?: string; isDirect?: boolean; messageId?: string; content?: string
   author?: { id?: string }; event?: { user?: { id?: string } }; send(message: unknown): Promise<unknown>
 }
 interface GithubRuntimeDependencies {
@@ -53,6 +55,7 @@ export async function acquireGithubResources(context: GithubWorkContext, group: 
 
 export class GithubPreviewRuntime {
   readonly settings: GithubPreviewSettings
+  readonly repositories: GithubGroupRepositories
   private readonly deps: GithubRuntimeDependencies
   private queue: GithubQueuedJob[] = []
   private active: GithubQueuedJob | undefined
@@ -62,19 +65,32 @@ export class GithubPreviewRuntime {
   private messages = new Map<string, number>()
   private images = new Map<string, GithubStoredImage>()
   private readonly unsubscribe: () => void
+  private readonly unsubscribeRepositories: () => void
+  private readonly lifetime = new AbortController()
 
   // Own one bounded preview queue; dependencies are explicit for offline behavior tests.
-  constructor(settings = new GithubPreviewSettings(), dependencies: Partial<GithubRuntimeDependencies> = {}) {
+  constructor(settings = new GithubPreviewSettings(), dependencies: Partial<GithubRuntimeDependencies> = {}, repositories = new GithubGroupRepositories(path.dirname(settings.file))) {
     this.settings = settings
+    this.repositories = repositories
     const client = new GithubPreviewClient()
     this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: screenshotGithubPage, render: renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies }
     this.unsubscribe = settings.onRemoved(group => this.cancelGroup(group))
+    this.unsubscribeRepositories = repositories.onChanged(group => this.cancelGroup(group))
   }
 
   // Only enabled guild messages and reserved management commands enter this feature.
   accepts(session: GithubSession, plain: string): boolean {
     if (this.disposed || (session.selfId && String(session.userId || session.author?.id) === session.selfId)) return false
-    return isGithubPreviewCommand(plain) || (!session.isDirect && !!session.guildId && this.settings.enabled(session.guildId) && extractGithubTargets(plain).length > 0)
+    return isGithubPreviewCommand(plain) || (!session.isDirect && !!session.guildId && this.settings.enabled(session.guildId) && this.targets(session, plain).length > 0)
+  }
+
+  // Shorthand must occupy the raw message too; mentions, images and surrounding text cannot trigger it.
+  private targets(session: GithubSession, plain: string): GithubTarget[] {
+    const links = extractGithubTargets(plain)
+    if (links.length) return links
+    if (session.content !== undefined && session.content !== plain) return []
+    const target = resolveGithubNumber(plain, this.repositories.get(session.guildId || ''))
+    return target ? [target] : []
   }
 
   // --- 管理与入队 --- //
@@ -82,6 +98,7 @@ export class GithubPreviewRuntime {
   private async command(session: GithubSession, plain: string): Promise<string> {
     if (/^GitHub查询状态$/i.test(plain)) return !session.isDirect && session.guildId ? `本群 GitHub 查询：${this.settings.enabled(session.guildId) ? '开启' : '关闭'}` : '请在群中查看 GitHub 查询状态。'
     if (!hasAdminPermission(session)) return '只有指定管理员能操作这个命令。'
+    if (/^GitHub群项目/i.test(plain)) return handleGithubRepositoryCommand(session.guildId, session.isDirect, plain, this.repositories, this.deps.lookup, this.lifetime.signal)
     if (/^GitHub查询群查看$/i.test(plain)) {
       const groups = this.settings.list()
       return groups.length ? 'GitHub 查询群：\n' + groups.join('\n') : 'GitHub 查询群为空，所有群均关闭。'
@@ -98,7 +115,7 @@ export class GithubPreviewRuntime {
   async handle(session: GithubSession, plain: string): Promise<string | undefined> {
     if (!this.accepts(session, plain)) return undefined
     if (isGithubPreviewCommand(plain)) return this.command(session, plain)
-    const group = session.guildId!, targets = extractGithubTargets(plain)
+    const group = session.guildId!, targets = this.targets(session, plain)
     const now = Date.now(), messageKey = session.messageId ? group + ':' + session.messageId : ''
     if (messageKey && this.messages.has(messageKey)) return undefined
     if (messageKey) this.messages.set(messageKey, now)
@@ -135,10 +152,10 @@ export class GithubPreviewRuntime {
   private cancelGroup(group: string): void {
     for (const key of this.cooldowns.keys()) if (key.startsWith(group + ':')) this.cooldowns.delete(key)
     for (const job of [...this.queue]) if (job.group === group) {
-      job.controller.abort(new Error('查询群已关闭')); clearTimeout(job.timer)
+      job.controller.abort(new Error('查询群配置已更改')); clearTimeout(job.timer)
       this.queue.splice(this.queue.indexOf(job), 1); job.finish()
     }
-    if (this.active?.group === group) this.active.controller.abort(new Error('查询群已关闭'))
+    if (this.active?.group === group) this.active.controller.abort(new Error('查询群配置已更改'))
   }
 
   // Drain globally in order; the in-memory queue never owns more than one running task.
@@ -222,6 +239,8 @@ export class GithubPreviewRuntime {
   dispose(): void {
     this.disposed = true
     this.unsubscribe()
+    this.unsubscribeRepositories()
+    this.lifetime.abort(new Error('GitHub 查询已停止'))
     for (const group of new Set([...this.queue.map(job => job.group), ...(this.active ? [this.active.group] : [])])) this.cancelGroup(group)
     this.images.clear()
     this.messages.clear(); this.cooldowns.clear()

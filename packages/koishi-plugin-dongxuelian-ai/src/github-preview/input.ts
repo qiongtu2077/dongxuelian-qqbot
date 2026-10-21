@@ -40,5 +40,12 @@ export function extractGithubTargets(text: string): GithubTarget[] {
   return [...targets.values()]
 }
 
+// Expand only a whole-message positive number using the group's single repository.
+export function resolveGithubNumber(text: string, repository: GithubTarget | null): GithubTarget | null {
+  const match = text.match(/^#([1-9]\d{0,15})$/)
+  if (!match || match[0] !== text || repository?.kind !== 'repository') return null
+  return parseGithubTarget(repository.url + '/issues/' + match[1])
+}
+
 // Reserve the complete command family for deterministic management routing.
-export function isGithubPreviewCommand(text: string): boolean { return /^GitHub查询(?:群|状态)/i.test(text) }
+export function isGithubPreviewCommand(text: string): boolean { return /^GitHub(?:查询(?:群|状态)|群项目)/i.test(text) }

@@ -5,7 +5,7 @@ const path = require('path')
 const { withScenario } = require('./_setup')
 const { AI_ROOT } = require('../fake/file')
 const { flushAsync } = require('../fake/koishi')
-const { parseGithubTarget, extractGithubTargets } = require('../../lib/github-preview/input')
+const { parseGithubTarget, extractGithubTargets, resolveGithubNumber } = require('../../lib/github-preview/input')
 const { GithubPreviewClient, GithubQueryError } = require('../../lib/github-preview/client')
 const { allowGithubPageRequest, waitForGithubRegion } = require('../../lib/github-preview/page-screenshot')
 const { buildGithubCardHtml, loadGithubAvatar } = require('../../lib/github-preview/renderer')
@@ -40,6 +40,10 @@ async function run(t) {
     assert.deepEqual(urls.map(url => parseGithubTarget(url).kind), ['issue', 'pull', 'repository', 'user'])
     for (const url of ['http://github.com/owner/repo', 'https://github.com.evil/owner/repo', 'https://x@github.com/owner/repo', 'https://github.com/owner/repo/issues/0', 'https://github.com/owner/repo/pull/1/files', 'https://github.com/owner/repo/tree/main', 'https://github.com/settings', 'https://github.com/owner/repo/issues/9007199254740992']) assert.equal(parseGithubTarget(url), null, url)
     assert.equal(extractGithubTargets('看这个（https://github.com/owner/repo/issues/1）。https://github.com/OWNER/repo/issues/1#x').length, 1)
+    const repository = parseGithubTarget('https://github.com/owner/repo')
+    assert.equal(resolveGithubNumber('#123', repository).url, 'https://github.com/owner/repo/issues/123')
+    for (const text of ['看看 #123', '#123 看看', '#123\n#124', '#123\n', ' #123', '#123 ', '#0', '#01', '#-1', '#1.2', '#１２３', '#9007199254740992']) assert.equal(resolveGithubNumber(text, repository), null, text)
+    assert.equal(resolveGithubNumber('#123', null), null)
   })
   await githubCase(t, 'publicness, issue labels, PR aliases and all PR states', async () => {
     const calls = []
@@ -149,6 +153,126 @@ async function run(t) {
         await middleware(makeSession({ content: 'GitHub查询群删除 10001' }))
         assert.deepEqual(data.readJson('github-preview-groups.json'), [])
       } finally { global.fetch = originalFetch }
+    })
+  })
+  await withScenario({}, async ({ data, makeSession, run: middleware }) => {
+    await githubCase(t, 'repository commands use real middleware, admin permission and an independent default-off whitelist', async () => {
+      const originalFetch = global.fetch, calls = []
+      global.fetch = async url => {
+        const route = String(url); calls.push(route)
+        return route.endsWith('/repos/owner/repo') ? githubResponse(githubFixture('repository')) : githubResponse({}, 404)
+      }
+      try {
+        const denied = await middleware(makeSession({ userId: '300000000', content: 'GitHub群项目导入 https://github.com/owner/repo' }))
+        assert(denied.sent.join('').includes('指定管理员')); assert.equal(calls.length, 0)
+        const privateCommand = await middleware(makeSession({ isDirect: true, content: 'GitHub群项目导入 https://github.com/owner/repo' }))
+        assert(privateCommand.sent.join('').includes('请在')); assert.equal(calls.length, 0)
+        const imported = await middleware(makeSession({ content: 'GitHub群项目导入 https://github.com/owner/repo' }))
+        assert(imported.sent.join('').includes('已绑定')); assert.deepEqual(data.readJson('github-preview-repositories.json'), { '10001': 'https://github.com/owner/repo' })
+        assert(!fs.existsSync(data.pathFor('github-preview-groups.json')))
+        const disabled = await middleware(makeSession({ content: '#123' }))
+        assert(disabled.nextCalled); assert.equal(calls.length, 1)
+        await middleware(makeSession({ content: 'GitHub查询群添加 10001' }))
+        const query = await middleware(makeSession({ messageId: 'bound-123', content: '#123' }))
+        assert(!query.nextCalled); assert(query.sent.join('').includes('资源不存在')); assert.equal(calls.at(-1), 'https://api.github.com/repos/owner/repo/issues/123')
+        for (const [index, content] of ['看看 #124', '#124 看看', '#124\n#125', '<at id="999"/>#124', '#124<image src="x"/>'].entries()) {
+          const result = await middleware(makeSession({ messageId: 'not-whole-' + index, content }))
+          assert(!result.sent.join('').includes('https://github.com/owner/repo/issues/124'))
+        }
+        assert(!calls.some(url => url.includes('/issues/124')))
+        const viewed = await middleware(makeSession({ content: 'GitHub群项目查看' }))
+        assert(viewed.sent.join('').includes('https://github.com/owner/repo'))
+        const deleted = await middleware(makeSession({ content: 'GitHub群项目删除' }))
+        assert(deleted.sent.join('').includes('已删除')); assert.deepEqual(data.readJson('github-preview-repositories.json'), {})
+      } finally { global.fetch = originalFetch }
+    })
+  })
+  await withScenario({}, async ({ data }) => {
+    await githubCase(t, 'repository binding is singular, durable, serialized and unchanged after failed writes or invalid snapshots', async () => {
+      const { GithubGroupRepositories, handleGithubRepositoryCommand } = require(path.join(AI_ROOT, 'lib/github-preview/repositories'))
+      const { GithubQueryError: RepositoryQueryError } = require(path.join(AI_ROOT, 'lib/github-preview/client'))
+      const repository = parseGithubTarget('https://github.com/owner/repo'), other = parseGithubTarget('https://github.com/other/project')
+      const directory = data.pathFor('bindings'), repositories = new GithubGroupRepositories(directory)
+      await Promise.all([repositories.update('10001', repository), repositories.update('10002', other), repositories.update('10001', other)])
+      const restarted = new GithubGroupRepositories(directory)
+      assert.equal(restarted.get('10001').url, other.url); assert.equal(restarted.get('10002').url, other.url)
+      assert.equal(await restarted.update('10001', other), false)
+      let notifications = 0
+      const failure = new GithubGroupRepositories(directory, async () => { throw new Error('disk full') })
+      failure.onChanged(() => notifications++)
+      await assert.rejects(failure.update('10001', null), /disk full/)
+      assert.equal(failure.get('10001').url, other.url); assert.equal(notifications, 0)
+      const signal = new AbortController().signal
+      const denied = await handleGithubRepositoryCommand('10001', false, 'GitHub群项目导入 https://github.com/owner/repo', repositories, async () => { throw new RepositoryQueryError('仅支持公开仓库', 403) }, signal)
+      assert(denied.includes('仅支持公开仓库')); assert.equal(repositories.get('10001').url, other.url)
+      const replaced = await handleGithubRepositoryCommand('10001', false, 'GitHub群项目导入 https://github.com/owner/repo', repositories, async target => ({ target, url: target.url }), signal)
+      assert(replaced.includes('原项目：' + other.url)); assert(replaced.includes('新项目：' + repository.url))
+      const invalid = await handleGithubRepositoryCommand('10001', false, 'GitHub群项目导入 https://github.com/owner/repo/issues/1', repositories, async () => { throw new Error('must not request') }, signal)
+      assert(invalid.includes('用法'))
+      data.writeJson('bad-bindings/github-preview-repositories.json', { '10001': repository.url, '10002': 7 })
+      const warnings = [], malformed = new GithubGroupRepositories(data.pathFor('bad-bindings'), undefined, message => warnings.push(message))
+      assert.equal(malformed.get('10001'), null); assert.equal(warnings.length, 1)
+    })
+  })
+  // Fake timers are explicit because this case verifies the ten-second import cancellation timer.
+  await withScenario({ fakeTimers: true }, async ({ data, clock }) => {
+    await githubCase(t, 'repository validation times out without persisting a late API response', async () => {
+      const { GithubGroupRepositories, handleGithubRepositoryCommand } = require(path.join(AI_ROOT, 'lib/github-preview/repositories'))
+      const repositories = new GithubGroupRepositories(data.pathFor('import-timeout')), hold = githubDeferred()
+      let requestSignal
+      const pending = handleGithubRepositoryCommand('10001', false, 'GitHub群项目导入 https://github.com/owner/repo', repositories, async (target, context) => { requestSignal = context.signal; await hold.promise; return { target, url: target.url } }, new AbortController().signal)
+      try {
+        await clock.tick(10001)
+        assert((await pending).includes('超时')); assert(requestSignal.aborted)
+        hold.resolve(); await flushAsync(3)
+        assert.equal(repositories.get('10001'), null); assert(!fs.existsSync(repositories.file))
+      } finally { hold.resolve() }
+    })
+  })
+  await withScenario({}, async ({ data, makeSession }) => {
+    await githubCase(t, 'whole-message number uses the bound repository and the existing API detects PRs automatically', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      const settings = new GithubPreviewSettings(data.pathFor('number')); await settings.update('10001', true)
+      const calls = [], captures = []
+      const client = new GithubPreviewClient(async url => {
+        calls.push(String(url))
+        return githubResponse(String(url).endsWith('/repos/owner/repo') ? githubFixture('repository') : String(url).includes('/issues/') ? githubFixture('issue', { pull_request: { url: 'official' } }) : githubFixture('pull'))
+      })
+      const runtime = new GithubPreviewRuntime(settings, { lookup: (target, context) => client.lookup(target, context), screenshot: async metadata => { captures.push(metadata.target.kind); return { images: [Buffer.from('pull-image')], capturedAt: Date.now() } }, acquire: async () => () => {}, log: () => {} })
+      try {
+        const session = makeSession({ content: '#1', messageId: 'number-pr' })
+        assert.equal(runtime.accepts(session, '#1'), false)
+        await runtime.repositories.update('10001', parseGithubTarget('https://github.com/owner/repo'))
+        await runtime.handle(session, '#1')
+        assert.deepEqual(captures, ['pull']); assert(session.sent.join('').includes('data:image/png')); assert(session.sent.join('').includes('/pull/1'))
+        assert(calls.some(url => url.endsWith('/issues/1'))); assert(calls.some(url => url.endsWith('/pulls/1')))
+        assert.equal(runtime.accepts(makeSession({ isDirect: true, content: '#1' }), '#1'), false)
+        assert.equal(runtime.accepts(makeSession({ guildId: '10002', content: '#1' }), '#1'), false)
+        assert.equal(runtime.accepts(makeSession({ content: '<at id="999"/>#1' }), '#1'), false)
+      } finally { runtime.dispose() }
+    })
+  })
+  await withScenario({}, async ({ data, makeSession }) => {
+    await githubCase(t, 'replacing a binding cancels active and queued queries before sending old repository images', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      const settings = new GithubPreviewSettings(data.pathFor('binding-cancel')); await settings.update('10001', true)
+      const started = githubDeferred(), hold = githubDeferred(); let gates = 0
+      const runtime = new GithubPreviewRuntime(settings, { lookup: async (target, context) => { if (target.owner === 'owner') { started.resolve(); await hold.promise } return { target, title: 'title', url: target.url, facts: [], fetchedAt: Date.now() } }, screenshot: async () => ({ images: [Buffer.from('new-image')], capturedAt: Date.now() }), acquire: async () => { gates++; return () => {} }, log: () => {} })
+      try {
+        await runtime.repositories.update('10001', parseGithubTarget('https://github.com/owner/repo'))
+        const active = makeSession({ content: '#1', messageId: 'old-active' }), queued = makeSession({ content: '#2', messageId: 'old-queued' })
+        const first = runtime.handle(active, '#1'); await started.promise
+        const second = runtime.handle(queued, '#2')
+        await runtime.repositories.update('10001', parseGithubTarget('https://github.com/other/project'))
+        hold.resolve(); await Promise.all([first, second])
+        assert.equal(gates, 0); assert.equal(active.sent.length + queued.sent.length, 0)
+        const fresh = makeSession({ content: '#1', messageId: 'new-binding' }); await runtime.handle(fresh, '#1')
+        assert.equal(gates, 1); assert(fresh.sent.join('').includes('https://github.com/other/project/issues/1'))
+        await runtime.repositories.update('10001', null)
+        assert.equal(runtime.accepts(makeSession({ content: '#3' }), '#3'), false)
+      } finally { hold.resolve(); runtime.dispose() }
     })
   })
   await withScenario({}, async ({ data, makeSession }) => {

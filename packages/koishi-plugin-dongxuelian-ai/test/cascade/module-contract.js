@@ -14,6 +14,7 @@ async function runModuleContract(context) {
     githubModels: path.join(LIB, 'github-preview', 'models'),
     githubInput: path.join(LIB, 'github-preview', 'input'),
     githubSettings: path.join(LIB, 'github-preview', 'settings'),
+    githubRepositories: path.join(LIB, 'github-preview', 'repositories'),
     githubClient: path.join(LIB, 'github-preview', 'client'),
     githubScreenshot: path.join(LIB, 'github-preview', 'page-screenshot'),
     githubRenderer: path.join(LIB, 'github-preview', 'renderer'),
@@ -225,7 +226,7 @@ async function runModuleContract(context) {
   }
 
   const c = modules.constants
-  check('GitHub limits are an immutable configuration object', !!modules.githubModels && Object.isFrozen(modules.githubModels.GITHUB_LIMITS) && modules.githubModels.GITHUB_LIMITS.loadMs === 25000 && modules.githubModels.GITHUB_LIMITS.padding === 24)
+  check('GitHub limits are an immutable configuration object', !!modules.githubModels && Object.isFrozen(modules.githubModels.GITHUB_LIMITS) && modules.githubModels.GITHUB_LIMITS.loadMs === 10000 && modules.githubModels.GITHUB_LIMITS.padding === 24)
   const u = modules.utils
   const p = modules.persona
   const api = modules.api
@@ -236,8 +237,9 @@ async function runModuleContract(context) {
 
   const expectedExports = {
     githubModels: ['assertGithubWork', 'waitGithubWork'],
-    githubInput: ['parseGithubTarget', 'extractGithubTargets', 'isGithubPreviewCommand'],
+    githubInput: ['parseGithubTarget', 'extractGithubTargets', 'resolveGithubNumber', 'isGithubPreviewCommand'],
     githubSettings: ['GithubPreviewSettings', 'normalizeGithubGroup'],
+    githubRepositories: ['GithubGroupRepositories', 'handleGithubRepositoryCommand'],
     githubClient: ['GithubPreviewClient', 'GithubQueryError'],
     githubScreenshot: ['allowGithubPageRequest', 'inspectGithubRegion', 'waitForGithubRegion', 'findGithubBrowser', 'encodeGithubClips', 'screenshotGithubPage'],
     githubRenderer: ['escapeGithubText', 'loadGithubAvatar', 'buildGithubCardHtml', 'renderGithubCard', 'githubTextFallback'],

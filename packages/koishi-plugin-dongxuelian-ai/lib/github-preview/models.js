@@ -4,7 +4,7 @@ exports.GITHUB_LIMITS = void 0;
 exports.assertGithubWork = assertGithubWork;
 exports.waitGithubWork = waitGithubWork;
 exports.GITHUB_LIMITS = Object.freeze({
-    loadMs: 25000, captureMs: 5000, runMs: 45000, queueMs: 15000, maxQueued: 20,
+    loadMs: 10000, captureMs: 5000, runMs: 45000, queueMs: 15000, maxQueued: 20,
     maxTargets: 3, cooldownMs: 120000, cacheMs: 300000, staleMs: 1800000,
     cacheEntries: 100, cacheBytes: 20 * 1024 * 1024, imageBytes: 10 * 1024 * 1024,
     padding: 24, imageHeight: 2000, maxImages: 3, viewportWidth: 1280,

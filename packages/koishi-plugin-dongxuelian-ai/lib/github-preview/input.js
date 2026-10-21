@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.parseGithubTarget = parseGithubTarget;
 exports.extractGithubTargets = extractGithubTargets;
+exports.resolveGithubNumber = resolveGithubNumber;
 exports.isGithubPreviewCommand = isGithubPreviewCommand;
 const RESERVED_GITHUB_ROOTS = new Set(['about', 'account', 'apps', 'codespaces', 'collections', 'contact', 'customer-stories', 'dashboard', 'enterprise', 'events', 'explore', 'features', 'issues', 'join', 'login', 'logout', 'marketplace', 'new', 'notifications', 'orgs', 'organizations', 'pricing', 'pulls', 'search', 'security', 'sessions', 'settings', 'signup', 'site', 'sponsors', 'topics', 'trending', 'users']);
 // Accept only known public root/issue/pull routes on the exact HTTPS origin.
@@ -50,5 +51,12 @@ function extractGithubTargets(text) {
     }
     return [...targets.values()];
 }
+// Expand only a whole-message positive number using the group's single repository.
+function resolveGithubNumber(text, repository) {
+    const match = text.match(/^#([1-9]\d{0,15})$/);
+    if (!match || match[0] !== text || repository?.kind !== 'repository')
+        return null;
+    return parseGithubTarget(repository.url + '/issues/' + match[1]);
+}
 // Reserve the complete command family for deterministic management routing.
-function isGithubPreviewCommand(text) { return /^GitHub查询(?:群|状态)/i.test(text); }
+function isGithubPreviewCommand(text) { return /^GitHub(?:查询(?:群|状态)|群项目)/i.test(text); }
