@@ -353,7 +353,7 @@ async function runCoreContracts(context) {
       await api.requestChatCompletions([], { baseURL: 'https://example.invalid/v1', apiKey: 'k', model: 'm' })
       check('chat completions rejects reasoning-only empty result', false, 'did not throw')
     } catch (error) {
-      check('chat completions rejects reasoning-only empty result', /空结果/.test(String(error && error.message || error)))
+      check('chat completions rejects reasoning-only empty result', error.code === 'EMPTY_RESPONSE' && error.retryable === true && error.details.contentLength === 0 && error.details.reasoningLength > 0, String(error && error.message || error))
     }
 
     const toolDefs = [{ type: 'function', function: { name: 'get_current_time', parameters: { type: 'object', properties: {} } } }]

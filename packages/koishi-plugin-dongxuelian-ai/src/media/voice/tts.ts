@@ -110,7 +110,8 @@ async function getMimoriumKey(): Promise<string> {
   return String(step?.apiKey || '')
 }
 
-function sanitizeDiagnosticText(value: unknown, maxLength: number = 240): string {
+// 清理语音合成诊断中的凭据并限制长度，供发送失败和上下文日志使用。
+function sanitizeTtsDiagnosticText(value: unknown, maxLength: number = 240): string {
   return String(value || '')
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .replace(/\b(?:sk|tp)-[A-Za-z0-9._~+/=-]{8,}\b/g, '[redacted-key]')
@@ -170,7 +171,7 @@ function composeTtsStyle(baseStyle: unknown, temporaryStyle: unknown): string {
 function recordTtsFailure(options: TtsOptions | null | undefined, code: string, message: unknown, details: Record<string, unknown> = {}): null {
   const failure: TtsFailure = {
     code,
-    message: sanitizeDiagnosticText(message, 180),
+    message: sanitizeTtsDiagnosticText(message, 180),
     ...details,
   }
   const diagnostics = options && options.diagnostics
@@ -187,7 +188,7 @@ function recordTtsFailure(options: TtsOptions | null | undefined, code: string, 
       failure.status ? `status=${failure.status}` : '',
       failure.model ? `model=${failure.model}` : '',
       `voice=${voiceKind}`,
-      options.context ? `context=${sanitizeDiagnosticText(options.context, 80)}` : '',
+      options.context ? `context=${sanitizeTtsDiagnosticText(options.context, 80)}` : '',
       failure.message ? `message=${failure.message}` : '',
     ].filter(Boolean).join(' ')
     try { logger.warn(`tts failed: ${fields}`) } catch { /* non-critical: logging failure should not break TTS fallback */
