@@ -226,7 +226,7 @@ async function runModuleContract(context) {
   }
 
   const c = modules.constants
-  check('GitHub limits are an immutable configuration object', !!modules.githubModels && Object.isFrozen(modules.githubModels.GITHUB_LIMITS) && modules.githubModels.GITHUB_LIMITS.loadMs === 10000 && modules.githubModels.GITHUB_LIMITS.padding === 24)
+  check('GitHub limits are an immutable configuration object', !!modules.githubModels && Object.isFrozen(modules.githubModels.GITHUB_LIMITS) && modules.githubModels.GITHUB_LIMITS.loadMs === 25000 && modules.githubModels.GITHUB_LIMITS.padding === 24)
   const u = modules.utils
   const p = modules.persona
   const api = modules.api

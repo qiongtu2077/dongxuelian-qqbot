@@ -132,12 +132,12 @@ async function main() {
       assert(incomplete); assert.equal(incomplete.ready, false)
       assert.equal(await page.$eval('#body img', image => image.loading), 'eager')
     }
-    // One real 10-second incomplete-load wait verifies the upper bound without a fake wall clock.
+    // One real 25-second incomplete-load wait verifies the upper bound without a fake wall clock.
     const metadata = { target: { kind: 'pull' }, author: 'owner' }, controller = new AbortController()
     const started = performance.now()
     const ready = await waitForGithubRegion(page, metadata, { signal: controller.signal, deadline: Date.now() + 35000, taskId: 'github-browser-test' }, started + GITHUB_LIMITS.loadMs)
-    assert.equal(ready, false); assert(performance.now() - started >= 9900); assert(performance.now() - started < 11000)
-    console.log('PASS shared 10-second loading deadline, incomplete image detection and lazy-load activation')
+    assert.equal(ready, false); assert(performance.now() - started >= 24900); assert(performance.now() - started < 26000)
+    console.log('PASS shared 25-second loading deadline, incomplete image detection and lazy-load activation')
   } finally { await browser.close() }
   await verifyGithubLifecycle('issue')
   await verifyGithubLifecycle('pull')

@@ -40,7 +40,7 @@ export interface GithubWorkContext {
     taskId: string;
 }
 export declare const GITHUB_LIMITS: Readonly<{
-    loadMs: 10000;
+    loadMs: 25000;
     captureMs: 5000;
     runMs: 45000;
     queueMs: 15000;
