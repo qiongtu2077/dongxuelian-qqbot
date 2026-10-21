@@ -103,12 +103,24 @@ async function main() {
       for (let i = 0; i < split.length; i++) await verifyGithubPadding(split[i], page, longRegion, i * contentHeight, Math.min(contentHeight, longRegion.height - i * contentHeight))
       await assert.rejects(encodeGithubClips(page, { ...longRegion, height: 6001 }, performance.now() + 5000), /正文过长/)
       console.log(`PASS ${kind}: contiguous split images and oversized-body fallback`)
-      await page.setContent(githubPageFixture(kind, 34))
-      await page.evaluate(() => { document.querySelector('.labels').style.top = '800px'; document.querySelector('.labels').style.height = '50px' })
+      await page.setContent(githubPageFixture(kind, 34.5))
+      await page.evaluate(() => {
+        document.querySelector('.labels').style.top = '800px'; document.querySelector('.labels').style.height = '50px'
+        const auxiliary = document.createElement('div')
+        auxiliary.style.cssText = 'position:absolute;left:900px;top:330px;width:300px;height:300px;background:magenta'
+        auxiliary.textContent = 'Other sidebar content must not overlap moved Labels'
+        document.body.appendChild(auxiliary)
+      })
       const short = await page.evaluate(inspectGithubRegion, kind, 'owner')
-      assert(short?.ready); assert.equal(short.height, 214)
+      assert(short?.ready); assert.equal(short.height, 215)
       const labelBottom = await page.$eval('.labels', element => element.getBoundingClientRect().bottom)
       assert(labelBottom <= short.y + short.height)
+      assert.equal(await page.$eval('[data-github-preview-sidebar-backdrop]', element => element.getBoundingClientRect().height), 105)
+      const shortImages = await encodeGithubClips(page, short, performance.now() + 5000)
+      const pixel = await sharp(shortImages[0]).extract({ left: 900 - short.x + 24, top: 330 - short.y + 24, width: 1, height: 1 }).removeAlpha().raw().toBuffer()
+      assert.deepEqual([...pixel], [255, 255, 255])
+      const edge = await sharp(shortImages[0]).extract({ left: 900 - short.x + 24, top: short.height - 1 + 24, width: 1, height: 1 }).removeAlpha().raw().toBuffer()
+      assert.deepEqual([...edge], [255, 255, 255])
       console.log(`PASS ${kind}: short/empty-state body keeps original labels inside exact lower edge`)
       await page.setContent(githubPageFixture(kind, 500, '<img src="https://example.invalid/never.png" loading="lazy" width="50" height="50">'), { waitUntil: 'domcontentloaded' })
       const incomplete = await page.evaluate(inspectGithubRegion, kind, 'owner')

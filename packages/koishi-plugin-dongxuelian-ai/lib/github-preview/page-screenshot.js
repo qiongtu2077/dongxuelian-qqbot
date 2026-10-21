@@ -60,14 +60,31 @@ function inspectGithubRegion(kind, author) {
         return null;
     const top = heading.getBoundingClientRect(), post = currentRoot.getBoundingClientRect(), bottom = currentBody.getBoundingClientRect();
     let sidebar = currentLabels.getBoundingClientRect();
-    if (sidebar.bottom > bottom.bottom) {
-        const labelTop = Math.min(bottom.top, bottom.bottom - sidebar.height);
-        if (labelTop < top.bottom || sidebar.left < post.right - 10)
+    if (sidebar.bottom > bottom.bottom || currentLabels.dataset.githubPreviewMoved === 'true') {
+        const labelTop = Math.max(post.top, Math.min(bottom.top, bottom.bottom - sidebar.height));
+        if (labelTop < top.bottom || labelTop + sidebar.height > bottom.bottom || sidebar.left < post.right - 10)
             return null;
+        // A short body has no spare sidebar space; clear only that independent column's auxiliary content.
+        let backdrop = document.querySelector('[data-github-preview-sidebar-backdrop]');
+        if (!backdrop) {
+            backdrop = document.createElement('div');
+            backdrop.dataset.githubPreviewSidebarBackdrop = 'true';
+            document.body.appendChild(backdrop);
+        }
+        Object.assign(backdrop.style, { position: 'absolute', top: `${Math.floor(post.top + scrollY)}px`, left: `${Math.floor(sidebar.left + scrollX)}px`, width: `${Math.ceil(sidebar.right + scrollX) - Math.floor(sidebar.left + scrollX)}px`, height: `${Math.ceil(bottom.bottom + scrollY) - Math.floor(post.top + scrollY)}px`, background: '#ffffff', zIndex: '9', pointerEvents: 'none' });
         // Move only the original label panel, preserving its official content and colours.
+        currentLabels.dataset.githubPreviewMoved = 'true';
         Object.assign(currentLabels.style, { position: 'absolute', top: `${labelTop + scrollY}px`, left: `${sidebar.left + scrollX}px`, width: `${sidebar.width}px`, margin: '0', background: '#ffffff', zIndex: '10' });
         document.body.appendChild(currentLabels);
         sidebar = currentLabels.getBoundingClientRect();
+        // Moving out of its parent can change inherited spacing; position using the resulting height.
+        const adjustedTop = Math.max(post.top, Math.min(bottom.top, bottom.bottom - sidebar.height));
+        if (adjustedTop + sidebar.height > bottom.bottom)
+            return null;
+        currentLabels.style.top = `${Math.floor(adjustedTop + scrollY)}px`;
+        sidebar = currentLabels.getBoundingClientRect();
+        if (sidebar.bottom > bottom.bottom || sidebar.top < top.bottom)
+            return null;
     }
     const images = [...currentRoot.querySelectorAll('img'), ...currentLabels.querySelectorAll('img')].filter(visibleGithubElement);
     // Trigger only images inside the opening post, without traversing later comments.
