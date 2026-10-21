@@ -57,8 +57,9 @@ async function renderGithubIssue(metadata, context) {
     if (available !== null && available < models_1.GITHUB_LIMITS.minMemoryMb)
         throw new Error('可用内存不足，改用文字信息');
     const controller = new AbortController();
-    const cancel = () => controller.abort(context.signal.reason);
-    context.signal.addEventListener('abort', cancel, { once: true });
+    // Preserve the outer cancellation reason for downloads and the owned browser lifecycle.
+    const cancelGithubIssueRender = () => controller.abort(context.signal.reason);
+    context.signal.addEventListener('abort', cancelGithubIssueRender, { once: true });
     const work = { ...context, signal: controller.signal };
     const monitor = setInterval(() => {
         const memory = readLinuxMeminfo().availableMb;
@@ -86,6 +87,6 @@ async function renderGithubIssue(metadata, context) {
     }
     finally {
         clearInterval(monitor);
-        context.signal.removeEventListener('abort', cancel);
+        context.signal.removeEventListener('abort', cancelGithubIssueRender);
     }
 }

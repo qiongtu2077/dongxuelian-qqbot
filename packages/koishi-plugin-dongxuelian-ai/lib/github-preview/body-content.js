@@ -1,37 +1,4 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    var desc = Object.getOwnPropertyDescriptor(m, k);
-    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
-    }
-    Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
-    if (k2 === undefined) k2 = k;
-    o[k2] = m[k];
-}));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
-    Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
-    o["default"] = v;
-});
-var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
-        ownKeys = Object.getOwnPropertyNames || function (o) {
-            var ar = [];
-            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
-            return ar;
-        };
-        return ownKeys(o);
-    };
-    return function (mod) {
-        if (mod && mod.__esModule) return mod;
-        var result = {};
-        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
-        __setModuleDefault(result, mod);
-        return result;
-    };
-})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.cleanGithubBody = cleanGithubBody;
 exports.isGithubBodyImageUrl = isGithubBodyImageUrl;
@@ -41,9 +8,9 @@ exports.prepareGithubBody = prepareGithubBody;
  * 职责: 复用白名单解析器清理正文，并将有界公开附件转为本地图片。
  * 边界: 不启动浏览器、不持有长期缓存，不向附件转发接口认证。
  */
-const xss = __importStar(require("xss"));
 const models_1 = require("./models");
 const renderer_1 = require("./renderer");
+const xss = require('xss');
 const sharp = require('sharp');
 const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../core/utils');
 const IMAGE_HOSTS = new Set(['private-user-images.githubusercontent.com', 'user-images.githubusercontent.com', 'camo.githubusercontent.com', 'avatars.githubusercontent.com', 'github-production-user-asset-6210df.s3.amazonaws.com']);
@@ -178,13 +145,14 @@ async function prepareGithubBody(raw, base, context, transport = fetch, resolve 
     const urls = [...new Set(clean.images.map(image => image.url))].filter(isGithubBodyImageUrl).slice(0, 8);
     const assets = new Map();
     const controller = new AbortController(), budget = { bytes: 0 };
-    const cancel = () => controller.abort(context.signal.reason);
-    context.signal.addEventListener('abort', cancel, { once: true });
+    // Forward the caller's cancellation to this batch's shared download controller.
+    const cancelGithubBodyAssets = () => controller.abort(context.signal.reason);
+    context.signal.addEventListener('abort', cancelGithubBodyAssets, { once: true });
     const remaining = Math.min(models_1.GITHUB_LIMITS.assetMs, context.deadline - Date.now() - models_1.GITHUB_LIMITS.captureMs);
     const timer = setTimeout(() => controller.abort(new Error('附件下载到期')), Math.max(0, remaining));
     let next = 0;
     // Workers share the total byte counter; failures preserve their original positions as placeholders.
-    const worker = async () => {
+    const downloadGithubBodyAssets = async () => {
         while (next < urls.length && !controller.signal.aborted && remaining > 0) {
             const url = urls[next++];
             try {
@@ -198,12 +166,12 @@ async function prepareGithubBody(raw, base, context, transport = fetch, resolve 
         }
     };
     try {
-        await Promise.all([worker(), worker()]);
+        await Promise.all([downloadGithubBodyAssets(), downloadGithubBodyAssets()]);
     }
     finally {
         clearTimeout(timer);
         controller.abort();
-        context.signal.removeEventListener('abort', cancel);
+        context.signal.removeEventListener('abort', cancelGithubBodyAssets);
     }
     (0, models_1.assertGithubWork)(context);
     let missing = 0, animations = 0, embeddedBytes = Buffer.byteLength(clean.html, 'utf8');

@@ -3,10 +3,10 @@
  * 职责: 复用白名单解析器清理正文，并将有界公开附件转为本地图片。
  * 边界: 不启动浏览器、不持有长期缓存，不向附件转发接口认证。
  */
-import * as xss from 'xss'
 import { GITHUB_LIMITS, assertGithubWork } from './models'
 import type { GithubWorkContext } from './models'
 import { escapeGithubText } from './renderer'
+const xss = require('xss') as typeof import('xss')
 const sharp = require('sharp') as typeof import('sharp')
 const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../core/utils') as typeof import('../core/utils')
 const IMAGE_HOSTS = new Set(['private-user-images.githubusercontent.com', 'user-images.githubusercontent.com', 'camo.githubusercontent.com', 'avatars.githubusercontent.com', 'github-production-user-asset-6210df.s3.amazonaws.com'])
@@ -24,7 +24,7 @@ function tagAttributes(tag: string, html: string): Record<string, string> {
 // Preserve original text/GFM structure while replacing image nodes with trusted placeholders.
 export function cleanGithubBody(raw: string, base: string): { html: string; images: GithubBodyImage[] } {
   const images: GithubBodyImage[] = []
-  const whiteList: xss.IWhiteList = {}
+  const whiteList: import('xss').IWhiteList = {}
   for (const tag of ['p', 'div', 'span', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'ul', 'ol', 'li', 'pre', 'code', 'strong', 'b', 'em', 'i', 'del', 's', 'sub', 'sup', 'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'summary', 'details', 'a', 'kbd']) whiteList[tag] = []
   whiteList.a = ['href', 'title']; whiteList.ol = ['start']; whiteList.td = ['colspan', 'rowspan']; whiteList.th = ['colspan', 'rowspan']
   const html = new xss.FilterXSS({
@@ -121,13 +121,14 @@ export async function prepareGithubBody(raw: string, base: string, context: Gith
   const urls = [...new Set(clean.images.map(image => image.url))].filter(isGithubBodyImageUrl).slice(0, 8)
   const assets = new Map<string, { data: string; animated: boolean }>()
   const controller = new AbortController(), budget = { bytes: 0 }
-  const cancel = (): void => controller.abort(context.signal.reason)
-  context.signal.addEventListener('abort', cancel, { once: true })
+  // Forward the caller's cancellation to this batch's shared download controller.
+  const cancelGithubBodyAssets = (): void => controller.abort(context.signal.reason)
+  context.signal.addEventListener('abort', cancelGithubBodyAssets, { once: true })
   const remaining = Math.min(GITHUB_LIMITS.assetMs, context.deadline - Date.now() - GITHUB_LIMITS.captureMs)
   const timer = setTimeout(() => controller.abort(new Error('附件下载到期')), Math.max(0, remaining))
   let next = 0
   // Workers share the total byte counter; failures preserve their original positions as placeholders.
-  const worker = async (): Promise<void> => {
+  const downloadGithubBodyAssets = async (): Promise<void> => {
     while (next < urls.length && !controller.signal.aborted && remaining > 0) {
       const url = urls[next++]
       try { assets.set(url, await fetchBodyImage(url, controller.signal, budget, transport, resolve)) }
@@ -138,8 +139,8 @@ export async function prepareGithubBody(raw: string, base: string, context: Gith
       }
     }
   }
-  try { await Promise.all([worker(), worker()]) }
-  finally { clearTimeout(timer); controller.abort(); context.signal.removeEventListener('abort', cancel) }
+  try { await Promise.all([downloadGithubBodyAssets(), downloadGithubBodyAssets()]) }
+  finally { clearTimeout(timer); controller.abort(); context.signal.removeEventListener('abort', cancelGithubBodyAssets) }
   assertGithubWork(context)
   let missing = 0, animations = 0, embeddedBytes = Buffer.byteLength(clean.html, 'utf8')
   const html = clean.html.replace(/<!--github-asset:(\d+)-->/g, (_marker, index: string) => {
