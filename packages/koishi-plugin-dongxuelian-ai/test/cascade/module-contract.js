@@ -244,9 +244,9 @@ async function runModuleContract(context) {
     githubRepositories: ['GithubGroupRepositories', 'handleGithubRepositoryCommand'],
     githubClient: ['GithubPreviewClient', 'GithubQueryError'],
     githubScreenshot: ['allowGithubPageRequest', 'inspectGithubRegion', 'waitForGithubRegion', 'findGithubBrowser', 'encodeGithubClips', 'screenshotGithubPage'],
-    githubRenderer: ['escapeGithubText', 'loadGithubAvatar', 'buildGithubCardHtml', 'renderGithubCard', 'githubTextFallback'],
+    githubRenderer: ['escapeGithubText', 'loadGithubAvatar', 'buildGithubCardFrame', 'buildGithubCardHtml', 'splitGithubImage', 'renderGithubCard', 'githubTextFallback'],
     githubBody: ['cleanGithubBody', 'isGithubBodyImageUrl', 'prepareGithubBody'],
-    githubIssueRenderer: ['buildGithubIssueHtml', 'splitGithubImage', 'renderGithubIssue'],
+    githubIssueRenderer: ['buildGithubIssueHtml', 'renderGithubIssue'],
     githubRuntime: ['GithubPreviewRuntime', 'acquireGithubResources'],
     nicknameScopeSchema: ['normalizeScopeStore', 'serializeScopeStore', 'setAliasEntry'],
     frontmatter: [

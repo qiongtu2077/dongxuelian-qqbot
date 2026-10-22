@@ -53,6 +53,10 @@ function selectGithubFields(raw) {
         const user = githubObject(raw.user, 'user');
         result.user = { login: user.login, avatar_url: user.avatar_url };
     }
+    if (raw.owner) {
+        const owner = githubObject(raw.owner, 'owner');
+        result.owner = { login: owner.login, avatar_url: owner.avatar_url };
+    }
     return result;
 }
 // Consume a bounded JSON response with the same request cancellation signal.
@@ -234,11 +238,15 @@ class GithubPreviewClient {
             metadata.title = githubString(value, 'name', true) || githubString(value, 'login');
             metadata.description = githubString(value, 'bio', true);
             metadata.avatar = githubString(value, 'avatar_url');
+            metadata.author = githubString(value, 'login');
             metadata.facts = [['账户', githubString(value, 'type') === 'Organization' ? '组织账户' : '用户'], ['登录名', githubString(value, 'login')], ['公开仓库', githubCount(value, 'public_repos')], ['关注者（公开可见）', githubCount(value, 'followers')], ['关注中（公开可见）', githubCount(value, 'following')], ['注册时间', githubString(value, 'created_at')]];
         }
         else if (target.kind === 'repository') {
             metadata.title = githubString(value, 'full_name');
             metadata.description = githubString(value, 'description', true);
+            const owner = githubObject(value.owner, 'owner');
+            metadata.author = githubString(owner, 'login');
+            metadata.avatar = githubString(owner, 'avatar_url');
             const license = value.license === null ? null : githubObject(value.license, 'license');
             metadata.facts = [['主要语言', githubString(value, 'language', true) || '未提供'], ['Stars', githubCount(value, 'stargazers_count')], ['Forks', githubCount(value, 'forks_count')], ['许可证', license ? githubString(license, 'name') : '未提供'], ['更新时间', githubString(value, 'updated_at')]];
             if (value.archived === true)

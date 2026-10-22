@@ -238,7 +238,7 @@ class GithubPreviewRuntime {
                     await this.deliver(job, '剩余链接未处理：本次查询已到处理时限。', context);
                     break;
                 }
-                const cacheKey = target.key + (['issue', 'pull'].includes(target.kind) ? ':body-industrial-v1:' : ':card-v1:') + 'padding-' + models_1.GITHUB_LIMITS.padding;
+                const cacheKey = target.key + (['issue', 'pull'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + models_1.GITHUB_LIMITS.padding;
                 const cached = this.images.get(cacheKey);
                 let metadata, result, note = '', text = '';
                 if (cached && Date.now() - cached.result.capturedAt < models_1.GITHUB_LIMITS.cacheMs) {

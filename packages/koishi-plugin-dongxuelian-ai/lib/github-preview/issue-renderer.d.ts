@@ -5,5 +5,4 @@
  */
 import type { GithubMetadata, GithubImageResult, GithubWorkContext } from './models';
 export declare function buildGithubIssueHtml(metadata: GithubMetadata, body: string, avatar: Buffer | null, note?: string): string;
-export declare function splitGithubImage(raw: Buffer, context: GithubWorkContext): Promise<Buffer[]>;
 export declare function renderGithubIssue(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>;

@@ -21,7 +21,7 @@ function githubContext(ms = 10000) { return { signal: new AbortController().sign
 
 // Keep raw Markdown separate from the explicitly requested official HTML representation.
 function githubFixture(kind = 'issue', patch = {}) {
-  if (kind === 'repository') return { private: false, full_name: 'owner/repo', html_url: 'https://github.com/owner/repo', description: '<script>secret</script>', language: null, stargazers_count: 2, forks_count: 1, license: null, updated_at: '2026-10-21T00:00:00Z', archived: false, ...patch }
+  if (kind === 'repository') return { private: false, full_name: 'owner/repo', owner: { login: 'owner', avatar_url: 'https://avatars.githubusercontent.com/u/1' }, html_url: 'https://github.com/owner/repo', description: '<script>secret</script>', language: null, stargazers_count: 2, forks_count: 1, license: null, updated_at: '2026-10-21T00:00:00Z', archived: false, ...patch }
   if (kind === 'user') return { login: 'owner', name: null, html_url: 'https://github.com/owner', bio: null, type: 'Organization', avatar_url: 'https://avatars.githubusercontent.com/u/1', public_repos: 2, followers: 3, following: 0, created_at: '2020-01-01T00:00:00Z', ...patch }
   return { html_url: `https://github.com/owner/repo/${kind === 'pull' ? 'pull' : 'issues'}/1`, title: '原文标题', number: 1, state: 'open', created_at: '2026-10-21T00:00:00Z', user: { login: 'owner', avatar_url: 'https://avatars.githubusercontent.com/u/1' }, labels: [{ name: 'bug', color: 'ff0000' }], body: 'PRIVATE_BODY_DO_NOT_CACHE', body_html: '<p>发起者原文</p>', ...(kind === 'pull' ? { merged: false, draft: false } : {}), ...patch }
 }
@@ -74,6 +74,18 @@ async function run(t) {
       assert.equal(calls.length, 2); assert.equal(calls[1].headers['If-None-Match'], 'v1'); assert.equal(three.fetchedAt, one.fetchedAt)
       assert.equal(calls[0].redirect, 'manual'); assert.equal(calls[0].headers['X-GitHub-Api-Version'], '2022-11-28')
     } finally { Date.now = originalNow }
+  })
+  await githubCase(t, 'repository owner avatar survives field projection without another API request', async () => {
+    let calls = 0
+    const client = new GithubPreviewClient(async () => { calls++; return githubResponse(githubFixture('repository')) })
+    const target = parseGithubTarget('https://github.com/owner/repo')
+    const metadata = await client.lookup(target, githubContext())
+    assert.equal(metadata.avatar, 'https://avatars.githubusercontent.com/u/1'); assert.equal(metadata.author, 'owner')
+    await client.lookup(target, githubContext()); assert.equal(calls, 1)
+    for (const owner of [undefined, { login: 'owner', avatar_url: 7 }]) {
+      const invalid = new GithubPreviewClient(async () => githubResponse(githubFixture('repository', { owner })))
+      await assert.rejects(invalid.lookup(target, githubContext()), /owner|avatar_url/)
+    }
   })
   await githubCase(t, 'official rendered HTML is requested explicitly, preserved, bounded and type checked', async () => {
     const headers = []
@@ -154,8 +166,24 @@ async function run(t) {
     let calls = 0
     assert.equal(await loadGithubAvatar('https://evil.example/avatar.png', githubContext(), async () => { calls++ }), null); assert.equal(calls, 0)
     assert.equal(await loadGithubAvatar('invalid-url', githubContext()), null)
-    await loadGithubAvatar('https://avatars.githubusercontent.com/u/77', githubContext(), async (url, options) => { calls++; assert.equal(options.redirect, 'error'); assert.equal(options.headers, undefined); return new Response('bad image') })
+    await loadGithubAvatar('https://avatars.githubusercontent.com/u/77?v=4&s=460', githubContext(), async (url, options) => { calls++; assert.equal(url.searchParams.get('s'), '64'); assert.equal(url.searchParams.get('v'), '4'); assert.equal(options.redirect, 'error'); assert.equal(options.headers, undefined); return new Response('bad image') })
     assert.equal(calls, 1)
+    const sharp = require('sharp'), url = 'https://avatars.githubusercontent.com/u/78'
+    const png = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#f5d531' } }).png().toBuffer()
+    let downloads = 0
+    const transport = async (_url, options) => {
+      downloads++
+      if (downloads === 1) return new Response('bad image')
+      // A stream slower than the old three-second limit still fits the shared asset budget.
+      return new Response(new ReadableStream({ start(stream) {
+        const timer = setTimeout(() => { stream.enqueue(png); stream.close() }, 3100)
+        options.signal.addEventListener('abort', () => { clearTimeout(timer); stream.error(options.signal.reason) }, { once: true })
+      } }))
+    }
+    assert.equal(await loadGithubAvatar(url, githubContext(), transport), null)
+    const avatar = await loadGithubAvatar(url, githubContext(), transport)
+    assert.equal((await sharp(avatar).metadata()).width, 64)
+    assert.deepEqual(await loadGithubAvatar(url, githubContext(), transport), avatar); assert.equal(downloads, 2)
   })
   await githubCase(t, 'resource allowlist rejects frames, downloads, media and lookalike hosts', async () => {
     assert(allowGithubPageRequest('https://github.com/owner/repo/issues/1', 'document', true))
@@ -425,14 +453,18 @@ async function run(t) {
       } finally { release.resolve(); runtime.dispose() }
     })
     await githubCase(t, 'incomplete images never enter normal cache', async () => {
-      const settings = new GithubPreviewSettings(data.pathFor('partial')); await settings.update('10001', true); await settings.update('10002', true)
-      let captures = 0
-      const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'title', facts: [], fetchedAt: Date.now() }), screenshot: async () => { captures++; return { images: [Buffer.from('partial')], capturedAt: Date.now(), incomplete: true } }, acquire: async () => () => {}, log: () => {} })
-      try {
-        const first = makeSession({ messageId: 'partial-one' }), second = makeSession({ guildId: '10002', messageId: 'partial-two' })
-        await runtime.handle(first, 'https://github.com/owner/repo/issues/1'); await runtime.handle(second, 'https://github.com/owner/repo/issues/1')
-        assert.equal(captures, 2); assert(first.sent.join('').includes('正文附件未完整载入'))
-      } finally { runtime.dispose() }
+      for (const url of ['https://github.com/owner/repo/issues/1', 'https://github.com/owner/repo/pull/1', 'https://github.com/owner/repo', 'https://github.com/owner']) {
+        const settings = new GithubPreviewSettings(data.pathFor('partial')); await settings.update('10001', true); await settings.update('10002', true)
+        let captures = 0
+        // Both renderer branches must preserve partial-avatar retry behavior across groups.
+        const partial = async () => { captures++; return { images: [Buffer.from('partial')], capturedAt: Date.now(), incomplete: true, note: '头像暂未载入，请查看原文。' } }
+        const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'title', facts: [], fetchedAt: Date.now() }), screenshot: partial, render: partial, acquire: async () => () => {}, log: () => {} })
+        try {
+          const first = makeSession({ messageId: 'partial-one' }), second = makeSession({ guildId: '10002', messageId: 'partial-two' })
+          await runtime.handle(first, url); await runtime.handle(second, url)
+          assert.equal(captures, 2); assert(first.sent.join('').includes('头像暂未载入'))
+        } finally { runtime.dispose() }
+      }
     })
     await githubCase(t, 'shared S0 gate preserves report ownership and enforces memory admission', async () => {
       const { acquireGithubResources } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))

@@ -5,7 +5,8 @@ const browserData = fs.mkdtempSync(path.join(os.tmpdir(), 'github-preview-browse
 process.env.DONGXUELIAN_AI_DATA_DIR = browserData
 const puppeteer = require('puppeteer-core'), sharp = require('sharp')
 const { cleanGithubBody, prepareGithubBody, isGithubBodyImageUrl } = require('../lib/github-preview/body-content')
-const { buildGithubIssueHtml, renderGithubIssue, splitGithubImage } = require('../lib/github-preview/issue-renderer')
+const { buildGithubIssueHtml, renderGithubIssue } = require('../lib/github-preview/issue-renderer')
+const { renderGithubCard, splitGithubImage } = require('../lib/github-preview/renderer')
 const { renderHtmlToImage } = require('../../koishi-plugin-daily-report/lib/html-renderer')
 const { readResourceActivityLease } = require('../lib/resource-scheduler/resource-activity-lease')
 const { GITHUB_LIMITS } = require('../lib/github-preview/models')
@@ -15,6 +16,10 @@ function context(ms = 10000) { return { signal: new AbortController().signal, de
 
 // The initiating post is independent of replies and contains original public metadata only.
 function metadata(kind = 'issue', bodyHtml = '<p>发起者原文，保留内容。</p>') {
+  if (['repository', 'user'].includes(kind)) {
+    const url = kind === 'repository' ? 'https://github.com/owner/repo' : 'https://github.com/owner'
+    return { target: { kind, owner: 'owner', repo: kind === 'repository' ? 'repo' : undefined, url }, url, title: kind === 'repository' ? 'owner/repo' : '公开用户', author: 'owner', description: '原文简介，保留内容。', fetchedAt: Date.now(), facts: [['Stars', '123'], ['许可证', 'MIT']] }
+  }
   const url = `https://github.com/owner/repo/${kind === 'pull' ? 'pull' : 'issues'}/1`
   return { target: { kind, owner: 'owner', repo: 'repo', number: 1, url }, url, title: '原文标题与黄色编号', state: kind === 'pull' ? '已合并' : '开启中', author: 'author', createdAt: '2026-10-21T00:00:00Z', fetchedAt: Date.now(), labels: [{ name: 'bug', color: 'f5d531' }], facts: [], bodyHtml }
 }
@@ -64,7 +69,14 @@ async function verifyBody() {
 // Run the production browser lifecycle, observing attempted requests and owned-browser cleanup.
 async function verifyRender(kind, options = {}) {
   const originalLaunch = puppeteer.launch
-  let owned, closeOwned, cleanupStarted, requests = 0
+  const originalFetch = global.fetch
+  const avatarPng = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#f5d531' } }).png().toBuffer()
+  global.fetch = async (url, requestOptions) => {
+    assert.equal(new URL(url).origin, 'https://avatars.githubusercontent.com')
+    assert.equal(requestOptions.headers, undefined)
+    return options.avatarFailure ? new Response(null, { status: 503 }) : new Response(avatarPng)
+  }
+  let owned, closeOwned, cleanupStarted, layout, requests = 0
   const controller = new AbortController()
   let abortTimer
   puppeteer.launch = async launchOptions => {
@@ -75,6 +87,11 @@ async function verifyRender(kind, options = {}) {
     owned.newPage = async () => {
       const page = await newPage()
       page.on('request', request => { if (/^https?:/.test(request.url())) requests++ })
+      const screenshot = page.screenshot.bind(page)
+      page.screenshot = async (...args) => {
+        layout = await page.evaluate(() => ({ yellow: getComputedStyle(document.querySelector('.masthead')).borderBottomColor, avatar: document.querySelector('img.avatar')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) }))
+        return screenshot(...args)
+      }
       if (options.stall) page.screenshot = () => new Promise(() => {})
       if (options.guardFailure) page.setRequestInterception = async () => { throw new Error('guard setup failed') }
       if (options.cancel) abortTimer = setTimeout(() => controller.abort(new Error('group removed')), 100)
@@ -84,13 +101,18 @@ async function verifyRender(kind, options = {}) {
   }
   const started = performance.now(), work = { ...context(options.stall ? GITHUB_LIMITS.targetMs : 10000), signal: controller.signal }
   try {
-    const promise = renderGithubIssue(metadata(kind), work)
+    const data = metadata(kind)
+    data.avatar = 'https://avatars.githubusercontent.com/u/browser-' + kind + (options.avatarFailure ? '-failed' : '-ok')
+    const promise = ['repository', 'user'].includes(kind) ? renderGithubCard(data, work) : renderGithubIssue(data, work)
     if (options.stall) { await assert.rejects(promise); assert(performance.now() - started >= 29500); assert(performance.now() - started < 34000) }
     else if (options.cancel) await assert.rejects(promise, /group removed/)
     else if (options.guardFailure) await assert.rejects(promise, /guard setup failed/)
     else {
       const result = await promise
-      assert.equal(result.incomplete, false); assert.equal(result.images.length, 1)
+      assert.equal(result.incomplete, Boolean(options.avatarFailure)); assert.equal(result.images.length, 1)
+      assert.equal(layout.yellow, 'rgb(245, 213, 49)'); assert.equal(layout.placeholder, Boolean(options.avatarFailure))
+      assert.equal(layout.avatar, options.avatarFailure ? 0 : 64)
+      if (options.avatarFailure) assert.match(result.note, /头像暂未载入/)
       const dimensions = await sharp(result.images[0]).metadata()
       assert.equal(dimensions.width, 928); assert(dimensions.height < 800)
       await verifyPadding(result.images)
@@ -100,13 +122,15 @@ async function verifyRender(kind, options = {}) {
     assert.equal(readResourceActivityLease('render_active'), null)
     if (options.stuckClose) assert(performance.now() - cleanupStarted < 4500)
     console.log(`PASS ${kind} local rendering ${JSON.stringify(options)}: elapsed=${Math.round(performance.now() - started)}ms, offline and reclaimed`)
-  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; if (owned?.connected) await closeOwned() }
+  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; global.fetch = originalFetch; if (owned?.connected) await closeOwned() }
 }
 
 // Validate real layout, external-resource blocking, clipping and the hard timeout without GitHub access.
 async function main() {
   await verifyBody()
-  for (const kind of ['issue', 'pull']) await verifyRender(kind)
+  for (const kind of ['issue', 'pull', 'repository', 'user']) await verifyRender(kind)
+  await verifyRender('repository', { avatarFailure: true })
+  await verifyRender('issue', { avatarFailure: true })
   const raw = await sharp({ create: { width: 100, height: 4500, channels: 3, background: '#f5d531' } }).png().toBuffer()
   const split = await splitGithubImage(raw, context())
   assert.equal(split.length, 3); await verifyPadding(split, raw)

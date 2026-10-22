@@ -205,7 +205,7 @@ export class GithubPreviewRuntime {
       for (const target of job.targets) {
         if (!this.valid(job)) break
         if (context.deadline - Date.now() < 1000) { await this.deliver(job, '剩余链接未处理：本次查询已到处理时限。', context); break }
-        const cacheKey = target.key + (['issue', 'pull'].includes(target.kind) ? ':body-industrial-v1:' : ':card-v1:') + 'padding-' + GITHUB_LIMITS.padding
+        const cacheKey = target.key + (['issue', 'pull'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + GITHUB_LIMITS.padding
         const cached = this.images.get(cacheKey)
         let metadata: GithubMetadata | undefined, result: GithubImageResult | undefined, note = '', text = ''
         if (cached && Date.now() - cached.result.capturedAt < GITHUB_LIMITS.cacheMs) { metadata = cached.metadata; result = cached.result; note = '缓存数据，捕获于 ' + new Date(result.capturedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }
