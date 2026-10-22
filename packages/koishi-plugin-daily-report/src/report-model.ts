@@ -12,6 +12,20 @@ import type { ReportStageCachePolicies, ReportCachedStage } from './report-stage
 
 const { loadConfig } = loadManagementModule('core.runtimeConfig')
 const { freezeChatRoute, requestChatCompletions, getChatFailureMetadata } = loadManagementModule('core.api')
+
+// --- 已核实的模型参数 ---
+
+// 仅对已核实组合冻结参数；GLM-5.3-Flash不能关闭思考，以low显式限制推理深度。
+function reportModelArguments(node: { model: string; baseURL: string }): { thinking?: { type: 'enabled' | 'disabled' }; reasoning_effort?: 'low'; _structuredOutput?: { version: 1; format: 'object' } } {
+  if (node.model === 'mimo-v2.6-pro') return { thinking: { type: 'disabled' } }
+  if (node.model === 'glm-5.3-flash' && node.baseURL.replace(/\/+$/, '') === 'https://llm.pko.svcfusion.com/v1') {
+    return { thinking: { type: 'enabled' }, reasoning_effort: 'low', _structuredOutput: { version: 1, format: 'object' } }
+  }
+  return {}
+}
+
+// --- 冻结节点与单次执行 ---
+
 // 一次冻结现有文字主备节点；每轮公共请求只含一个执行节点，不改全局配置。
 export async function createGroundedModelRequest(options: { onlyConfiguredModel?: string; configuredNode?: { provider: string; model: string } } = {}): Promise<{ policyIdentity: string; routing: readonly { provider: string; model: string; baseURL: string; protocol: string }[]; classificationCachePolicy: ReportClassificationCachePolicy; stageCachePolicies: ReportStageCachePolicies; request: GroundedReportOptions['request'] }> {
   if (options.onlyConfiguredModel !== undefined && options.configuredNode !== undefined) throw new Error('日报限定型号与指定节点不能同时使用')
@@ -31,12 +45,11 @@ export async function createGroundedModelRequest(options: { onlyConfiguredModel?
   // 单节点冻结重新规范执行索引；各节点独立保留自己的凭据、端点与型号。
   const primary = { ...steps[0], searchEnabled: false }
   const recovery = { ...(steps[1] || steps[0]), searchEnabled: false }
-  // MiMo官方Chat接口默认开启思考；仅对已核实的此型号显式关闭，落实日报固定非思考参数。
-  const primaryThinking = primary.model === 'mimo-v2.6-pro' ? { thinking: { type: 'disabled' } } : {}
-  const recoveryThinking = recovery.model === 'mimo-v2.6-pro' ? { thinking: { type: 'disabled' } } : {}
+  const primaryThinking = reportModelArguments(primary), recoveryThinking = reportModelArguments(recovery)
+  const thinkingEnabled = primaryThinking.thinking?.type === 'enabled' || recoveryThinking.thinking?.type === 'enabled'
   const primaryRoute = freezeChatRoute(primary, [primary]), recoveryRoute = freezeChatRoute(recovery, [recovery])
   const policyIdentity = createHash('sha256').update(JSON.stringify({ version: 'grounded-configured-models-3',
-    primary: primaryRoute.identity, recovery: recoveryRoute.identity, temperature: 0.2, thinking: false, primaryThinking, recoveryThinking })).digest('hex')
+    primary: primaryRoute.identity, recovery: recoveryRoute.identity, temperature: 0.2, thinking: thinkingEnabled, primaryThinking, recoveryThinking })).digest('hex')
   const classificationCachePolicy: ReportClassificationCachePolicy = { identity: policyIdentity,
     first: { routeIdentity: primaryRoute.identity, routeRevision: primaryRoute.routeRevision, provider: primary.provider!, model: primary.model, protocol: primary.chatProtocol! },
     recovery: { routeIdentity: recoveryRoute.identity, routeRevision: recoveryRoute.routeRevision, provider: recovery.provider!, model: recovery.model, protocol: recovery.chatProtocol! } }
@@ -45,17 +58,18 @@ export async function createGroundedModelRequest(options: { onlyConfiguredModel?
     const first = classificationCachePolicy.first
     return [stage, { first, recovery: classificationCachePolicy.recovery,
       identity: createHash('sha256').update(JSON.stringify({ version: 'grounded-configured-stage-models-3', stage, first: first.routeIdentity,
-        recovery: recoveryRoute.identity, temperature: 0.2, thinking: false, primaryThinking, recoveryThinking })).digest('hex') }]
+        recovery: recoveryRoute.identity, temperature: 0.2, thinking: thinkingEnabled, primaryThinking, recoveryThinking })).digest('hex') }]
   })) as ReportStageCachePolicies
   const routing = Object.freeze([primary, recovery].map(node => Object.freeze({ provider: node.provider!, model: node.model, baseURL: node.baseURL, protocol: node.chatProtocol! })))
   return { policyIdentity, routing, classificationCachePolicy, stageCachePolicies, request: async (_stage, attempt, system, input, maxTokens, extra) => {
     if (attempt !== 1 && attempt !== 2) throw new ReportRequestBoundaryError('contract', '日报单元只允许首轮和一次恢复')
     const config = attempt === 2 ? recovery : primary, route = attempt === 2 ? recoveryRoute : primaryRoute
+    const modelArguments = attempt === 2 ? recoveryThinking : primaryThinking
     let result: Awaited<ReturnType<typeof requestChatCompletions>>
     try {
       result = await requestChatCompletions([{ role: 'system', content: system }, { role: 'user', content: input }], config,
-        { ...extra, ...(attempt === 2 ? recoveryThinking : primaryThinking), _frozenRoute: route, _frozenRouteStartStepIndex: 0,
-          _thinkingEnabled: false, temperature: 0.2, max_tokens: maxTokens })
+        { ...extra, ...modelArguments, _frozenRoute: route, _frozenRouteStartStepIndex: 0,
+          _thinkingEnabled: modelArguments.thinking?.type === 'enabled', temperature: 0.2, max_tokens: maxTokens })
     } catch (error) {
       if (error instanceof ReportRequestBoundaryError) throw error
       throw new ReportRequestBoundaryError('upstream', error instanceof Error ? error.message : String(error), getChatFailureMetadata(error))

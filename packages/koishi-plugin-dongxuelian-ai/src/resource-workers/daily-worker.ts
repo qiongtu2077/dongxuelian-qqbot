@@ -127,7 +127,7 @@ async function runDailyWorkerTask(task: DailyWorkerTaskLike, runtime: { deadline
 async function runDailyPreanalysisWorkerTask(task: DailyWorkerTaskLike, runtime?: {
   deadlineMs: number; startedAtMs: number; signal: AbortSignal; assertActive?: () => void
 }): Promise<WorkerTaskResult> {
-  if (process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1') throw new Error('日报预分析尚未启用')
+  if (process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1' || process.env.DAILY_REPORT_GROUNDED_ENABLED !== '1') throw new Error('日报预分析尚未启用')
   if (task.notify?.target !== 'none') throw new Error('日报预分析任务禁止结果通知')
   if (!runtime?.assertActive || runtime.deadlineMs !== runtime.startedAtMs + 90000 || !task.id || !task.channelKey) {
     throw new Error('日报预分析任务身份、领取或原截止无效')

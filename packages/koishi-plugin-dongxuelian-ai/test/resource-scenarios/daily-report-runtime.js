@@ -7,6 +7,7 @@ const { check, createTempDataDir, runScenario } = require('../helpers/resource-h
 // 子进程隔离真实任务文件，验证根worker的硬截止、实际取消及最近诊断。
 function runDailyReportRuntimeScenarios() {
   const fixtures = [
+    ['daily-report-grounded-fixture.js', ['actualS0S2', 'completeWindow4100Selected4000', 'fullAuditStored', 'dedicatedModel', 'hotZeroRequests', 'slidingReusesMiddle', 'leaseReplacementRejected', 'restartLateRejected', 'originalDeadline', 'requiredStorageFailure', 'finalWriteFailure', 'zeroOneTwoTopics', 'untrustedWindowNoCatalog', 'noNotification']],
     ['daily-report-storage-lease-fixture.js', ['actualS0TicketGuard', 'sameTaskNewTicketRejected', 'noLateSuccessOrDiagnostic', 'noMoreModelCalls']],
     ['daily-preanalysis-scheduler-fixture.js', ['defaultOff', 'zeroWaitGate', 'missingLedgerStops', 'plannerZeroCalls', 'candidateOnly', 'activeDedupe', 'durableScheduleCooldown', 'workerRevalidates', 'completedCacheSkipped', 'foregroundPriority', 'disposedNoSubmission', 'existingTimerDispose', 'onlyConfiguredDeepseek']],
     ['daily-preanalysis-worker-fixture.js', ['defaultOff', 'missingLedgerNoCall', 'actualGateAndWorker', 'durableBatch', 'repeatedCacheNoCall', 'fullWindowSeparateFromSelection', 'foregroundPriority', 'activeSourceProtection', 'noNotification', 'onlyConfiguredDeepseek']],
@@ -14,14 +15,16 @@ function runDailyReportRuntimeScenarios() {
     ['daily-report-lifecycle-fixture.js', ['gateWaitExcluded', 'gateFailureUnstarted', 'cancelledBeforeRun', 'duplicateClaimRejected', 'retryPreservesDeadline', 'expiredDoesNotDispatch', 'otherKindUnchanged', 'restartCancelsWaitingExecution', 'lateResultsRejected', 'freshTaskIndependent', 'activeClaimValidated', 'cancelledClaimRejected', 'staleTransitionsRejected']],
     ['daily-report-restart-fixture.js', ['realPipelineRestartAt590', 'secondProcessCleanup', 'lateModelRejected', 'lateImageRejected', 'trustedArtifactsUnchanged', 'staleCompletionRejected', 'freshPipelineIndependent', 'durableBeforeLedgerInterrupted', 'cancelledReportsNeverNotified', 'freshNotificationOnce']],
   ]
-  for (const [name, fields] of fixtures) {
+  const lifecycle = fixtures.find(([name]) => name === 'daily-report-lifecycle-fixture.js')
+  fixtures.push([lifecycle[0], lifecycle[1], { REPORT_LIFECYCLE_LONG: '1' }])
+  for (const [name, fields, extraEnv = {}] of fixtures) {
     const dataDir = createTempDataDir('resource-regress-daily-runtime-')
     try {
       const fixture = path.join(__dirname, '..', 'helpers', name)
       // 预分析用真实S0/文件存储连续跑两个窗口；父进程只放宽夹具观测期限，生产90秒规则不变。
-      const result = runScenario(name, 'require(' + JSON.stringify(fixture) + ')', { DONGXUELIAN_AI_DATA_DIR: dataDir }, name.startsWith('daily-preanalysis-') ? 45000 : 15000)
+      const result = runScenario(name, 'require(' + JSON.stringify(fixture) + ')', { DONGXUELIAN_AI_DATA_DIR: dataDir, ...extraEnv }, name === 'daily-report-grounded-fixture.js' ? 600000 : name.startsWith('daily-preanalysis-') ? 45000 : 15000)
       if (!result) continue
-      for (const field of fields) check('daily report runtime ' + field, result[field])
+      for (const field of fields) check((extraEnv.REPORT_LIFECYCLE_LONG ? 'thirty minute daily report runtime ' : 'daily report runtime ') + field, result[field])
     } finally {
       const resolved = path.resolve(dataDir)
       if (path.dirname(resolved) !== path.resolve(os.tmpdir()) || !path.basename(resolved).startsWith('resource-regress-daily-runtime-')) throw new Error('日报运行测试临时目录越界')

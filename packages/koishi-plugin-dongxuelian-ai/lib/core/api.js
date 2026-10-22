@@ -476,15 +476,27 @@ function buildGeminiMessages(messages) {
 // 只为已真实核实的节点组装原生JSON参数；调用前快照化Schema，不猜其他协议的能力。
 function prepareStructuredRequest(option, config, filtered, messages) {
     if (!isRecord(option) || option.version !== 1 || !['schema', 'object'].includes(option.format)
-        || ![0, 1024].includes(option.thinkingBudget)
+        || (option.thinkingBudget !== undefined && ![0, 1024].includes(option.thinkingBudget))
         || Object.keys(option).some(key => !['version', 'format', 'schema', 'thinkingBudget'].includes(key))) {
         throw new Error('原生结构化输出选项契约无效');
     }
     const protocol = config.chatProtocol || getProviderCatalogEntry(config.provider)?.chatProtocol || 'openai-chat';
+    const isLingGlm = protocol === 'openai-chat' && config.model === 'glm-5.3-flash'
+        && String(config.baseURL).replace(/\/+$/, '') === 'https://llm.pko.svcfusion.com/v1';
+    if (isLingGlm) {
+        if (option.format !== 'object' || option.schema !== undefined || option.thinkingBudget !== undefined
+            || !isRecord(filtered.thinking) || filtered.thinking.type !== 'enabled' || filtered.reasoning_effort !== 'low') {
+            throw new Error('原生GLM对象模式仅核实无Schema/思考预算且enabled+low的组合');
+        }
+        // GLM沿用原输出上限及思考参数；原生标记仅保证传输正文不被普通聊天空白整理改写。
+        return { ...filtered, _nativeStructuredOutput: true, response_format: { type: 'json_object' } };
+    }
     if (protocol !== 'openai-chat' || String(config.baseURL).replace(/\/+$/, '') !== 'https://dashscope.aliyuncs.com/compatible-mode/v1'
         || !['qwen3.7-flash', 'qwen3.7-plus'].includes(config.model)) {
-        throw new Error('原生结构化输出仅核实DashScope的qwen3.7-flash和qwen3.7-plus');
+        throw new Error('原生结构化输出仅核实DashScope的qwen3.7-flash/qwen3.7-plus与灵GLM对象模式');
     }
+    if (option.thinkingBudget === undefined)
+        throw new Error('原生DashScope结构化输出必须明确思考预算');
     if (option.format === 'schema' && !isRecord(option.schema))
         throw new Error('原生结构化输出缺少当前单元Schema');
     if (option.format === 'object' && (option.schema !== undefined
@@ -640,6 +652,16 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
     }
     const filtered = buildFilteredExtraBody(extraBody);
     filtered._thinkingEnabled = extraBody._thinkingEnabled;
+    // 本轮仅核实灵的GLM-5.3-Flash三档推理控制；整条执行链先核验，禁止主节点已消费后猜备用能力。
+    if (extraBody.reasoning_effort !== undefined) {
+        if (!['low', 'high', 'max'].includes(extraBody.reasoning_effort)
+            || attempts.slice(startIndex).some(node => node.model !== 'glm-5.3-flash'
+                || String(node.baseURL).replace(/\/+$/, '') !== 'https://llm.pko.svcfusion.com/v1'
+                || (node.chatProtocol || getProviderCatalogEntry(node.provider)?.chatProtocol || 'openai-chat') !== 'openai-chat')) {
+            throw new Error('推理深度仅核实灵GLM-5.3-Flash的low/high/max配置');
+        }
+        filtered.reasoning_effort = extraBody.reasoning_effort;
+    }
     if (extraBody._structuredOutput !== undefined && (!frozen || tools?.length))
         throw new Error('原生结构化输出需要冻结路由且不支持工具组合');
     // 所有可能执行的节点在提交前核实；备用配置未知时不能先消耗一次请求再猜兼容。

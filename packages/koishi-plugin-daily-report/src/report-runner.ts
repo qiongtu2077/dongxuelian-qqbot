@@ -10,7 +10,7 @@ import { createReportEvidence, buildReportEvidenceBatch, packReportEvidenceBatch
 import type { EvidenceMessage, EvidenceFragment, ReportEvidence } from './report-evidence'
 import { getReportClassificationInstructions, readReportClassification, createReportClassificationRepair, createReportCandidates, createImageReportCandidates } from './report-candidates'
 import type { ReportCandidate } from './report-candidates'
-import { createTopicContext, createTopicOverviewMergeContext, getTopicInstructions, readTopicOverview, createTopicCardContext, getTopicCatalogInstructions, readTopicCards, createTopicCardRepair, createTopicCatalogContext, readTopicDirectory, readTopicCatalogSelection } from './report-topics'
+import { createTopicContext, createTopicOverviewContext, createTopicOverviewMergeContext, getTopicInstructions, readTopicOverview, createTopicCardContext, getTopicCatalogInstructions, readTopicCards, createTopicCardRepair, createTopicCatalogContext, readTopicDirectory, readTopicCatalogSelection } from './report-topics'
 import type { TopicCandidate, TopicOverview, TopicContext, TopicCard } from './report-topics'
 import { createGroundedOutputContext, getGroundedOutputInstructions, readGroundedQuotes, readGroundedPortraits, createGroundedPortraitRepair, readGroundedReview, GROUNDED_QUOTE_CHARACTERS } from './report-outputs'
 import type { GroundedQuote, GroundedPortrait, GroundedOutputContext } from './report-outputs'
@@ -57,6 +57,7 @@ export interface GroundedReportResult {
     topicCards: unknown; topicCatalog: unknown; firstRequests: number; recoveries: number; classificationCache: Array<Omit<CachedReportClassification, 'records'>>; stageCache: ReportStageCacheHistory[] }
 }
 const RESERVE_CHARACTERS = 512
+export const GROUNDED_REPORT_LIMITS = Object.freeze({ requestTimeoutMs: 90000, runTimeoutMs: 1800000, saveReserveMs: 30000 })
 
 // --- 固定预算与并发执行 ---
 
@@ -76,6 +77,12 @@ function reportProgress(state: RunState): void {
   state.meta.summarizedMessageCount = metrics.processedMessageCount
   state.meta.unprocessedCount = metrics.unprocessedMessageCount
   state.options.onProgress?.(state.meta)
+}
+
+// 只采用公共接口已确认可恢复的服务端错误，不从正文猜余额或重试资格。
+function isTemporaryReportUpstreamFailure(error: unknown): boolean {
+  return error instanceof ReportRequestBoundaryError && error.kind === 'upstream' && error.upstreamFailure?.retryable === true
+    && error.upstreamFailure.status >= 500 && error.upstreamFailure.status <= 599
 }
 
 // 每个逻辑单元最多两轮；所有单元共享实际请求、恢复次数、取消与在途槽位。
@@ -98,13 +105,15 @@ async function reportUnit<T>(state: RunState, stage: GroundedStage, fragments: r
   const unit = { id: stage + ':' + (++state.unitCount), stage, sourceIds,
     timestamps: sourceIds.flatMap(id => state.snapshot.sources[id - 1].ts === null ? [] : [state.snapshot.sources[id - 1].ts!]),
     onSubmitted: () => { if (stage === 'classification') { fragments.forEach(fragment => state.submitted.add(fragment.id)); reportProgress(state) } } }
-  let round = 0, responseReceived = false
+  let round = 0, responseReceived = false, pendingRequest: Promise<string> | undefined
   const runtime: AnalysisRuntime = { ...state.options, signal: state.controller.signal,
     maxRequestCount: Math.min(192, state.options.maxRequestCount ?? 192),
     recoveryInstructions: completion?.recoveryInstructions || '仅返回当前明确契约的一个完整JSON对象，completed必须为true，不使用旧JSONL或end记录。',
     requireNormalFinish: completion?.requireNormalFinish,
     recoveryStepIndex: () => 0,
-    shouldRecover: error => error instanceof AnalysisUnitRequestTimeoutError || (responseReceived && !(error instanceof ReportRequestBoundaryError)),
+    shouldRecover: error => error instanceof AnalysisUnitRequestTimeoutError || isTemporaryReportUpstreamFailure(error)
+      || (responseReceived && !(error instanceof ReportRequestBoundaryError)),
+    retryOriginalRequest: isTemporaryReportUpstreamFailure,
     onUnitCompleted: (descriptor, attempts, value) => {
       state.options.onUnitCompleted?.(descriptor, attempts, serialize(value as T))
       completion?.onCompleted?.(attempts, value as T)
@@ -123,14 +132,22 @@ async function reportUnit<T>(state: RunState, stage: GroundedStage, fragments: r
         submitted = true
         if (attempt === 1) state.firstRequests++; else state.recoveries++
       } }
-      const text = await state.options.request(stage, attempt, requestSystem, requestInput, tokens, guarded)
+      pendingRequest = state.options.request(stage, attempt, requestSystem, requestInput, tokens, guarded)
+      const text = await pendingRequest
       responseReceived = true
       return text
     } }
   // 等待槽位沿用原任务截止；只有真正开始单元执行才启动单次计时，恢复共用此槽。
-  return state.pool.run(state.controller.signal, () => {
-    assertReportWorkBudget(state, stage)
-    return requestAnalysisUnit(runtime, state.meta, unit, system, input, maxTokens, 45000, validate, recover)
+  return state.pool.run(state.controller.signal, async () => {
+    try {
+      assertReportWorkBudget(state, stage)
+      return await requestAnalysisUnit(runtime, state.meta, unit, system, input, maxTokens, GROUNDED_REPORT_LIMITS.requestTimeoutMs, validate, recover)
+    } catch (error) {
+      // 必须在交槽前取消等待者；外部取消的竞速结束后，仍持槽等实际上游Promise清理。
+      state.controller.abort(error)
+      await pendingRequest?.then(() => undefined, () => undefined)
+      throw error
+    }
   })
 }
 
@@ -155,10 +172,13 @@ async function reportMap<T, R>(state: RunState, values: readonly T[], action: (v
 // --- 完整候选与话题材料 ---
 
 // 超长候选只在完整来源片段边界拆分；每组同时限制候选数与完整封装。
-function topicGroups(snapshot: ReportEvidence, candidates: readonly TopicCandidate[], maximum: number, instructions: string, layout: 'references' | 'inline' = 'references', maximumCandidates = 40): TopicContext[] {
+function topicGroups(snapshot: ReportEvidence, candidates: readonly TopicCandidate[], maximum: number, instructions: string, layout: 'references' | 'inline' | 'overview' | 'cards' = 'references', maximumCandidates = 40): TopicContext[] {
   const groups: TopicContext[] = [], leaves: TopicCandidate[] = []
+  // 封装与真实提交使用同一阶段投影，不能按删字段前后的不同体量切分。
+  const build = (items: readonly TopicCandidate[]): TopicContext => layout === 'cards' ? createTopicCardContext(snapshot, items)
+    : layout === 'overview' ? createTopicOverviewContext(snapshot, items) : createTopicContext(snapshot, items, layout)
   const fits = (items: readonly TopicCandidate[]): boolean => items.length <= maximumCandidates
-    && Array.from(createTopicContext(snapshot, items, layout).input + instructions).length + RESERVE_CHARACTERS <= maximum
+    && Array.from(build(items).input + instructions).length + RESERVE_CHARACTERS <= maximum
   for (const candidate of candidates) {
     if (fits([candidate])) { leaves.push(candidate); continue }
     let part: EvidenceFragment[] = [], index = 0
@@ -173,17 +193,21 @@ function topicGroups(snapshot: ReportEvidence, candidates: readonly TopicCandida
   }
   let pending: TopicCandidate[] = []
   for (const candidate of leaves) {
-    if (pending.length && !fits([...pending, candidate])) { groups.push(createTopicContext(snapshot, pending, layout)); pending = [] }
+    if (pending.length && !fits([...pending, candidate])) { groups.push(build(pending)); pending = [] }
     pending.push(candidate)
   }
-  if (pending.length) groups.push(createTopicContext(snapshot, pending, layout))
+  if (pending.length) groups.push(build(pending))
   return groups
 }
 
 // 已核验卡片仅保存稳定引用和有界文字；不重复持久化完整原始正文。
 function serializeTopicCards(cards: readonly TopicCard[]): unknown {
-  return cards.map(card => ({ id: card.candidate.id, leaves: card.leaves, status: card.status, scope: card.scope, summary: card.summary,
-    evidence: card.evidence.map(entry => ({ fragment: entry.fragment.id, text: entry.text })) }))
+  return cards.map(card => ({ id: card.candidate.id, leaves: card.leaves, status: card.status, scope: card.scope,
+    ...(card.parentId ? { parentId: card.parentId } : {}), fragmentIds: card.candidate.fragments.map(fragment => fragment.id),
+    ...(card.formatWarnings?.length ? { formatWarnings: card.formatWarnings } : {}),
+    ...(card.unassignedFragments?.length ? { unassignedFragmentIds: card.unassignedFragments.map(fragment => fragment.id) } : {}),
+    evidence: card.evidence.map(entry => ({ fragment: entry.fragment.id, text: entry.text, excerptOnly: entry.excerptOnly,
+      truncated: entry.truncated, sourceCharacters: entry.sourceCharacters })) }))
 }
 
 // 完整目录只按实际长度及输出编号预算分批，未合并卡片不淘汰。
@@ -205,8 +229,7 @@ function topicCatalogGroups(state: RunState, cards: readonly TopicCard[]): Array
 // 全文生成材料卡、最多两层无淘汰整理，然后完整目录仅做一次全局选择。
 async function reportTopics(state: RunState, candidates: readonly ReportCandidate[], full: boolean): Promise<{ selected: TopicCandidate[]; overviews: TopicOverview[]; cards: TopicCard[]; catalog: TopicCard[] }> {
   const scoped = candidates.filter(candidate => candidate.kind !== 'quote').map(candidate => ({ ...candidate, scopeHints: candidate.title ? [candidate.title] : [] }))
-  const cardSystem = getTopicCatalogInstructions('cards'), contexts = topicGroups(state.snapshot, scoped, 32000, cardSystem, 'inline', 12)
-    .map(context => createTopicCardContext(state.snapshot, [...context.candidates.values()]))
+  const cardSystem = getTopicCatalogInstructions('cards'), contexts = topicGroups(state.snapshot, scoped, 32000, cardSystem, 'cards', 12)
   const results = await reportMap(state, contexts, async context => {
     const fragments = [...context.sources.values()].flatMap(value => [...value])
     return reportUnit(state, 'selection', fragments, cardSystem, context.input, text => readTopicCards(text, context),
@@ -216,6 +239,8 @@ async function reportTopics(state: RunState, candidates: readonly ReportCandidat
         recoveryInstructions: '整批重新返回一个完整JSON对象，根字段只能有cards，不返回completed。闭合cards容器后闭合根对象；不使用旧JSONL或end记录。' })
   })
   const cards = results.flat()
+  const unassignedCount = new Set(cards.flatMap(card => (card.unassignedFragments || []).map(fragment => fragment.id))).size
+  if (unassignedCount) state.meta.warnings.push(unassignedCount + '条原文已完成分类但未归入话题卡，原始来源已单独保留。')
   let current = cards.filter(card => card.status === 'ok')
   if (!current.length) return { selected: [], overviews: [], cards, catalog: [] }
   for (let level = 0; level < 2 && current.length > 1; level++) {
@@ -230,8 +255,12 @@ async function reportTopics(state: RunState, candidates: readonly ReportCandidat
     // 一组已经共同整理全部目录，无需再次请求相同材料；多组至多再整理一层。
     if (groups.length === 1) break
   }
-  const limit = full ? 10 : 5, selectionSystem = getTopicCatalogInstructions('selection')
-  const context = createTopicCatalogContext(state.snapshot, current, limit)
+  const limit = full ? 10 : 5
+  let selectionSystem = getTopicCatalogInstructions('selection'), context = createTopicCatalogContext(state.snapshot, current, limit)
+  if (Array.from(selectionSystem + context.input).length + RESERVE_CHARACTERS > 32000) {
+    context = createTopicCatalogContext(state.snapshot, current, limit, true)
+    selectionSystem += '\n输入topic-selection-4为完整紧凑目录：candidates每行按columns列顺序，行号从1起对应c1、c2等引用。evidence列整数是全局evidence表从0起的索引；表内字符串为未截断摘录，[文字,原字符数]为截断摘录，全部excerptOnly=true。firstMinute/lastMinute为timeOriginMs起的相对分钟，精度timePrecisionMs；null表示时间未知。全部行都须阅读，输出契约仍为selected的c引用与completed。'
+  }
   if (Array.from(selectionSystem + context.input).length + RESERVE_CHARACTERS > 32000) throw new Error('完整话题目录经过最多两层整理仍超过容量，禁止截取或分批淘汰')
   const fragments = [...new Map(current.flatMap(card => [...card.candidate.fragments]).map(fragment => [fragment.id, fragment])).values()]
   const selected = await reportUnit(state, 'selection', fragments, selectionSystem, context.input,
@@ -241,7 +270,12 @@ async function reportTopics(state: RunState, candidates: readonly ReportCandidat
   selection.selected.forEach(candidate => candidate.fragments.forEach(fragment => state.selected.add(fragment.id)))
   reportProgress(state)
   const overviews = await reportMap(state, selection.selected, async candidate => {
-    const overviewSystem = getTopicInstructions('overview'), parts = topicGroups(state.snapshot, [candidate], 16000, overviewSystem)
+    // 用目录明确保留的叶卡恢复原始讨论边界，避免合并范围把多个对象暗示为同一主体。
+    const selectedCard = current.find(card => card.candidate.id === candidate.id)
+    if (!selectedCard) throw new Error('入选话题缺少完整目录来源')
+    const leaves = new Set(selectedCard.leaves), originals = cards.filter(card => leaves.has(card.candidate.id)).map(card => card.candidate)
+    if (originals.length !== leaves.size) throw new Error('入选话题原始全文卡边界缺失')
+    const overviewSystem = getTopicInstructions('overview'), parts = topicGroups(state.snapshot, originals, 16000, overviewSystem, 'overview')
     const values = await reportMap(state, parts, async context => {
       const fragments = [...context.sources.values()].flatMap(value => [...value])
       const value = await reportUnit(state, 'overview', fragments, overviewSystem, context.input, text => readTopicOverview(text, context), undefined,
@@ -390,6 +424,8 @@ async function reportReview(state: RunState, data: GroundedReportInput, overview
 // 完整来源处理后才能组装结果；失败取消所有在途并等待清理，不交付半成品。
 export async function runGroundedReport(data: GroundedReportInput, full: boolean, options: GroundedReportOptions): Promise<GroundedReportResult> {
   const now = options.now || Date.now, startedAt = options.startedAtMs ?? now(), remaining = Math.max(0, options.deadlineMs - startedAt)
+  if (remaining > GROUNDED_REPORT_LIMITS.runTimeoutMs) throw new Error('日报任务不能超过三十分钟硬截止')
+  const saveReserve = Math.min(GROUNDED_REPORT_LIMITS.saveReserveMs, remaining * 0.05)
   const meta = createReportAnalysisDiagnostics({ windowMessageCount: data.windowMessageCount ?? data.totalMessages ?? data.messages.length,
     selectedMessageCount: data.messages.length, sourceCompleteness: data.sourceCompleteness || 'legacy_unknown', reportPeriod: data.reportPeriod, periodBackfilled: data.periodBackfilled })
   // 来源构造失败前不注册取消监听，避免无效输入留下无法清理的任务闭包。
@@ -399,7 +435,7 @@ export async function runGroundedReport(data: GroundedReportInput, full: boolean
   options.signal?.addEventListener('abort', abortGroundedReport, { once: true })
   if (options.signal?.aborted) abortGroundedReport()
   const state: RunState = { snapshot, meta, controller, pool, concurrency: options.concurrency ?? 1, full, now, stageCacheHits: [],
-    options: { ...options, workDeadlineMs: Math.min(options.workDeadlineMs ?? startedAt + remaining * 0.95, options.deadlineMs) },
+    options: { ...options, workDeadlineMs: Math.min(options.workDeadlineMs ?? options.deadlineMs - saveReserve, options.deadlineMs - saveReserve) },
     firstRequests: 0, recoveries: 0, unitCount: 0, submitted: new Set(), classified: new Set(), cached: new Set(), deterministic: new Set(), selected: new Set(), deepRead: new Set(), displayed: new Set() }
   try {
     if (controller.signal.aborted) throw controller.signal.reason
@@ -467,7 +503,6 @@ export async function runGroundedReport(data: GroundedReportInput, full: boolean
     const portraits = (outcomes[2] as PromiseFulfilledResult<Awaited<typeof portraitsPromise>>).value
     const review = (outcomes[3] as PromiseFulfilledResult<Awaited<typeof reviewPromise>>).value
     if (now() >= state.options.workDeadlineMs!) throw new ReportAnalysisError('日报分析预算已耗尽', 'generation_failed', 'analysis', meta)
-    if (!state.recoveries && now() - startedAt > remaining * 0.8) throw new ReportAnalysisError('日报无恢复首轮工作超过规划预算', 'generation_failed', 'analysis', meta)
     // 旧输入覆盖仍表示来源进入话题识别链；展示和深读范围只从独立evidence字段读取。
     meta.topicInputMessageCount = snapshot.sources.length; meta.omittedMessageCount = 0
     meta.coverageRate = snapshot.sources.length ? 100 : null; meta.analysisState = 'complete'

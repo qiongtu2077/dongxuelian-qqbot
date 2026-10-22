@@ -5,12 +5,15 @@
  */
 const fs = require('fs')
 const path = require('path')
+const { createHash } = require('crypto') as typeof import('crypto')
 const { collectReportData } = require('./data-collector') as typeof import('./data-collector')
 const { analyzeWithAI } = require('./ai-analyzer') as typeof import('./ai-analyzer')
 const { renderReport } = require('./html-renderer') as typeof import('./html-renderer')
 const { createTaskArtifactStore } = require('./analysis-artifacts') as typeof import('./analysis-artifacts')
 const getReportEmptyStates: typeof import('./models').getReportEmptyStates = require('./models').getReportEmptyStates
 const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
+const { GROUNDED_REPORT_LIMITS } = require('./report-runner') as typeof import('./report-runner')
+const { readGroundedReportConfiguration, collectGroundedReportInput, analyzeGroundedReport } = require('./report-grounded-entry') as typeof import('./report-grounded-entry')
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 const { createReportPeriod } = loadManagementModule('daily.reportPeriod')
 const { getResourceGateStatus } = loadManagementModule('resource.gate')
@@ -223,11 +226,11 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
   if (!outputDir) throw new Error('daily report outputDir is required')
   ensureOutputDir(outputDir)
   const now = options.now || Date.now
-  const deadlineMs = options.deadlineMs ?? now() + 600000
+  const deadlineMs = options.deadlineMs ?? now() + GROUNDED_REPORT_LIMITS.runTimeoutMs
   const startedAtMs = options.startedAtMs ?? now()
   const runtimeBudgetMs = Math.max(0, deadlineMs - startedAtMs)
-  // 正常任务预留30秒落盘；短时限测试按同一5%比例预留，不改变600秒分类。
-  const workDeadlineMs = deadlineMs - Math.min(30000, runtimeBudgetMs * 0.05)
+  // 三十分钟任务预留30秒落盘；外部更短截止仍按至多5%比例预留。
+  const workDeadlineMs = deadlineMs - Math.min(GROUNDED_REPORT_LIMITS.saveReserveMs, runtimeBudgetMs * 0.05)
   const stageSoftDeadlinesMs = { compression: startedAtMs + runtimeBudgetMs * 0.6,
     merge: startedAtMs + runtimeBudgetMs * 0.7, basic: startedAtMs + runtimeBudgetMs * 0.8, full: startedAtMs + runtimeBudgetMs * 0.8 }
   let collectingDurationMs = 0
@@ -236,7 +239,7 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
   let stage = 'collecting'
   let diagnostics = createReportAnalysisDiagnostics({ windowMessageCount: 0, selectedMessageCount: 0,
     sourceCompleteness: 'legacy_unknown', reportPeriod, periodBackfilled: options.periodBackfilled })
-  // 所有阶段共用同一硬截止；取消理由由执行器传递，不能开始新的十分钟。
+  // 所有阶段共用执行器传入的同一硬截止，进入下一阶段不能重新计时。
   const assertRuntime = (): void => {
     if (options.signal?.aborted) throw options.signal.reason || new Error('日报任务已取消')
     if (now() >= deadlineMs) throw new ReportAnalysisError('日报运行总时限已耗尽', 'total_timeout', stage, diagnostics)
@@ -260,9 +263,11 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
   }
 
   try {
+    const groundedConfiguration = readGroundedReportConfiguration()
     emitStep('collecting')
     saveProgress(diagnostics)
-    const collected = collectReportData(options.channelKey, reportPeriod)
+    const groundedInput = groundedConfiguration ? collectGroundedReportInput(options.channelKey, reportPeriod, assertRuntime) : null
+    const collected = groundedInput ? groundedInput.data : collectReportData(options.channelKey, reportPeriod)
     collectingDurationMs = Math.max(0, now() - startedAtMs)
     const data = collected as ReportDataLike | null
     diagnostics = createReportAnalysisDiagnostics({ windowMessageCount: data?.windowMessageCount ?? data?.totalMessages ?? 0,
@@ -289,7 +294,11 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
     assertLease = options.assertLease || captureReportArtifactLease(taskId)
     assertLease()
     const artifactStore = createTaskArtifactStore({ taskId, channelKey: String(options.channelKey), deadlineMs, assertActive: assertRuntime, assertLease, now })
-    const analysis = await analyzeWithAI({ ...data, reportPeriod, periodBackfilled: options.periodBackfilled } as AnalyzerReportData,
+    const grounded = groundedInput && groundedConfiguration ? await analyzeGroundedReport(groundedInput, !!options.detail, {
+      taskId, channelKey: String(options.channelKey), configuration: groundedConfiguration, periodBackfilled: options.periodBackfilled,
+      startedAtMs, deadlineMs, workDeadlineMs, signal: options.signal, now, onProgress: saveProgress,
+      assertActive: assertRuntime, assertLease, ...artifactStore }) : null
+    const analysis = grounded ? grounded.analysis : await analyzeWithAI({ ...data, reportPeriod, periodBackfilled: options.periodBackfilled } as AnalyzerReportData,
       !!options.detail, { deadlineMs, workDeadlineMs, stageSoftDeadlinesMs, signal: options.signal, now, onProgress: saveProgress, ...artifactStore })
     if (!analysis.meta || analysis.meta.analysisState !== 'complete') throw new ReportAnalysisError('日报必要分析缺少完整成功诊断', 'generation_failed', stage, diagnostics)
     saveProgress(analysis.meta)
@@ -302,6 +311,10 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
     result.reportPeriod = reportPeriod
     result.periodBackfilled = options.periodBackfilled === true
     result.reportPolicyVersion = 2
+    if (grounded) {
+      result.analysisVersion = grounded.analysis.analysisVersion
+      result.analysisStorage = grounded.storage
+    }
 
     if (options.renderImage === false) result.reason = 'render_disabled'
     else if (now() >= workDeadlineMs) { result.reason = 'render_budget_exhausted'; result.warnings.push('图片渲染预算不足，保留完整文字结果') }
@@ -337,6 +350,14 @@ async function generateDailyReportResult(options: DailyReportPipelineOptions): P
     const savingStartedAt = now()
     saveProgress(diagnostics)
     result.analysisMeta = diagnostics
+    if (grounded) {
+      // S2任务摘要会有界脱敏；完整分析独立原子保存，防止审计数组被任务层截断。
+      const analysisPath = path.join(outputDir, 'analysis.json'), analysisText = JSON.stringify(grounded.analysis, null, 2)
+      writeTextFile(analysisPath, analysisText)
+      assertRuntime()
+      result.analysisPath = analysisPath
+      result.analysisSha256 = createHash('sha256').update(analysisText).digest('hex')
+    }
     writeJsonFile(path.join(outputDir, 'result.json'), result)
     diagnostics.stageDurationsMs.saving = Math.max(0, now() - savingStartedAt)
     assertRuntime()

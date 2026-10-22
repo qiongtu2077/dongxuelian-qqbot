@@ -237,6 +237,11 @@ function testRegisteredBudgetsAndDirectOverrides() {
   const actual = Object.fromEntries(Object.keys(expected).map(kind => [kind, normalizeTaskBudget({ kind }).minMemMb]))
   check('all registered task budgets match the plan table', JSON.stringify(actual) === JSON.stringify(expected), JSON.stringify(actual))
   check('future unknown task kinds keep the explicit 600MB fallback', normalizeTaskBudget({ kind: 'future_unknown_task' }).minMemMb === 600)
+  check('daily report runtime is thirty minutes with original queue and render budgets',
+    normalizeTaskBudget({ kind: 'daily_report' }).runTimeoutMs === 1800000
+    && normalizeTaskBudget({ kind: 'daily_report' }).queueTimeoutMs === 600000
+    && normalizeTaskBudget({ kind: 'daily_report_render' }).runTimeoutMs === 600000
+    && normalizeTaskBudget({ kind: 'daily_report_preanalysis' }).runTimeoutMs === 90000)
 
   const root = path.resolve(__dirname, '..', '..', '..')
   const agentExecution = fs.readFileSync(path.join(root, 'packages', 'koishi-plugin-dongxuelian-ai', 'src', 'agent', 'resource-execution.ts'), 'utf8')

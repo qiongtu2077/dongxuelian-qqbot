@@ -95,6 +95,7 @@ export interface AnalysisRuntime {
     recoveryInstructions?: string;
     requireNormalFinish?: boolean;
     shouldRecover?: (error: unknown) => boolean;
+    retryOriginalRequest?: (error: unknown) => boolean;
     onUnitCompleted?: (unit: AnalysisUnitDescriptor, attempts: AnalysisUnitAttempt[], result: unknown) => void;
     onUnitFailed?: (unit: AnalysisUnitDescriptor, attempts: AnalysisUnitAttempt[]) => void;
     request(system: string, input: string, maxTokens: number, extra: Record<string, unknown>): Promise<string>;

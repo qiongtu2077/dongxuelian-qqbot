@@ -86,6 +86,7 @@ export interface AnalysisRuntime {
   recoveryInstructions?: string
   requireNormalFinish?: boolean
   shouldRecover?: (error: unknown) => boolean
+  retryOriginalRequest?: (error: unknown) => boolean
   onUnitCompleted?: (unit: AnalysisUnitDescriptor, attempts: AnalysisUnitAttempt[], result: unknown) => void
   onUnitFailed?: (unit: AnalysisUnitDescriptor, attempts: AnalysisUnitAttempt[]) => void
   request(system: string, input: string, maxTokens: number, extra: Record<string, unknown>): Promise<string>
@@ -481,8 +482,10 @@ export async function requestAnalysisUnit<T>(runtime: AnalysisRuntime, diagnosti
         diagnostics.warnings.push(`${unit.id}合法结果覆盖不足，仅对缺失引用补漏一次：${message}`)
         requestSystem = recovery.system; requestInput = recovery.input; requestValidate = recovery.validate
         retryCorrection = ''
-      } else if (error instanceof AnalysisUnitRequestTimeoutError) {
-        diagnostics.warnings.push(`${unit.id}单次超时，清理后按原输入恢复一次`)
+      } else if (error instanceof AnalysisUnitRequestTimeoutError || runtime.retryOriginalRequest?.(error)) {
+        diagnostics.warnings.push(error instanceof AnalysisUnitRequestTimeoutError
+          ? `${unit.id}单次超时，清理后按原输入恢复一次`
+          : `${unit.id}上游暂时故障，清理后按原输入恢复一次：${message}`)
         retryCorrection = ''
       } else {
         diagnostics.warnings.push(`${unit.id}初次处理失败，重试一次：${message}`)

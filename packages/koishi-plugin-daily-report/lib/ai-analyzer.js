@@ -9,6 +9,7 @@ const { loadConfig } = loadManagementModule('core.runtimeConfig');
 const { requestChatCompletions, freezeChatRoute } = loadManagementModule('core.api');
 const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserTitle } = require('./models');
 const { getErrorMessage } = require('./error-utils');
+const { GROUNDED_REPORT_LIMITS } = require('./report-runner');
 const { redactSensitiveText } = loadManagementModule('core.redactor');
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils');
 const { createReportAnalysisDiagnostics, ReportAnalysisError } = loadManagementModule('daily.reportAnalysis');
@@ -557,7 +558,7 @@ async function analyzeWithAI(data, full = false, options = {}) {
         reportPeriod: data.reportPeriod, periodBackfilled: data.periodBackfilled,
     });
     const now = options.now || Date.now;
-    const deadlineMs = options.deadlineMs ?? now() + 600000;
+    const deadlineMs = options.deadlineMs ?? now() + GROUNDED_REPORT_LIMITS.runTimeoutMs;
     try {
         if (options.signal?.aborted)
             throw options.signal.reason || new Error('日报任务已取消');

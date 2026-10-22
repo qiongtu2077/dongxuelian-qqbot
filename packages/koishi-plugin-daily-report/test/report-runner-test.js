@@ -1,7 +1,7 @@
 /** 单一编排器的真实材料、模块结果、实际请求预算和取消行为。 */
 'use strict'
 const assert = require('assert').strict
-const { runGroundedReport } = require('../lib/report-runner')
+const { runGroundedReport, GROUNDED_REPORT_LIMITS } = require('../lib/report-runner')
 const { ReportRequestPool, ReportRequestBoundaryError } = require('../lib/report-request-pool')
 const { createReportEvidence } = require('../lib/report-evidence')
 const { updateReportBatchCatalog, selectReportCatalogBatches } = require('../lib/report-batch-catalog')
@@ -14,15 +14,15 @@ const { requestAnalysisUnit, AnalysisUnitRequestTimeoutError } = require('../lib
 function modelReply(stage, payload, mode = 'normal') {
   if (stage === 'classification') return { groups: { [mode === 'social' ? 'social:1' : 'event:1']: '安装讨论' }, records: Object.fromEntries(payload.items.map(item => [item.ref, mode === 'social' ? 'social:1' : 'event:1'])),
     quotes: mode === 'quote' ? payload.items.slice(0, 3).map(item => ({ kind: 'quote', ref: item.ref, criterion: 'useful_insight' })) : [], completed: true }
-  if (payload.kind === 'topic-cards-2') return { cards: Object.fromEntries(payload.candidates.map(candidate => {
+  if (payload.kind === 'topic-cards-9') return { cards: Object.fromEntries(payload.candidates.map(candidate => {
     const source = candidate.sources[0]
     const ok = mode !== 'social' && (mode !== 'tail-priority' || candidate.sources.some(source => source.text.includes('TAIL_SENTINEL')))
-    return [candidate.ref, { status: ok ? 'ok' : 'insufficient', scope: ok ? '安装讨论' : '', summary: ok ? '安装与设置的具体问题' : '',
-      evidence: ok ? [{ ref: source.ref, text: Array.from(source.text).slice(0, 64).join('') }] : [] }]
+    return [candidate.ref, [{ refs: candidate.refs, status: ok ? 'ok' : 'insufficient', scope: ok ? '安装讨论' : '',
+      evidence: ok ? [source.ref] : [] }]]
   })) }
   if (stage === 'grouping') return { groups: payload.candidates.length > 1 ? [{ refs: payload.candidates.map(candidate => candidate.ref),
-    scope: '安装讨论', summary: '讨论安装与设置', representatives: [payload.candidates[0].ref] }] : [], completed: true }
-  if (payload.kind === 'topic-selection-2') return { selected: payload.candidates.slice(0, payload.displayLimit).map(candidate => candidate.ref), completed: true }
+    scope: '安装讨论', representatives: [payload.candidates[0].ref] }] : [], completed: true }
+  if (payload.kind === 'topic-selection-3') return { selected: payload.candidates.slice(0, payload.displayLimit).map(candidate => candidate.ref), completed: true }
   if (stage === 'overview') return { title: '安装与配置讨论', summary: '交流了安装方案与设置。', refs: [payload.sources[0].ref], completed: true }
   if (stage === 'quotes') return { items: payload.sources.filter(source => source.role === 'primary').slice(0, 3).map(source => ({ ref: source.ref, comment: '' })) }
   if (stage === 'portraits') return { members: payload.members.map(member => ({ member: member.ref, status: 'ok', title: '', description: '本期参与了具体讨论。', refs: member.refs.slice(0, 1) })), completed: true }
@@ -63,22 +63,91 @@ async function checkCompleteRunner() {
   assert.equal(result.meta.evidence.processedMessageCount, 6)
   assert.equal(result.meta.evidence.deepReadMessageCount, 6)
   assert.equal(result.meta.evidence.displayedTopicMessageCount, 1)
+  assert(result.audit.topicCards.every(card => card.evidence.every(entry => {
+    const original = data.messages[Number(entry.fragment.split(':')[0]) - 1].content
+    return entry.excerptOnly === true && original.startsWith(entry.text) && entry.sourceCharacters === Array.from(original).length
+      && entry.truncated === (Array.from(entry.text).length < Array.from(original).length)
+  })))
   assert.ok(['classification', 'selection', 'overview', 'quotes', 'portraits', 'review'].every(stage => calls.some(call => call.stage === stage)))
   assert.equal(saved.length, calls.length)
   assert.ok(calls.every(call => Array.from(call.system + call.input).length <= (['grouping', 'selection'].includes(call.stage) ? 32000 : 16000)))
   assert.ok(calls.every(call => call.tokens === (['classification', 'grouping', 'selection'].includes(call.stage) ? 4096 : 2048)))
-  for (const call of calls.filter(value => JSON.parse(value.input).kind === 'topic-cards-2')) {
+  for (const call of calls.filter(value => JSON.parse(value.input).kind === 'topic-cards-9')) {
     const payload = JSON.parse(call.input)
     assert.deepEqual(payload.requiredCandidateRefs, payload.candidates.map(candidate => candidate.ref))
     assert.equal(payload.candidateCount, payload.candidates.length)
-    assert(payload.candidates.every(candidate => candidate.scopeHints.includes('安装讨论')))
+    assert(payload.candidates.every(candidate => !Object.hasOwn(candidate, 'scopeHints')))
+    assert.equal(payload.supply, 'candidate-inline-local-4')
+    assert(payload.candidates.every(candidate => Array.isArray(candidate.contextRefs)))
   }
   for (const call of calls.filter(value => value.stage === 'overview')) {
     const payload = JSON.parse(call.input)
-    assert(payload.candidates.every(candidate => candidate.scopeHints.includes('安装讨论')))
+    assert(payload.candidates.every(candidate => candidate.scopeHints === undefined))
   }
   assert(calls.filter(call => call.stage !== 'selection').every(call => !('requiredCandidateRefs' in JSON.parse(call.input))))
-  assert.equal(calls.filter(call => JSON.parse(call.input).kind === 'topic-selection-2').length, 1)
+  assert.equal(calls.filter(call => JSON.parse(call.input).kind === 'topic-selection-3').length, 1)
+}
+
+// 目录合并不抹平全文卡的原始范围与来源边界，共享原文仍完整供料而不强绑对象。
+async function checkOverviewLeafBoundaries() {
+  for (const detailed of [false, true]) for (const shared of [false, true]) {
+    const data = reportData(4), { options } = runnerOptions()
+    data.messages.forEach((message, index) => { message.content = ['裂兽没有反伤', '关卡常驻免伤50', '老鼠护盾多少', '护盾最终结算200'][index] })
+    let inspected = 0
+    options.request = async (stage, attempt, system, input, tokens, extra) => {
+      extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true })
+      const payload = JSON.parse(input)
+      if (stage === 'classification') return JSON.stringify({ groups: { 'event:1': '关卡机制', 'event:2': '老鼠护盾' },
+        records: Object.fromEntries(payload.items.map((item, i) => [item.ref, i < 2 ? shared && i === 1 ? 'event:1|event:2' : 'event:1' : 'event:2'])), quotes: [], completed: true })
+      if (payload.kind === 'topic-cards-9') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map((candidate, index) => [candidate.ref,
+        [{ refs: candidate.refs, status: 'ok', scope: index === 0 ? '关卡机制' : '老鼠护盾', evidence: [candidate.sources[0].ref] }]])) })
+      if (stage === 'grouping') return JSON.stringify({ groups: [{ refs: payload.candidates.map(c => c.ref), scope: '关卡与护盾', representatives: [payload.candidates[0].ref] }], completed: true })
+      if (stage === 'overview') {
+        inspected++
+        assert.equal(payload.kind, 'neutral-topic-overview-4'); assert.equal(payload.members, undefined)
+        assert.deepEqual(payload.candidates.map(candidate => candidate.cardRange), ['关卡机制', '老鼠护盾'])
+        assert(payload.candidates.every(candidate => candidate.rangeIsProposal === true))
+        assert([...payload.sources, ...payload.context].every(source => !Object.hasOwn(source, 'author')))
+        assert(payload.candidates.every(candidate => candidate.scopeHints === undefined))
+        const sourceText = ref => payload.sources.find(source => source.ref === ref).text
+        assert.deepEqual(payload.candidates[0].refs.map(sourceText), data.messages.slice(0, 2).map(m => m.content))
+        assert.deepEqual(payload.candidates[1].refs.map(sourceText), data.messages.slice(shared ? 1 : 2).map(m => m.content))
+        assert.equal(payload.sources.length, 4)
+        return JSON.stringify({ title: '关卡与护盾讨论', summary: '讨论关卡机制与老鼠护盾。', refs: payload.sources.map(s => s.ref), completed: true })
+      }
+      return JSON.stringify(modelReply(stage, payload))
+    }
+    const result = await runGroundedReport(data, detailed, options)
+    assert.equal(inspected, 1); assert.equal(result.topics.length, 1)
+    assert.equal(result.meta.evidence.deepReadMessageCount, 4); assert.equal(result.meta.evidence.unprocessedMessageCount, 0)
+  }
+}
+
+// 父候选拆分后实际选题、概述和审计只使用各子卡来源，不复制整父材料。
+async function checkSplitCardRunner() {
+  const data = reportData(4), { options } = runnerOptions(), seen = []
+  data.messages.forEach((message, index) => { message.content = ['减秒机制提问', '比较回复速度', '酒神强度评价', '其他六星的比较'][index] })
+  options.request = async (stage, attempt, system, input, tokens, extra) => {
+    extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true })
+    const payload = JSON.parse(input)
+    if (payload.kind === 'topic-cards-9') return JSON.stringify({ cards: { c1: [
+      { refs: ['r1','r2'], status: 'ok', scope: '回复速度机制', evidence: ['r1'] },
+      { refs: ['r3','r4'], status: 'ok', scope: '酒神强度比较', evidence: ['r3'] },
+    ] } })
+    if (stage === 'grouping') return '{"groups":[],"completed":true}'
+    if (stage === 'overview') {
+      seen.push(payload.sources.map(source => source.text))
+      return JSON.stringify({ title: '独立问题', summary: '保留本问题自己的完整原文。', refs: payload.sources.map(source => source.ref), completed: true })
+    }
+    return JSON.stringify(modelReply(stage, payload))
+  }
+  const result = await runGroundedReport(data, false, options)
+  assert.equal(result.topics.length, 2)
+  assert.deepEqual(seen, [data.messages.slice(0, 2).map(message => message.content), data.messages.slice(2).map(message => message.content)])
+  assert.equal(result.meta.evidence.processedMessageCount, 4); assert.equal(result.meta.evidence.deepReadMessageCount, 4)
+  assert.deepEqual(result.audit.topicCards.map(card => card.fragmentIds), [['1:1','2:1'], ['3:1','4:1']])
+  assert(result.audit.topicCards.every(card => card.parentId === 'batch:0:0'))
+  assert.equal(result.audit.topicCatalog.flatMap(card => card.leaves).length, 2)
 }
 
 // 零消息和精确纯图片不调用模型；非空短互动仍需各模块明确判断。
@@ -116,16 +185,16 @@ async function checkIndependentInteractionSelection() {
         extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true }); const payload = JSON.parse(input); calls.push({ stage, payload })
         if (stage === 'classification') return JSON.stringify({ groups: mixed ? { 'event:1': '事项甲', 'event:2': '事项乙' } : {},
           records: Object.fromEntries(payload.items.map(item => [item.ref, item.text === 'event-B' ? 'event:2' : item.text.split('-')[0] + ':1'])), quotes: [], completed: true })
-        if (payload.kind === 'topic-cards-2') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => {
+        if (payload.kind === 'topic-cards-9') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => {
           const source = candidate.sources[0], ok = source.text === 'social-SENTINEL'
-          return [candidate.ref, { status: ok ? 'ok' : 'insufficient', scope: ok ? '独立互动' : '', summary: ok ? '有具体对象的短互动' : '', evidence: ok ? [{ ref: source.ref, text: source.text }] : [] }]
+          return [candidate.ref, [{ refs: candidate.refs, status: ok ? 'ok' : 'insufficient', scope: ok ? '独立互动' : '', evidence: ok ? [source.ref] : [] }]]
         })) })
         if (stage === 'grouping') return '{"groups":[],"completed":true}'
-        if (payload.kind === 'topic-selection-2') return JSON.stringify({ selected: payload.candidates.map(candidate => candidate.ref), completed: true })
+        if (payload.kind === 'topic-selection-3') return JSON.stringify({ selected: payload.candidates.map(candidate => candidate.ref), completed: true })
         assert.equal(stage, 'overview'); assert(payload.sources.some(source => source.text === 'social-SENTINEL'))
         return JSON.stringify({ title: '本期独立互动', summary: '保留原始互动的选题结果。', refs: [payload.sources[0].ref], completed: true })
       } })
-    const supplied = new Set(calls.filter(call => call.payload.kind === 'topic-cards-2').flatMap(call => call.payload.candidates.flatMap(candidate => candidate.sources.map(source => source.text))))
+    const supplied = new Set(calls.filter(call => call.payload.kind === 'topic-cards-9').flatMap(call => call.payload.candidates.flatMap(candidate => candidate.sources.map(source => source.text))))
     assert(texts.every(text => supplied.has(text)))
     assert.equal(result.topics.length, 1)
     assert(result.audit.selected.some(candidate => candidate.fragmentIds.includes((texts.indexOf('social-SENTINEL') + 1) + ':1')))
@@ -144,18 +213,19 @@ async function checkGlobalRepresentativeSelection() {
       extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true }); const payload = JSON.parse(input); calls.push({ stage, payload })
       if (stage === 'classification') return JSON.stringify({ groups: Object.fromEntries(payload.items.map((item, index) => ['event:' + (index + 1), '具体讨论'])),
         records: Object.fromEntries(payload.items.map((item, index) => [item.ref, 'event:' + (index + 1)])), quotes: [], completed: true })
-      if (payload.kind === 'topic-cards-2') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => {
+      if (payload.kind === 'topic-cards-9') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => {
         const source = candidate.sources[0], scope = source.text.includes('安装范围') ? '安装范围' : '出行范围'
         assert(source.text.endsWith('完整尾部'))
-        return [candidate.ref, { status: 'ok', scope, summary: '讨论了该范围的具体问题', evidence: [{ ref: source.ref, text: scope + '中间证据' }] }]
+        return [candidate.ref, [{ refs: candidate.refs, status: 'ok', scope, evidence: [source.ref] }]]
       })) })
       if (stage === 'grouping') {
         assert.equal(payload.candidates.length, data.messages.length > 6 ? 50 : 6)
-        assert(payload.candidates.every(candidate => candidate.evidence[0].includes('中间证据')))
+        assert(payload.candidates.every(candidate => candidate.evidence[0].excerptOnly && candidate.evidence[0].truncated
+          && candidate.evidence[0].text.startsWith('开头') && Array.from(candidate.evidence[0].text).length === 64))
         return JSON.stringify({ groups: ['安装范围', '出行范围'].map(scope => ({ refs: payload.candidates.filter(candidate => candidate.scope === scope).map(candidate => candidate.ref), scope,
-          summary: '讨论了这一范围的具体问题', representatives: [payload.candidates.find(candidate => candidate.scope === scope)?.ref] })).filter(group => group.refs.length > 1), completed: true })
+          representatives: [payload.candidates.find(candidate => candidate.scope === scope)?.ref] })).filter(group => group.refs.length > 1), completed: true })
       }
-      if (payload.kind === 'topic-selection-2') {
+      if (payload.kind === 'topic-selection-3') {
         if (emptySelection) { emptyAttempts++; return '{"selected":[],"completed":true}' }
         assert.equal(payload.candidates.length, 2)
         assert.deepEqual(payload.candidates.map(candidate => candidate.sourceCount).sort((a,b)=>a-b), [6,44])
@@ -163,13 +233,13 @@ async function checkGlobalRepresentativeSelection() {
       }
       assert.equal(stage, 'overview')
       if (payload.candidates) assert(payload.sources.some(source => source.text.endsWith('完整尾部')))
-      return JSON.stringify({ title: payload.candidates ? payload.candidates[0].scopeHints[0] : payload.sources[0].title,
+      return JSON.stringify({ title: payload.candidates ? (payload.sources[0].text.includes('安装范围') ? '安装范围' : '出行范围') : payload.sources[0].title,
         summary: '对照原文概括该具体范围。', refs: [payload.sources[0].ref], completed: true })
     } }
   const result = await runGroundedReport(data, false, options)
   assert.equal(result.topics.length, 2); assert.deepEqual(new Set(result.topics.map(topic => topic.title)), new Set(['安装范围', '出行范围']))
-  assert.equal(new Set(calls.filter(call => call.payload.kind === 'topic-cards-2').flatMap(call => call.payload.candidates.flatMap(candidate => candidate.sources.map(source => source.text)))).size, 50)
-  assert.equal(calls.filter(call => call.payload.kind === 'topic-selection-2').length, 1)
+  assert.equal(new Set(calls.filter(call => call.payload.kind === 'topic-cards-9').flatMap(call => call.payload.candidates.flatMap(candidate => candidate.sources.map(source => source.text)))).size, 50)
+  assert.equal(calls.filter(call => call.payload.kind === 'topic-selection-3').length, 1)
   assert.equal(result.audit.topicCards.length, 50); assert.equal(result.audit.topicCatalog.flatMap(card => card.leaves).length, 50)
   assert.equal(result.meta.evidence.deepReadMessageCount, 50)
   data.messages = data.messages.slice(0,6); data.totalMessages=6; emptySelection=true
@@ -177,24 +247,34 @@ async function checkGlobalRepresentativeSelection() {
   assert.equal(emptyAttempts, 2)
 }
 
-// 大量不合并卡片只做两层；完整目录超限时不启动最终选题、不丢尾部、不自动第三层。
+// 两层后采用完整紧凑目录仍不分批淘汰；紧凑也超限则准确失败，不自动第三层。
 async function checkCatalogCapacityFailure() {
-  const data = reportData(300), calls = []
-  await assert.rejects(runGroundedReport(data, false, { deadlineMs: Date.now() + 600000, concurrency: 2,
+  for (const count of [300, 1000]) {
+  const data = reportData(count), calls = []
+  const pending = runGroundedReport(data, false, { deadlineMs: Date.now() + 600000, concurrency: 2,
     request: async (stage, attempt, system, input, tokens, extra) => {
       extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true }); const payload = JSON.parse(input); calls.push({ stage, payload })
       if (stage === 'classification') return JSON.stringify({ groups: Object.fromEntries(payload.items.map((_, index) => ['event:' + (index + 1), '具体问题'])),
         records: Object.fromEntries(payload.items.map((item, index) => [item.ref, 'event:' + (index + 1)])), quotes: [], completed: true })
-      if (payload.kind === 'topic-cards-2') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => {
+      if (payload.kind === 'topic-cards-9') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => {
         const source = candidate.sources[0]
-        return [candidate.ref, { status: 'ok', scope: '范围'.repeat(16), summary: '实质内容'.repeat(20), evidence: [{ ref: source.ref, text: source.text }] }]
+        return [candidate.ref, [{ refs: candidate.refs, status: 'ok', scope: '范围'.repeat(16), evidence: [source.ref] }]]
       })) })
-      assert.equal(payload.kind, 'topic-directory-1'); return '{"groups":[],"completed":true}'
-    } }), /最多两层整理仍超过容量/)
-  assert.equal(calls.filter(call => call.payload.kind === 'topic-cards-2').flatMap(call => call.payload.candidates).length, 300)
+      if (payload.kind === 'topic-selection-4') {
+        assert.equal(payload.candidates.length, count); assert(Array.from(system + input).length + 512 <= 32000)
+        return JSON.stringify({ selected: ['c' + count], completed: true })
+      }
+      if (stage === 'overview') return JSON.stringify({ title: '尾部具体问题', summary: '讨论最后一项具体问题。', refs: [payload.sources[0].ref], completed: true })
+      assert.equal(payload.kind, 'topic-directory-3'); return '{"groups":[],"completed":true}'
+    } })
+  if (count === 1000) await assert.rejects(pending, /最多两层整理仍超过容量/)
+  else { const result = await pending; assert.equal(result.audit.selected[0].fragmentIds[0], count + ':1'); assert.equal(result.topics.length, 1) }
+  assert.equal(calls.filter(call => call.payload.kind === 'topic-cards-9').flatMap(call => call.payload.candidates).length, count)
   const grouping = calls.filter(call => call.stage === 'grouping')
-  assert.equal(grouping.flatMap(call => call.payload.candidates).length, 600)
-  assert(!calls.some(call => call.payload.kind === 'topic-selection-2'))
+  assert.equal(grouping.flatMap(call => call.payload.candidates).length, count * 2)
+  assert(!calls.some(call => call.payload.kind === 'topic-selection-3'))
+  assert.equal(calls.filter(call => call.payload.kind === 'topic-selection-4').length, count === 300 ? 1 : 0)
+  }
 }
 
 // 长正文每片都处理，选中事件按完整片段深读并合成；并发不改变输出顺序。
@@ -256,23 +336,88 @@ async function checkRunnerRecovery() {
   assert.equal(unavailableCalls, 1)
 }
 
-// 错配原文仍走一次整输入恢复；精确c/r和根结构说明进入恢复，程序不替模型改引用。
+// 可信临时5xx只走已有唯一恢复；原材料、计额、取消和原截止不变。
+async function checkTemporaryUpstreamRecovery() {
+  const temporary = () => new ReportRequestBoundaryError('upstream', '上游连接超时', { code: 'HTTP_502', status: 502, retryable: true })
+  const fixture = runnerOptions(), original = fixture.options.request
+  fixture.options.concurrency = 1
+  fixture.options.request = async (stage, attempt, system, input, tokens, extra) => {
+    if (stage === 'classification' && attempt === 1) { extra._onRequestAttempt(); throw temporary() }
+    return original(stage, attempt, system, input, tokens, extra)
+  }
+  const result = await runGroundedReport(reportData(), false, fixture.options)
+  assert.equal(result.audit.recoveries, 1); assert.equal(result.meta.retryCount, 1)
+  const attempts = fixture.saved.find(value => value.unit.stage === 'classification').attempts
+  assert.equal(attempts.length, 2); assert(!attempts[0].execution)
+  assert.equal(attempts[0].system, attempts[1].system); assert.equal(attempts[0].input, attempts[1].input)
+  assert.equal(attempts[0].maxTokens, attempts[1].maxTokens)
+  assert(result.meta.warnings.some(value => value.includes('上游暂时故障，清理后按原输入恢复一次')))
+  for (const error of [400, 401, 403, 429].map(status => new ReportRequestBoundaryError('upstream', '不恢复', { code: 'HTTP_' + status, status, retryable: true }))
+    .concat([new ReportRequestBoundaryError('upstream', '不恢复'), new ReportRequestBoundaryError('contract', '不恢复'),
+      new ReportRequestBoundaryError('budget', '不恢复'), new ReportRequestBoundaryError('upstream', '不恢复', { code: 'HTTP_502', status: 502, retryable: false })])) {
+    let submitted = 0
+    await assert.rejects(runGroundedReport(reportData(), false, { deadlineMs: Date.now() + 600000, concurrency: 1,
+      request: async (_s, _a, _system, _input, _t, extra) => { extra._onRequestAttempt(); submitted++; throw error } }), /不恢复/)
+    assert.equal(submitted, 1)
+  }
+  for (const boundary of ['twice', 'cancel', 'deadline', 'request-cap']) {
+    const controller = new AbortController(); let now = 0, submitted = 0
+    await assert.rejects(runGroundedReport(reportData(), false, { startedAtMs: 0, deadlineMs: 600000, workDeadlineMs: 570000,
+      now: () => now, signal: controller.signal, concurrency: 1, maxRequestCount: boundary === 'request-cap' ? 1 : 192,
+      request: async (_s, _a, _system, _input, _t, extra) => {
+        extra._onRequestAttempt(); submitted++
+        if (boundary === 'cancel') controller.abort(Error('原任务取消'))
+        if (boundary === 'deadline') now = 570000
+        throw temporary()
+      } }), /上游连接超时|原任务取消|时限|预算|额度/)
+    assert.equal(submitted, boundary === 'twice' ? 2 : 1)
+  }
+  const capped = runnerOptions(), request = capped.options.request
+  let first = 0, recoveries = 0
+  capped.options.concurrency = 1
+  capped.options.request = async (stage, attempt, system, input, tokens, extra) => {
+    if (stage === 'classification' && attempt === 1) { extra._onRequestAttempt(); first++; throw temporary() }
+    const value = await request(stage, attempt, system, input, tokens, extra)
+    if (attempt === 2) recoveries++
+    return value
+  }
+  await assert.rejects(runGroundedReport(reportData(640), false, capped.options), /恢复实际调用额度/)
+  assert.equal(first, 9); assert.equal(recoveries, 8)
+}
+
+// 编造证据仍只恢复一次；合法已知对象、重复证据及空卡带告警且保留原始交换。
 async function checkCardEvidenceRecovery() {
+  const tolerant = runnerOptions(), request = tolerant.options.request
+  tolerant.options.request = async (stage, attempt, system, input, tokens, extra) => {
+    const raw = await request(stage, attempt, system, input, tokens, extra), payload = JSON.parse(input), reply = JSON.parse(raw)
+    if (payload.kind === 'topic-cards-9') {
+      const source = payload.candidates[0].sources[0]
+      reply.cards.c1[0].evidence = [{ ref: source.ref, text: source.text }, source.ref]
+      reply.cards.c1.push({ refs: [], status: 'insufficient', scope: '', evidence: [] })
+    }
+    return JSON.stringify(reply)
+  }
+  const accepted = await runGroundedReport(reportData(2), false, tolerant.options)
+  assert.equal(accepted.audit.recoveries, 0); assert.equal(accepted.meta.evidence.deepReadMessageCount, 2)
+  assert.deepEqual(accepted.audit.topicCards[0].formatWarnings.map(value => value.code),
+    ['legacy_evidence_object', 'evidence_count_normalized', 'ignored_empty_insufficient_child'])
+  const raw = tolerant.saved.find(row => row.unit.stage === 'selection').attempts[0].response
+  assert(JSON.parse(raw).cards.c1.some(card => !card.refs.length))
   for (const corrected of [true, false]) {
     const { options, calls, saved } = runnerOptions(), failures = []
     options.onUnitFailed = (unit, attempts) => failures.push({ unit, attempts })
     options.request = async (stage, attempt, system, input, tokens, extra) => {
       extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true }); calls.push({ stage, attempt, system, input, tokens })
       const payload = JSON.parse(input), value = modelReply(stage, payload)
-      if (payload.kind === 'topic-cards-2') {
+      if (payload.kind === 'topic-cards-9') {
         if (attempt === 2) {
-          assert(system.includes('材料卡c1的证据r1正文不含该摘录'))
+          assert(system.includes('材料卡证据必须逐字来自对应引用原文'))
           assert(system.includes('根字段只能有cards，不返回completed'))
           assert(system.includes('闭合cards容器后闭合根对象'))
           assert(!system.includes(payload.candidates[0].sources[1].text))
-          assert.equal(input, calls.find(call => JSON.parse(call.input).kind === 'topic-cards-2').input)
+          assert.equal(input, calls.find(call => JSON.parse(call.input).kind === 'topic-cards-9').input)
         }
-        value.cards.c1.evidence = [{ ref: corrected && attempt === 2 ? 'r2' : 'r1', text: payload.candidates[0].sources[1].text }]
+        value.cards.c1[0].evidence = corrected && attempt === 2 ? ['r2'] : [{ ref: 'r2', text: '未在原文出现的编造证据' }]
       }
       return JSON.stringify(value)
     }
@@ -282,11 +427,11 @@ async function checkCardEvidenceRecovery() {
       assert.equal(result.audit.topicCards[0].evidence[0].fragment, '2:1')
       assert.equal(result.meta.requestCount, calls.length)
     } else {
-      await assert.rejects(runGroundedReport(reportData(2), false, options), /材料卡c1的证据r1正文不含该摘录/)
+      await assert.rejects(runGroundedReport(reportData(2), false, options), /材料卡证据必须逐字来自对应引用原文/)
       assert.equal(failures.length, 1); assert.equal(failures[0].attempts.length, 2)
       assert(!saved.some(row => row.unit.stage === 'selection'))
     }
-    assert.equal(calls.filter(call => JSON.parse(call.input).kind === 'topic-cards-2').length, 2)
+    assert.equal(calls.filter(call => JSON.parse(call.input).kind === 'topic-cards-9').length, 2)
   }
 }
 
@@ -300,14 +445,14 @@ async function checkDisplayAliasRecovery() {
       extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true }); calls.push({ stage, attempt, system, input, tokens })
       const payload = JSON.parse(input), value = modelReply(stage, payload)
       if (stage === 'overview') {
-        assert(payload.members.some(member => member.ref === 'p3'))
+        assert(payload.sources.some(source => source.ref === 'r1')); assert.equal(payload.members, undefined)
         if (attempt === 2) {
-          assert(system.includes('检测到：p3'))
+          assert(system.includes('检测到：r1'))
           assert(system.includes('结构化引用字段'))
           assert(!system.includes('不应回显的原句'))
           assert.equal(input, calls.find(call => call.stage === 'overview').input)
         }
-        value.summary = corrected && attempt === 2 ? '有人交流了安装方案与设置。' : 'p3分享了安装方案，不应回显的原句。'
+        value.summary = corrected && attempt === 2 ? '有人交流了安装方案与设置。' : 'r1分享了安装方案，不应回显的原句。'
       }
       return JSON.stringify(value)
     }
@@ -322,7 +467,7 @@ async function checkDisplayAliasRecovery() {
       assert.equal(saved.filter(value => value.unit.stage === 'overview').length, 0)
       assert.equal(failed.length, 1)
       assert.equal(failed[0].attempts.length, 2)
-      assert(failed[0].attempts.every(attempt => attempt.error.includes('检测到：p3')))
+      assert(failed[0].attempts.every(attempt => attempt.error.includes('检测到：r1')))
     }
     assert.equal(calls.filter(call => call.stage === 'overview').length, 2)
   }
@@ -395,6 +540,36 @@ async function checkLargeRunner() {
   }
 }
 
+// 新时限真实传给请求，旧十分钟后可继续；保存预留、外部短截止与三十分钟上限仍生效。
+async function checkRelaxedRuntimeBudget() {
+  assert(Object.isFrozen(GROUNDED_REPORT_LIMITS))
+  for (const mode of ['after-ten-minutes', 'near-reserve', 'reserve', 'hard', 'short', 'earlier-work']) {
+    let clock = 0
+    const calls = [], deadlineMs = mode === 'short' ? 1000 : 1800000
+    const options = { startedAtMs: 0, deadlineMs, now: () => clock,
+      ...(mode === 'earlier-work' ? { workDeadlineMs: 500000 } : {}),
+      request: async (stage, attempt, system, input, _tokens, extra) => {
+        extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true })
+        calls.push({ stage, attempt, timeoutMs: extra._timeoutMs })
+        if (calls.length === 1) clock = { 'after-ten-minutes': 650000, 'near-reserve': 1755000,
+          reserve: 1770000, hard: 1800000, short: 950, 'earlier-work': 500000 }[mode]
+        return JSON.stringify(modelReply(stage, JSON.parse(input)))
+      } }
+    const work = runGroundedReport(reportData(2), false, options)
+    if (['after-ten-minutes', 'near-reserve'].includes(mode)) {
+      const result = await work
+      assert.equal(result.meta.evidence.processedMessageCount, 2); assert.equal(result.audit.recoveries, 0)
+      assert(calls.length > 1); assert.equal(calls[0].timeoutMs, 90000)
+      assert(calls.slice(1).every(call => call.timeoutMs === (mode === 'near-reserve' ? 15000 : 90000)))
+    } else {
+      await assert.rejects(work, mode === 'hard' ? /总时限/ : /分析预算/)
+      assert.equal(calls.length, 1); assert.equal(calls[0].timeoutMs, mode === 'short' ? 950 : 90000)
+    }
+  }
+  await assert.rejects(runGroundedReport(reportData(2), false, { startedAtMs: 0, deadlineMs: 1800001, now: () => 0,
+    request: async () => { throw new Error('超过三十分钟不能提交请求') } }), /三十分钟硬截止/)
+}
+
 // 观测真实计时器，并用注入的任务时钟验证等待过期；不替换系统计时。
 async function checkUnitTimersAfterSlot() {
   for (const expireWhileWaiting of [false, true]) {
@@ -404,7 +579,7 @@ async function checkUnitTimersAfterSlot() {
     const held = new Promise(resolve => { release = resolve })
     global.setTimeout = (callback, milliseconds, ...args) => {
       const timer = originalSet(() => { timers.delete(timer); callback(...args) }, milliseconds)
-      if (milliseconds === 45000) { timers.add(timer); maximum = Math.max(maximum, timers.size) }
+      if (milliseconds === 90000) { timers.add(timer); maximum = Math.max(maximum, timers.size) }
       return timer
     }
     global.clearTimeout = timer => { timers.delete(timer); originalClear(timer) }
@@ -415,7 +590,7 @@ async function checkUnitTimersAfterSlot() {
       if (stage === 'classification') return JSON.stringify({ ...modelReply(stage, payload, 'quote'),
         groups: Object.fromEntries(payload.items.map((item, index) => ['event:' + (index + 1), '具体讨论' + index])),
         records: Object.fromEntries(payload.items.map((item, index) => [item.ref, 'event:' + (index + 1)])) })
-      if (payload.kind === 'topic-cards-2') { activeGrouping++; await held; activeGrouping-- }
+      if (payload.kind === 'topic-cards-9') { activeGrouping++; await held; activeGrouping-- }
       return JSON.stringify(modelReply(stage, payload, 'quote'))
     }
     const work = runGroundedReport(reportData(100), true, options).then(value => { result = value }, error => { failure = error })
@@ -434,6 +609,49 @@ async function checkUnitTimersAfterSlot() {
       }
       assert(maximum <= 2); assert.equal(timers.size, 0)
     } finally { release(); await work; global.setTimeout = originalSet; global.clearTimeout = originalClear }
+  }
+}
+
+// 终结卡片错误必须先取消等待模块，并等已经在途的实际请求清理后才结束任务。
+async function checkFailedUnitStopsQueuedModules() {
+  for (const full of [false, true]) for (const concurrency of [1, 2]) {
+    const { options, calls, saved } = runnerOptions('quote')
+    let quoteStarted, releaseQuote, abortedQuote = false, cleaned = false, settled = false, failure
+    const started = new Promise(resolve => { quoteStarted = resolve })
+    options.concurrency = concurrency
+    options.request = async (stage, attempt, system, input, tokens, extra) => {
+      extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true })
+      calls.push({ stage, attempt })
+      const payload = JSON.parse(input)
+      if (payload.kind === 'topic-cards-9') {
+        if (attempt === 2 && concurrency === 2) await started
+        return '{"cards":'
+      }
+      if (stage === 'quotes' && concurrency === 2) {
+        quoteStarted()
+        return new Promise(resolve => {
+          releaseQuote = () => { cleaned = true; resolve(JSON.stringify(modelReply(stage, payload, 'quote'))) }
+          extra.signal.addEventListener('abort', () => { abortedQuote = true }, { once: true })
+        })
+      }
+      return JSON.stringify(modelReply(stage, payload, 'quote'))
+    }
+    const work = runGroundedReport(reportData(), full, options).then(() => { settled = true }, error => { settled = true; failure = error })
+    try {
+      if (concurrency === 2) {
+        for (let index = 0; index < 50 && !abortedQuote; index++) await new Promise(setImmediate)
+        assert(abortedQuote, '终结失败应取消已在途请求')
+        assert.equal(settled, false, '实际Promise未清理前任务不能结束')
+        releaseQuote()
+      }
+      await work
+      assert.match(failure?.message || '', /JSON_PARSE/)
+      assert.equal(calls.filter(call => call.stage === 'selection').length, 2)
+      assert.equal(calls.filter(call => call.stage === 'quotes').length, concurrency === 1 ? 0 : 1, '等待模块不能在失败交槽时提交')
+      assert(!calls.some(call => call.stage === 'portraits' || call.stage === 'review'))
+      assert.deepEqual(saved.map(value => value.unit.stage), ['classification'], '失败或迟到结果不能写为完成')
+      if (concurrency === 2) assert(cleaned, '已在途请求必须实际清理')
+    } finally { releaseQuote?.(); await work }
   }
 }
 
@@ -476,13 +694,18 @@ async function runReportRunnerTests(check) {
   for (const [label, run] of [['新编排四模块独立供料、一话题及完整来源账本', checkCompleteRunner], ['新编排零消息、纯图片及短互动合法空状态', checkRunnerEmptyStates],
     ['非事件互动独立进入完整选题且可入选，具体回应参与跨批整理', checkIndependentInteractionSelection],
     ['全文卡片中段证据、五十项共同目录与一次全局选题', checkGlobalRepresentativeSelection],
-    ['目录两层不收敛时容量失败，全部卡片仍进入且无分批淘汰', checkCatalogCapacityFailure],
+    ['合并话题概述保留各全文卡范围和来源边界，普通详细及共享原文完整', checkOverviewLeafBoundaries],
+    ['父候选来源拆分经实际目录、选题、概述和审计保持独立', checkSplitCardRunner],
+    ['目录两层后完整紧凑选尾部，仍超容量准确失败且不分批淘汰', checkCatalogCapacityFailure],
     ['新编排长正文尾片段、分段概述与普通模式', checkLongRunner], ['新编排唯一补漏及隐藏重试拒绝', checkRunnerRecovery],
+    ['可信临时5xx唯一原输入恢复，非临时错误与取消／截止／八次预算仍停止', checkTemporaryUpstreamRecovery],
     ['本地超时等待真实清理、原输入唯一恢复且拒绝迟到正文', checkOwnedTimeoutCleanup], ['前台本地超时恢复仍遵守两轮/八次/原截止', checkOwnedTimeoutRunner],
     ['局部编号错误进入唯一恢复，仍非法时两次准确失败且不发布', checkDisplayAliasRecovery],
-    ['卡片证据错配明确反馈c/r及根结构，一次恢复仍非法则失败', checkCardEvidenceRecovery],
+    ['已知无损格式带审计告警继续，编造证据仍唯一恢复或失败', checkCardEvidenceRecovery],
     ['新编排真实使用稳定目录的4000条供料，跨群目录零请求拒绝', checkCatalogRunner],
-    ['取得实际槽位后才启动45秒计时，排队不消耗单次时限', checkUnitTimersAfterSlot],
+    ['取得实际槽位后才启动90秒计时，排队不消耗单次时限', checkUnitTimersAfterSlot],
+    ['单次90秒与整份30分钟，旧十分钟后继续且保存预留和短截止可靠', checkRelaxedRuntimeBudget],
+    ['单元终结失败交槽前取消等待模块，并等实际在途清理再结束', checkFailedUnitStopsQueuedModules],
     ['新编排1330/4000条完整处理、全局尾部选题及实际输入预算', checkLargeRunner], ['实际请求槽取消等待并等真实清理', checkActualRequestPool],
     ['取消模型自报完成后真实结束可读且正常，未知/异常/截断两次准确失败', checkNormalFinishContract]]) {
     try { await run(); check(label, true) } catch (error) { check(label, false, error.stack || String(error)) }

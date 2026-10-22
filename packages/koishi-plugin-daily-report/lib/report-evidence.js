@@ -89,36 +89,98 @@ function evidenceReplies(source, snapshot) {
     return replies;
 }
 // 局部人物以永久身份稳定排序；核心全文与辅助摘录共同计入实际序列化长度。
-function buildReportEvidenceBatch(snapshot, fragments) {
+function buildReportEvidenceBatch(snapshot, fragments, options) {
     if (!fragments.length || fragments.some(fragment => snapshot.byFragmentId.get(fragment.id) !== fragment))
         throw new Error('日报批次必须绑定当前快照的非空完整片段');
     if (new Set(fragments.map(fragment => fragment.id)).size !== fragments.length)
         throw new Error('日报批次不能重复核心片段');
+    const partitions = options?.candidateFragments;
+    if (partitions) {
+        const coreIds = new Set(fragments.map(fragment => fragment.id)), union = new Set();
+        if (!partitions.length || partitions.some(group => !group.length || new Set(group.map(fragment => fragment.id)).size !== group.length)) {
+            throw new Error('候选上下文分区必须非空且自身片段唯一');
+        }
+        for (const group of partitions)
+            for (const fragment of group) {
+                if (snapshot.byFragmentId.get(fragment.id) !== fragment || !coreIds.has(fragment.id))
+                    throw new Error('候选上下文分区必须绑定当前核心');
+                union.add(fragment.id);
+            }
+        if (union.size !== coreIds.size)
+            throw new Error('候选上下文分区没有覆盖本批核心');
+    }
     const sourceIds = new Set(fragments.map(fragment => fragment.sourceId)), replies = new Map();
-    const maximumMemberAlias = 'p' + (sourceIds.size * 4 + 4);
+    const maximumMemberAlias = 'p' + (partitions ? snapshot.sources.length : sourceIds.size * 4 + 4);
     const auxiliary = new Map();
+    const associations = partitions?.map(() => new Set()), omitted = partitions?.map(() => 0);
     // 先父消息再首尾邻居，以最长人物别名预留包装；未供料父消息保留明确原因。
-    const addAuxiliary = (source, maximum, fromEnd = false) => {
-        if (auxiliary.has(source.sourceId))
+    const addAuxiliary = (source, maximum, fromEnd = false, candidateIndex) => {
+        if (auxiliary.has(source.sourceId) && (candidateIndex === undefined || associations[candidateIndex].has(source.sourceId)))
             return;
         const characters = Array.from(source.content), text = (fromEnd ? characters.slice(-maximum) : characters.slice(0, maximum)).join('');
-        const entry = { ref: 'm' + (auxiliary.size + 1), source, text, truncated: characters.length > maximum };
-        const serialized = [...auxiliary.values(), entry].map(value => ({ role: 'auxiliary', ref: value.ref,
+        const entry = auxiliary.get(source.sourceId) || { ref: 'm' + (auxiliary.size + 1), source, text, truncated: characters.length > maximum };
+        const proposed = new Map(auxiliary).set(source.sourceId, entry);
+        const serialized = [...proposed.values()].map(value => ({ role: 'auxiliary', ref: value.ref,
             author: maximumMemberAlias, time: value.source.time, text: value.text, excerptOnly: true, truncated: value.truncated }));
-        if (Array.from(JSON.stringify(serialized)).length <= AUXILIARY_CHARACTERS)
+        // 候选关联也计入2000字符；省略数量按全快照位数预留，写回真实数量不会撑破预算。
+        const packaging = associations ? { context: serialized, candidateContexts: associations.map((refs, index) => ({
+                contextRefs: [...refs, ...(index === candidateIndex ? [source.sourceId] : [])].map(id => proposed.get(id).ref),
+                contextBudgetOmitted: snapshot.sources.length
+            })) } : serialized;
+        if (Array.from(JSON.stringify(packaging)).length <= AUXILIARY_CHARACTERS) {
             auxiliary.set(source.sourceId, entry);
+            if (candidateIndex !== undefined)
+                associations[candidateIndex].add(source.sourceId);
+        }
+        else if (candidateIndex !== undefined)
+            omitted[candidateIndex]++;
     };
     for (const sourceId of sourceIds) {
         const chain = evidenceReplies(snapshot.sources[sourceId - 1], snapshot);
         replies.set(sourceId, chain);
-        for (const reply of chain)
-            if (reply.message)
-                addAuxiliary(reply.message, 400);
+        if (!partitions)
+            for (const reply of chain)
+                if (reply.message)
+                    addAuxiliary(reply.message, 400);
     }
-    for (const sourceId of [Math.min(...sourceIds) - 2, Math.min(...sourceIds) - 1, Math.max(...sourceIds) + 1, Math.max(...sourceIds) + 2]) {
-        const neighbor = snapshot.sources[sourceId - 1];
-        if (neighbor && !sourceIds.has(sourceId))
-            addAuxiliary(neighbor, 200, sourceId < Math.min(...sourceIds));
+    if (partitions) {
+        const queues = partitions.map(group => {
+            const own = [...new Set(group.map(fragment => fragment.sourceId))].sort((a, b) => a - b);
+            const parents = new Map(), neighbors = new Map();
+            for (const id of own)
+                for (const reply of replies.get(id))
+                    if (reply.message)
+                        parents.set(reply.message.sourceId, reply.message);
+            for (const id of own)
+                for (const offset of [-2, -1, 1, 2]) {
+                    const source = snapshot.sources[id + offset - 1];
+                    if (source && !own.includes(source.sourceId) && !parents.has(source.sourceId) && !neighbors.has(source.sourceId)) {
+                        neighbors.set(source.sourceId, { source, fromEnd: offset < 0 });
+                    }
+                }
+            return { parents: [...parents.values()], neighbors: [...neighbors.values()] };
+        });
+        // 父消息全部先行；每轮每候选至多一个条目，避免最早候选占满共享辅助预算。
+        const parentRounds = Math.max(...queues.map(queue => queue.parents.length));
+        for (let round = 0; round < parentRounds; round++)
+            queues.forEach((queue, index) => {
+                if (queue.parents[round])
+                    addAuxiliary(queue.parents[round], 400, false, index);
+            });
+        const neighborRounds = Math.max(...queues.map(queue => queue.neighbors.length));
+        for (let round = 0; round < neighborRounds; round++)
+            queues.forEach((queue, index) => {
+                const neighbor = queue.neighbors[round];
+                if (neighbor)
+                    addAuxiliary(neighbor.source, 200, neighbor.fromEnd, index);
+            });
+    }
+    else {
+        for (const sourceId of [Math.min(...sourceIds) - 2, Math.min(...sourceIds) - 1, Math.max(...sourceIds) + 1, Math.max(...sourceIds) + 2]) {
+            const neighbor = snapshot.sources[sourceId - 1];
+            if (neighbor && !sourceIds.has(sourceId))
+                addAuxiliary(neighbor, 200, sourceId < Math.min(...sourceIds));
+        }
     }
     const people = new Map([...sourceIds].map(sourceId => [snapshot.sources[sourceId - 1].userId, snapshot.sources[sourceId - 1]]));
     auxiliary.forEach(({ source }) => people.set(source.userId, source));
@@ -136,11 +198,13 @@ function buildReportEvidenceBatch(snapshot, fragments) {
         }) }));
     const context = [...auxiliary.values()].map(({ ref, source, text, truncated }) => ({ role: 'auxiliary', ref,
         author: aliases.get(source.userId), time: source.time, text, excerptOnly: true, truncated }));
+    const candidateContexts = associations?.map((refs, index) => ({ contextRefs: [...refs].map(id => auxiliary.get(id).ref), contextBudgetOmitted: omitted[index] }));
     const input = JSON.stringify({ version: 'evidence-batch-4', members: [...members.keys()].map(ref => ({ ref })), items, context });
     return { fragments, core, members, input, auxiliary: new Map([...auxiliary.values()].map(entry => [entry.ref,
             { sourceId: entry.source.sourceId, text: entry.text, truncated: entry.truncated }])),
         coreCharacters: Array.from(JSON.stringify(items.map(({ replies: _replies, ...item }) => item))).length,
-        auxiliaryCharacters: Array.from(JSON.stringify(context)).length };
+        auxiliaryCharacters: Array.from(JSON.stringify(candidateContexts ? { context, candidateContexts } : context)).length,
+        ...(candidateContexts ? { candidateContexts } : {}) };
 }
 // --- 处理分区与长度分批 ---
 // 只识别完整正文精确为[图片]的既有占位；其他文本与所有混合媒体均交模型。

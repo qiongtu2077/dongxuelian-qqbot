@@ -93,5 +93,10 @@ export interface GroundedReportResult {
         stageCache: ReportStageCacheHistory[];
     };
 }
+export declare const GROUNDED_REPORT_LIMITS: Readonly<{
+    requestTimeoutMs: 90000;
+    runTimeoutMs: 1800000;
+    saveReserveMs: 30000;
+}>;
 export declare function runGroundedReport(data: GroundedReportInput, full: boolean, options: GroundedReportOptions): Promise<GroundedReportResult>;
 export {};

@@ -77,6 +77,10 @@ async function main() {
     assert.equal((await tick(ctx)).reason, 'disabled')
     assert.equal(tasks.listActiveDailyReportTasks().length, 0)
     process.env.DAILY_REPORT_PREANALYSIS_ENABLED = '1'
+    assert.equal((await tick(ctx)).reason, 'disabled')
+    process.env.DAILY_REPORT_GROUNDED_ENABLED = '1'
+    process.env.DAILY_REPORT_GROUNDED_PROVIDER = 'custom-1c571761199978de80368aba'
+    process.env.DAILY_REPORT_GROUNDED_MODEL = 'deepseek-v4-flash'
     configuredModel = 'fixture-other-model'
     assert.equal((await tick(ctx)).reason, 'planning_failed'); assert.equal(calls, 0)
     assert(logs.some(line => line.includes('指定模型节点必须唯一匹配')))

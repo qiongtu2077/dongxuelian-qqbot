@@ -147,6 +147,7 @@ function createResourceRuntimeMock(options = {}) {
         status: input.status || 'pending',
         channelKey: input.channelKey || '',
         userId: input.userId || '',
+        timeoutMs: input.timeoutMs,
         payload: input.payload || {},
         notify: input.notify || { target: 'none', status: 'pending' },
       }
@@ -853,6 +854,8 @@ async function testConcurrentReportGuard() {
     const secondRun = middleware(secondSession, () => 'next-2')
 
     check('first report submits background task', runtime.state.submissions.length === 1, JSON.stringify(runtime.state.submissions))
+    check('daily report admission and S2 task share thirty minute runtime', runtime.state.admissions[0].runTimeoutMs === 1800000
+      && runtime.state.admissions[0].queueTimeoutMs === 600000 && runtime.state.submissions[0].timeoutMs === 1800000)
     check('detailed report sends Thinking while background task starts', firstSent.includes('Thinking....'), JSON.stringify(firstSent))
     check('second report is rejected while first is running', secondSession._sent.some(item => String(item).includes('正在生成中')), JSON.stringify(secondSession._sent))
     check('second report does not submit another task', runtime.state.submissions.length === 1, JSON.stringify(runtime.state.submissions))

@@ -8,9 +8,9 @@ const paths = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/task-pa
 const NativeDate = Date
 const baseMs = NativeDate.parse('2026-10-01T12:00:00+08:00')
 const kind = process.env.REPORT_LIFECYCLE_KIND || 'daily_report'
-const duration = kind === 'daily_report_preanalysis' ? 90000 : 600000
+const duration = kind === 'daily_report_preanalysis' ? 90000 : process.env.REPORT_LIFECYCLE_LONG === '1' ? 1800000 : 600000
 let nowMs = baseMs
-// 只改变场景时钟，六百秒场景不需要真实等待十分钟。
+// 只改变场景时钟，十分钟与三十分钟任务均不需要真实等待。
 global.Date = class extends NativeDate {
   constructor(...args) { super(...(args.length ? args : [nowMs])) }
   static now() { return nowMs }
@@ -54,14 +54,15 @@ const worker = require('koishi-plugin-dongxuelian-ai/lib/resource-workers/worker
 
 // 建立明确日报任务，再通过公共状态接口进入实际运行。
 function createRunning(id) {
-  store.submitResourceTask({ id, kind, channelKey: 'lifecycle', timeoutMs: 600000 })
+  store.submitResourceTask({ id, kind, channelKey: 'lifecycle', timeoutMs: duration })
   return store.markTaskRunning(store.claimTaskById(id, 'lifecycle-worker'), 'lifecycle-worker', 'running')
 }
 
 // 资源等待不创建首次起点，锁失败可以回排，等待中取消禁止执行。
 async function verifyGateBoundary() {
-  store.submitResourceTask({ id: 'gate-waiting', kind, channelKey: 'lifecycle', timeoutMs: 600000 })
+  store.submitResourceTask({ id: 'gate-waiting', kind, channelKey: 'lifecycle', timeoutMs: duration })
   gateAction = async options => {
+    assert.equal(options.timeoutMs, duration)
     const waiting = store.getResourceTaskById(options.taskId)
     assert.equal(waiting.status, 'claiming')
     assert.equal(waiting.startedAt, undefined)
@@ -71,14 +72,14 @@ async function verifyGateBoundary() {
   await worker.runOneQueuedTask({ type: 'daily', workerName: 'lifecycle-worker' })
   assert.equal(store.getResourceTaskById('gate-waiting').status, 'done')
   assert.deepEqual(executions[0], { id: 'gate-waiting', startedAtMs: nowMs, deadlineMs: nowMs + duration })
-  store.submitResourceTask({ id: 'gate-failed', kind, channelKey: 'lifecycle', timeoutMs: 600000 })
+  store.submitResourceTask({ id: 'gate-failed', kind, channelKey: 'lifecycle', timeoutMs: duration })
   gateAction = async () => { throw new Error('fixture lock unavailable') }
   assert.equal(await worker.runOneQueuedTask({ type: 'daily', workerName: 'lifecycle-worker' }), false)
   const waiting = store.getResourceTaskById('gate-failed')
   assert.equal(waiting.status, 'pending')
   assert.equal(waiting.startedAt, undefined)
   assert.equal(store.cancelTask(waiting.id), true)
-  store.submitResourceTask({ id: 'gate-cancelled', kind, channelKey: 'lifecycle', timeoutMs: 600000 })
+  store.submitResourceTask({ id: 'gate-cancelled', kind, channelKey: 'lifecycle', timeoutMs: duration })
   gateAction = async () => { store.discardInterruptedResourceTaskState('fixture restart while waiting') }
   await worker.runOneQueuedTask({ type: 'daily', workerName: 'lifecycle-worker' })
   assert.equal(store.getResourceTaskById('gate-cancelled').status, 'cancelled')
@@ -118,7 +119,7 @@ async function verifyRestartAndLateResults() {
   const oldRunning = createRunning('restart-running')
   const oldPending = store.requeueTask(createRunning('restart-pending'))
   const oldDeferred = store.deferTask(createRunning('restart-deferred'))
-  store.submitResourceTask({ id: 'fresh-pending', kind, channelKey: 'lifecycle', timeoutMs: 600000 })
+  store.submitResourceTask({ id: 'fresh-pending', kind, channelKey: 'lifecycle', timeoutMs: duration })
   nowMs += duration - 10000
   const discarded = store.discardInterruptedResourceTaskState('fixture restart at 590 seconds')
   assert.equal(discarded.cancelled, 3)

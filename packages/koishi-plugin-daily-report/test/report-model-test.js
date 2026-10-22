@@ -132,6 +132,38 @@ async function checkExplicitOnlyModel() {
   })
 }
 
+// 已核实GLM节点冻结enabled+low，覆盖外来参数并使旧非思考政策及各阶段缓存身份失效。
+async function checkGlmReasoningPolicy() {
+  const node = { apiKey: 'fake-glm-key', baseURL: 'https://llm.pko.svcfusion.com/v1', provider: 'verified-glm', model: 'glm-5.3-flash', capability: 'text', chatProtocol: 'openai-chat' }
+  await withModelConfiguration(node, async (model, calls) => {
+    const profile = await model.createGroundedModelRequest()
+    for (const stage of ['classification', 'grouping', 'selection', 'overview', 'quotes', 'portraits', 'review']) for (const attempt of [1, 2]) {
+      await profile.request(stage, attempt, 'JSON', '{}', 4096, { reasoning_effort: 'max', thinking: { type: 'disabled' }, _thinkingEnabled: false, _structuredOutput: { version: 1, format: 'schema' } })
+      const call = calls.at(-1)
+      assert.equal(call.extra.reasoning_effort, 'low'); assert.equal(call.extra.thinking.type, 'enabled')
+      assert.deepEqual(call.extra._structuredOutput, { version: 1, format: 'object' })
+      assert.equal(call.extra._thinkingEnabled, true); assert.equal(call.extra.max_tokens, 4096); assert.equal(call.extra.temperature, 0.2)
+      assert.equal(call.extra._frozenRoute.steps.length, 1); assert.equal(call.config.model, node.model)
+    }
+    const prior = { version: 'grounded-configured-models-3', primary: profile.classificationCachePolicy.first.routeIdentity,
+      recovery: profile.classificationCachePolicy.recovery.routeIdentity, temperature: 0.2, thinking: true,
+      primaryThinking: { thinking: { type: 'enabled' }, reasoning_effort: 'low' }, recoveryThinking: { thinking: { type: 'enabled' }, reasoning_effort: 'low' } }
+    assert.notEqual(profile.policyIdentity, createHash('sha256').update(JSON.stringify(prior)).digest('hex'))
+    for (const [stage, policy] of Object.entries(profile.stageCachePolicies)) {
+      const old = { version: 'grounded-configured-stage-models-3', stage, first: policy.first.routeIdentity,
+        recovery: policy.recovery.routeIdentity, temperature: 0.2, thinking: true, primaryThinking: prior.primaryThinking, recoveryThinking: prior.recoveryThinking }
+      assert.notEqual(policy.identity, createHash('sha256').update(JSON.stringify(old)).digest('hex'))
+    }
+    assert.equal(calls.length, 14); assert.equal(node.model, 'glm-5.3-flash')
+  })
+  await withModelConfiguration({ ...node, baseURL: 'https://unverified.invalid/v1' }, async (model, calls) => {
+    const profile = await model.createGroundedModelRequest()
+    await profile.request('classification', 1, 'JSON', '{}', 4096, {})
+    assert.equal(calls[0].extra._thinkingEnabled, false)
+    assert(!Object.hasOwn(calls[0].extra, 'reasoning_effort')); assert(!Object.hasOwn(calls[0].extra, 'thinking'))
+  })
+}
+
 // 缺凭据、未知协议或超过两个节点均先失败，不能偷偷裁剪路由或派生配置。
 async function checkUnavailableModelConfig() {
   const node = { apiKey: 'fake-key', baseURL: 'https://example.invalid/v1', provider: 'other', model: 'other', capability: 'text' }
@@ -164,7 +196,8 @@ async function checkFailureMetadata() {
 async function runReportModelTests(check) {
   for (const [label, run] of [['日报现有主备冻结及每轮显式单节点', checkFixedModels], ['日报单节点恢复自身且不派生型号', checkSingleModel], ['日报未知节点配置先失败且不改全局路由', checkUnavailableModelConfig],
     ['日报透传已知HTTP事实且未知错误不猜额度', checkFailureMetadata], ['日报显式限定已配置唯一型号，所有阶段首轮恢复均不得回落', checkExplicitOnlyModel],
-    ['日报指定池内供应商及型号，不改全局主备且唯一恢复仍用原节点', checkConfiguredNode]]) {
+    ['日报指定池内供应商及型号，不改全局主备且唯一恢复仍用原节点', checkConfiguredNode],
+    ['日报已核实GLM参数冻结、唯一恢复及缓存政策隔离', checkGlmReasoningPolicy]]) {
     try { await run(); check(label, true) } catch (error) { check(label, false, error.stack || String(error)) }
   }
 }

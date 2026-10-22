@@ -6,6 +6,7 @@
 const fs = require('fs')
 const path = require('path')
 const { TIMEOUTS, DATA_DIR } = require('./config') as typeof import('./config')
+const { GROUNDED_REPORT_LIMITS } = require('./report-runner') as typeof import('./report-runner')
 const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
@@ -140,7 +141,7 @@ function buildDailyReportBudget(taskId: string, channelKey: unknown, userId: str
     deferable: true,
     fallbacks: ['daily_report_text'],
     queueTimeoutMs: 600000,
-    runTimeoutMs: 600000,
+    runTimeoutMs: GROUNDED_REPORT_LIMITS.runTimeoutMs,
   }
 }
 
@@ -168,7 +169,7 @@ function submitDailyResourceTask(runtime: ResourceRuntimeLike, taskId: string, c
     channelKey: String(channelKey || ''),
     userId,
     priority: detail ? 20 : 25,
-    timeoutMs: 600000,
+    timeoutMs: GROUNDED_REPORT_LIMITS.runTimeoutMs,
     payload: { detail, ...createReportPeriod(submittedAtMs) },
     notify: { target: 'qq-group', channelKey: String(channelKey || ''), status: 'pending' },
   })

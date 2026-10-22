@@ -484,8 +484,10 @@ async function requestAnalysisUnit(runtime, diagnostics, unit, system, input, ma
                 requestValidate = recovery.validate;
                 retryCorrection = '';
             }
-            else if (error instanceof AnalysisUnitRequestTimeoutError) {
-                diagnostics.warnings.push(`${unit.id}单次超时，清理后按原输入恢复一次`);
+            else if (error instanceof AnalysisUnitRequestTimeoutError || runtime.retryOriginalRequest?.(error)) {
+                diagnostics.warnings.push(error instanceof AnalysisUnitRequestTimeoutError
+                    ? `${unit.id}单次超时，清理后按原输入恢复一次`
+                    : `${unit.id}上游暂时故障，清理后按原输入恢复一次：${message}`);
                 retryCorrection = '';
             }
             else {
