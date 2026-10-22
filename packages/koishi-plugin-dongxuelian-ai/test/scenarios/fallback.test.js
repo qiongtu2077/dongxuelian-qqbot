@@ -407,6 +407,100 @@ async function runStructuredOutputRejections(t) {
   })
 }
 
+// 已核实GLM推理深度逐字进入实际请求，主备切换与普通调用的默认边界保持。
+async function runGlmReasoningEffortCases(t) {
+  const node = { provider: 'glm', model: 'glm-5.3-flash', baseURL: 'https://llm.pko.svcfusion.com/v1', apiKey: 'fake-glm-key', chatProtocol: 'openai-chat' }
+  const success = { json: { choices: [{ finish_reason: 'stop', message: { content: 'GLM_OK' } }] } }
+  await withManagedApi([success, success, success, success], { text: TEXT_CHAIN }, async (api, mocked) => {
+    const route = api.freezeChatRoute(node, [node])
+    for (const effort of ['low', 'high', 'max']) {
+      await api.requestChatCompletions([{ role: 'user', content: 'test' }], node, { _frozenRoute: route, reasoning_effort: effort, thinking: { type: 'enabled' }, max_tokens: 4096, temperature: 0.2 })
+      const body = mocked.calls.at(-1).requestBody
+      t.checkEqual('GLM wire reasoning effort ' + effort, body.reasoning_effort, effort)
+      t.checkEqual('GLM keeps enabled thinking ' + effort, body.thinking.type, 'enabled')
+      t.checkEqual('GLM keeps token budget ' + effort, body.max_tokens, 4096)
+      t.checkEqual('GLM keeps temperature ' + effort, body.temperature, 0.2)
+    }
+    await api.requestChatCompletions([{ role: 'user', content: 'ordinary' }], node, { _frozenRoute: route })
+    t.check('ordinary GLM does not acquire implicit effort', !Object.hasOwn(mocked.calls.at(-1).requestBody, 'reasoning_effort'))
+  })
+  await withManagedApi([{ status: 500, text: 'upstream failed' }, success], { text: TEXT_CHAIN }, async (api, mocked) => {
+    const route = api.freezeChatRoute(node, [node, { ...node, apiKey: 'fake-glm-backup' }])
+    await api.requestChatCompletions([{ role: 'user', content: 'test' }], node, { _frozenRoute: route, reasoning_effort: 'low' })
+    t.checkEqual('GLM explicit effort makes only primary and backup calls', mocked.calls.length, 2)
+    t.check('GLM explicit effort survives backup', mocked.calls.every(call => call.requestBody.reasoning_effort === 'low'))
+  })
+}
+
+// GLM对象模式保留输出限额与原文空白，未核实Schema/思考组合及备用在发请求前拒绝。
+async function runGlmObjectModeCases(t) {
+  const node = { provider: 'glm', model: 'glm-5.3-flash', baseURL: 'https://llm.pko.svcfusion.com/v1', apiKey: 'fake-key', chatProtocol: 'openai-chat' }
+  const content = '{"text":"原话  空白\\n<think>原文标签</think>"}'
+  const valid = { version: 1, format: 'object' }
+  const parameters = { reasoning_effort: 'low', thinking: { type: 'enabled' }, max_tokens: 4096, temperature: 0.2 }
+  await withManagedApi([{ json: { choices: [{ finish_reason: 'stop', message: { content } }] } }], { text: TEXT_CHAIN }, async (api, mocked) => {
+    const result = await api.requestChatCompletions([{ role: 'user', content: '只返回{"text":"原话"}' }], node, {
+      ...parameters, _frozenRoute: api.freezeChatRoute(node, [node]), _structuredOutput: valid,
+    })
+    const body = mocked.calls[0].requestBody
+    t.checkEqual('GLM object preserves exact response text', result.content, content)
+    t.checkEqual('GLM object sends response format', body.response_format.type, 'json_object')
+    t.checkEqual('GLM object retains token limit', body.max_tokens, 4096)
+    t.checkEqual('GLM object retains thinking', body.thinking.type, 'enabled')
+    t.checkEqual('GLM object retains effort', body.reasoning_effort, 'low')
+    t.checkEqual('GLM object retains temperature', body.temperature, 0.2)
+    t.check('GLM object omits foreign/internal controls', !['enable_thinking', 'thinking_budget', '_structuredOutput', '_nativeStructuredOutput'].some(key => Object.hasOwn(body, key)))
+  })
+  await withManagedApi([], { text: TEXT_CHAIN }, async (api, mocked) => {
+    const cases = [
+      { label: 'schema', option: { ...valid, format: 'schema', schema: { type: 'object' } } },
+      { label: 'foreign thinking budget', option: { ...valid, thinkingBudget: 0 } },
+      { label: 'disabled thinking', parameters: { thinking: { type: 'disabled' } } },
+      { label: 'different effort', parameters: { reasoning_effort: 'high' } },
+      { label: 'unknown backup', nodes: [node, { ...node, model: 'unknown' }] },
+    ]
+    for (const sample of cases) {
+      let error, attempts = 0
+      try {
+        await api.requestChatCompletions([{ role: 'user', content: sample.content || 'JSON' }], node, {
+          ...parameters, ...sample.parameters, _frozenRoute: api.freezeChatRoute(node, sample.nodes || [node]),
+          _structuredOutput: sample.option || valid, _onRequestAttempt() { attempts++ },
+        })
+      } catch (caught) { error = caught }
+      t.check('GLM object rejects ' + sample.label, /原生|推理深度/.test(error?.message), error?.message)
+      t.checkEqual('GLM object no attempt ' + sample.label, attempts, 0)
+    }
+    t.checkEqual('GLM object invalid options no network', mocked.calls.length, 0)
+  })
+}
+
+// 未核实型号、端点、协议或备用在任何实际请求前拒绝，不静默吞掉已请求的推理参数。
+async function runGlmReasoningEffortRejections(t) {
+  const node = { provider: 'glm', model: 'glm-5.3-flash', baseURL: 'https://llm.pko.svcfusion.com/v1', apiKey: 'fake-glm-key', chatProtocol: 'openai-chat' }
+  await withManagedApi([], { text: TEXT_CHAIN }, async (api, mocked) => {
+    const cases = [
+      { label: 'unknown effort', effort: 'medium', nodes: [node] },
+      { label: 'disabled effort', effort: 'none', nodes: [node] },
+      { label: 'unknown model', effort: 'low', nodes: [{ ...node, model: 'glm-unverified' }] },
+      { label: 'unknown endpoint', effort: 'low', nodes: [{ ...node, baseURL: 'https://other.invalid/v1' }] },
+      { label: 'unknown protocol', effort: 'low', nodes: [{ ...node, chatProtocol: 'anthropic-messages' }] },
+      { label: 'unknown backup', effort: 'low', nodes: [node, { ...node, model: 'glm-unverified' }] },
+    ]
+    for (const sample of cases) {
+      let error, attempted = 0
+      try {
+        await api.requestChatCompletions([{ role: 'user', content: 'test' }], node, {
+          _frozenRoute: api.freezeChatRoute(node, sample.nodes), reasoning_effort: sample.effort,
+          _onRequestAttempt() { attempted++ },
+        })
+      } catch (caught) { error = caught }
+      t.check('GLM effort rejects ' + sample.label, /推理深度/.test(error?.message), error?.message)
+      t.checkEqual('GLM invalid effort consumes no attempt ' + sample.label, attempted, 0)
+    }
+    t.checkEqual('GLM invalid effort submits no HTTP', mocked.calls.length, 0)
+  })
+}
+
 // 运行四能力优先级与日报冻结路由场景测试。
 async function run(t) {
   t.section('scenario: managed capability fallback')
@@ -420,6 +514,9 @@ async function run(t) {
   await runFinishReasonCases(t)
   await runStructuredOutputCases(t)
   await runStructuredOutputRejections(t)
+  await runGlmReasoningEffortCases(t)
+  await runGlmObjectModeCases(t)
+  await runGlmReasoningEffortRejections(t)
   await runFailureCapabilityNotifications(t)
 }
 

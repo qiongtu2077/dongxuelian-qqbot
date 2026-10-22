@@ -27,6 +27,7 @@ const CHECK_FILES = [
   'packages/koishi-plugin-daily-report/lib/report-background-ledger.js',
   'packages/koishi-plugin-daily-report/lib/report-background.js',
   'packages/koishi-plugin-daily-report/lib/report-preanalysis.js',
+  'packages/koishi-plugin-daily-report/lib/report-grounded-entry.js',
   'packages/koishi-plugin-daily-report/lib/report-snapshots.js',
   'packages/koishi-plugin-daily-report/lib/report-bindings.js',
   'packages/koishi-plugin-daily-report/lib/report-batch-catalog.js',

@@ -49,7 +49,7 @@ function cachedRunnerOptions(policy, mode = 'normal') {
       return JSON.stringify({ groups: { 'social:1': '社交互动' }, records, quotes: [], completed: true })
     }
     if (stage === 'grouping') return JSON.stringify({ groups: [], completed: true })
-    if (payload.kind === 'topic-cards-2') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => [candidate.ref, { status: 'insufficient', scope: '', summary: '', evidence: [] }])) })
+    if (payload.kind === 'topic-cards-9') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => [candidate.ref, [{ refs: candidate.refs, status: 'insufficient', scope: '', evidence: [] }]])) })
     throw new Error('固定社交夹具不应请求其他输出阶段：' + stage)
   } }
   return { calls, options }

@@ -52,7 +52,7 @@ const DEFAULT_BUDGETS: Record<string, Partial<TaskBudget>> = {
     deferable: true,
     fallbacks: ['daily_report_text'],
     queueTimeoutMs: 600000,
-    runTimeoutMs: 600000,
+    runTimeoutMs: 1800000,
   },
   [RESOURCE_TASK_KIND.DAILY_REPORT_RENDER]: {
     exclusive: true,

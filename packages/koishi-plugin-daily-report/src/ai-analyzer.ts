@@ -8,6 +8,7 @@ const { loadConfig } = loadManagementModule('core.runtimeConfig')
 const { requestChatCompletions, freezeChatRoute } = loadManagementModule('core.api')
 const { createDefaultAnalysisResult, createTopic, createGoldenQuote, createUserTitle } = require('./models') as typeof import('./models')
 const { getErrorMessage } = require('./error-utils') as typeof import('./error-utils')
+const { GROUNDED_REPORT_LIMITS } = require('./report-runner') as typeof import('./report-runner')
 const { redactSensitiveText } = loadManagementModule('core.redactor')
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils') as typeof import('./config-utils')
 const { createReportAnalysisDiagnostics, ReportAnalysisError } = loadManagementModule('daily.reportAnalysis')
@@ -686,7 +687,7 @@ async function analyzeWithAI(data: ReportData, full = false, options: AnalysisOp
     reportPeriod: data.reportPeriod, periodBackfilled: data.periodBackfilled,
   })
   const now = options.now || Date.now
-  const deadlineMs = options.deadlineMs ?? now() + 600000
+  const deadlineMs = options.deadlineMs ?? now() + GROUNDED_REPORT_LIMITS.runTimeoutMs
   try {
     if (options.signal?.aborted) throw options.signal.reason || new Error('日报任务已取消')
     if (meta.sourceCompleteness === 'incomplete') throw new ReportAnalysisError('日报原始记录不完整', 'generation_failed', 'collecting', meta)

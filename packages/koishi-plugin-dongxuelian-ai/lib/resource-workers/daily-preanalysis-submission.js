@@ -14,7 +14,7 @@ let planning = false;
 let lastChannel = '';
 // 一个全局后台候选足够驱动daily工作器；扫描游标仅帮助公平，不证明已完成。
 async function runDailyPreanalysisPlanningTick(ctx, isActive = () => true) {
-    if (process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1')
+    if (process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1' || process.env.DAILY_REPORT_GROUNDED_ENABLED !== '1')
         return { planned: 0, scanned: 0, reason: 'disabled' };
     if (planning || !isActive())
         return { planned: 0, scanned: 0, reason: 'inactive' };
@@ -29,7 +29,7 @@ async function runDailyPreanalysisPlanningTick(ctx, isActive = () => true) {
     let scanned = 0;
     // dispose、开关关闭、原截止及票据更换都立即阻止后续提交。
     const assertActive = () => {
-        if (!isActive() || process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1' || controller.signal.aborted || Date.now() >= deadlineMs) {
+        if (!isActive() || process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1' || process.env.DAILY_REPORT_GROUNDED_ENABLED !== '1' || controller.signal.aborted || Date.now() >= deadlineMs) {
             throw new Error('日报预分析规划已取消或超过原九十秒');
         }
     };

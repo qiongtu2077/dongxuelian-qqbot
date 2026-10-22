@@ -117,6 +117,49 @@ function checkIllegalOwnership() {
   assert.deepEqual(packReportEvidenceBatches(empty), [])
 }
 
+// 不连续候选各获局部邻居，跨候选共享辅助只存一次，核心覆盖与回复保持真实。
+function checkCandidateLocalContext() {
+  const snapshot = createReportEvidence(Array.from({ length: 16 }, (_, index) => ({ messageId: 'm' + (index + 1), realMessageId: true,
+    userId: 'u' + index, content: '来源' + (index + 1), time: '12:00' })))
+  const groups = [[snapshot.fragments[2]], [snapshot.fragments[10]]], fragments = groups.flat()
+  const legacy = buildReportEvidenceBatch(snapshot, fragments)
+  const current = buildReportEvidenceBatch(snapshot, fragments, { candidateFragments: groups })
+  const ids = group => group.contextRefs.map(ref => current.auxiliary.get(ref).sourceId)
+  assert.deepEqual(current.candidateContexts.map(ids), [[1, 2, 4, 5], [9, 10, 12, 13]])
+  assert(![...legacy.auxiliary.values()].some(entry => entry.sourceId === 4))
+  assert.deepEqual(current.fragments, fragments); assert.equal(current.core.size, 2)
+  assert(JSON.parse(current.input).items.every(item => item.replies[0].state === 'unknown'))
+  const sharing = buildReportEvidenceBatch(snapshot, [snapshot.fragments[2], snapshot.fragments[4]],
+    { candidateFragments: [[snapshot.fragments[2]], [snapshot.fragments[4]]] })
+  const sharedRef = [...sharing.auxiliary].find(([, value]) => value.sourceId === 4)[0]
+  assert.equal([...sharing.auxiliary.values()].filter(entry => entry.sourceId === 4).length, 1)
+  assert(sharing.candidateContexts.every(group => group.contextRefs.includes(sharedRef)))
+  assert([...sharing.auxiliary.values()].some(entry => entry.sourceId === 5))
+  assert.deepEqual([...sharing.core.values()].map(fragment => fragment.id), ['3:1', '5:1'])
+  for (const partitions of [[], [[]], [fragments.slice(0, 1)], [[...fragments, fragments[0]]], [[snapshot.fragments[0]], fragments]]) {
+    assert.throws(() => buildReportEvidenceBatch(snapshot, fragments, { candidateFragments: partitions }), /分区/)
+  }
+  assert.throws(() => buildReportEvidenceBatch(snapshot, fragments, { candidateFragments: [[{ ...fragments[0] }], [fragments[1]]] }), /绑定当前核心/)
+}
+
+// 辅助正文和关联封装共用2000字符；父链优先且按候选轮流，不挤掉后候选父消息。
+function checkCandidateContextBudget() {
+  const messages = Array.from({ length: 30 }, (_, index) => ({ messageId: 'm' + (index + 1), realMessageId: true,
+    userId: 'u' + index, content: '😀'.repeat(450) + '真实末尾' + index, time: '12:00' }))
+  messages[4].replyToId = 'm1'; messages[24].replyToId = 'm20'
+  const snapshot = createReportEvidence(messages), fragments = [snapshot.fragments[4], snapshot.fragments[24]]
+  const batch = buildReportEvidenceBatch(snapshot, fragments, { candidateFragments: fragments.map(fragment => [fragment]) })
+  const payload = JSON.parse(batch.input)
+  const actual = Array.from(JSON.stringify({ context: payload.context, candidateContexts: batch.candidateContexts })).length
+  assert.equal(batch.auxiliaryCharacters, actual); assert(actual <= 2000)
+  assert.deepEqual([...batch.auxiliary.values()].slice(0, 2).map(entry => entry.sourceId), [1, 20])
+  assert(batch.candidateContexts.every(group => group.contextRefs.length && group.contextBudgetOmitted > 0))
+  assert(payload.items.every(item => item.replies[0].state === 'available'))
+  assert([...batch.auxiliary.values()].every(entry => Array.from(entry.text).length <= 400 && messages[entry.sourceId - 1].content.includes(entry.text)))
+  const absent = createReportEvidence([{ userId: 'a', messageId: 'a', content: '回复缺失父消息', replyToId: 'missing' }])
+  assert.equal(JSON.parse(buildReportEvidenceBatch(absent, absent.fragments, { candidateFragments: [absent.fragments] }).input).items[0].replies[0].state, 'unavailable')
+}
+
 // 注册到正式日报测试入口，直接执行导出文件不会被误报为测试完成。
 function runReportEvidenceTests(check) {
   evidenceCase(check, '固定快照完整Unicode分片与外部修改隔离', checkSnapshotAndFragments)
@@ -125,5 +168,7 @@ function runReportEvidenceTests(check) {
   evidenceCase(check, '精确纯图分区、完整长文尾部与实际64/16k预算', checkPartitionAndBatches)
   evidenceCase(check, '缺失身份、重复标识、跨快照与重复核心拒绝', checkIllegalOwnership)
   evidenceCase(check, '父消息和邻居共同2000字预算、未供料原因及前邻居末尾', checkAuxiliaryBudget)
+  evidenceCase(check, '候选局部邻居、共享辅助去重和精确核心分区', checkCandidateLocalContext)
+  evidenceCase(check, '候选父链优先轮流供料且关联与正文共同2000字符', checkCandidateContextBudget)
 }
 module.exports = { runReportEvidenceTests }

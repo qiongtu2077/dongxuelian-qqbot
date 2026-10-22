@@ -60,6 +60,10 @@ async function run() {
     delete process.env.DAILY_REPORT_PREANALYSIS_ENABLED
     await assert.rejects(runDailyPreanalysisWorkerTask({ id: 'disabled', kind, channelKey }), /尚未启用/)
     process.env.DAILY_REPORT_PREANALYSIS_ENABLED = '1'
+    await assert.rejects(runDailyPreanalysisWorkerTask({}), /尚未启用/)
+    process.env.DAILY_REPORT_GROUNDED_ENABLED = '1'
+    process.env.DAILY_REPORT_GROUNDED_PROVIDER = 'custom-1c571761199978de80368aba'
+    process.env.DAILY_REPORT_GROUNDED_MODEL = 'deepseek-v4-flash'
     await assert.rejects(runDailyPreanalysisWorkerTask({ id: 'bad-notify', kind, channelKey, notify: { target: 'group' } }), /禁止结果通知/)
     store.submitResourceTask({ id: 'real-background', kind, channelKey, timeoutMs: 600000,
       payload: { ...period }, notify: { target: 'none', status: 'pending' } })

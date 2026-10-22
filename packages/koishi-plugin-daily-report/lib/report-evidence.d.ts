@@ -51,9 +51,16 @@ export interface EvidenceBatch {
     input: string;
     coreCharacters: number;
     auxiliaryCharacters: number;
+    candidateContexts?: ReadonlyArray<{
+        contextRefs: string[];
+        contextBudgetOmitted: number;
+    }>;
+}
+export interface EvidenceCandidateContextOptions {
+    candidateFragments: readonly (readonly EvidenceFragment[])[];
 }
 export declare function createReportEvidence(messages: readonly EvidenceMessage[]): ReportEvidence;
-export declare function buildReportEvidenceBatch(snapshot: ReportEvidence, fragments: readonly EvidenceFragment[]): EvidenceBatch;
+export declare function buildReportEvidenceBatch(snapshot: ReportEvidence, fragments: readonly EvidenceFragment[], options?: EvidenceCandidateContextOptions): EvidenceBatch;
 export declare function partitionReportEvidence(snapshot: ReportEvidence): {
     deterministic: EvidenceFragment[];
     model: EvidenceFragment[];

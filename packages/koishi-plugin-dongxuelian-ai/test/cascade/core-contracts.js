@@ -49,6 +49,7 @@ async function runCoreContracts(context) {
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-outputs.js'),
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-runner.js'),
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-model.js'),
+    path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-grounded-entry.js'),
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-storage.js'),
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-snapshots.js'),
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-bindings.js'),
@@ -231,6 +232,7 @@ async function runCoreContracts(context) {
   duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-exchange.js', '../../koishi-plugin-daily-report/lib/report-reading.js')
   duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-topics.js', '../../koishi-plugin-daily-report/lib/report-outputs.js')
   duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-runner.js', '../../koishi-plugin-daily-report/lib/report-model.js', '../../koishi-plugin-daily-report/lib/report-request-pool.js')
+  duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-grounded-entry.js')
   duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-progress.js')
   duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-storage.js')
   duplicateScanFiles.push('../../koishi-plugin-daily-report/lib/report-snapshots.js')

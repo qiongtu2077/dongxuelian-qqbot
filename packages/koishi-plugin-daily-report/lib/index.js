@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { TIMEOUTS, DATA_DIR } = require('./config');
+const { GROUNDED_REPORT_LIMITS } = require('./report-runner');
 const { getErrorMessage } = require('./error-utils');
 const { parseBoundedInt: parsePositiveInt } = require('./config-utils');
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
@@ -110,7 +111,7 @@ function buildDailyReportBudget(taskId, channelKey, userId, detail) {
         deferable: true,
         fallbacks: ['daily_report_text'],
         queueTimeoutMs: 600000,
-        runTimeoutMs: 600000,
+        runTimeoutMs: GROUNDED_REPORT_LIMITS.runTimeoutMs,
     };
 }
 // 按资源决策给用户发送固定、低成本提示。
@@ -136,7 +137,7 @@ function submitDailyResourceTask(runtime, taskId, channelKey, userId, detail, su
         channelKey: String(channelKey || ''),
         userId,
         priority: detail ? 20 : 25,
-        timeoutMs: 600000,
+        timeoutMs: GROUNDED_REPORT_LIMITS.runTimeoutMs,
         payload: { detail, ...createReportPeriod(submittedAtMs) },
         notify: { target: 'qq-group', channelKey: String(channelKey || ''), status: 'pending' },
     });

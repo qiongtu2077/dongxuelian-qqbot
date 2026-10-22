@@ -16,6 +16,7 @@ interface ApiConfig {
 }
 interface RequestExtraBody {
     _purpose?: 'chat' | 'topic_switch' | 'identity_judge';
+    reasoning_effort?: 'low' | 'high' | 'max';
     _timeoutMs?: number | string;
     _thinkingEnabled?: boolean;
     _thinkingManaged?: boolean;
@@ -36,13 +37,14 @@ interface RequestExtraBody {
 }
 type StructuredOutputOptions = {
     version: 1;
-    thinkingBudget: 0 | 1024;
 } & ({
     format: 'schema';
     schema: Record<string, unknown>;
+    thinkingBudget: 0 | 1024;
 } | {
     format: 'object';
     schema?: never;
+    thinkingBudget?: 0 | 1024;
 });
 interface FrozenChatRoute {
     version: 1;

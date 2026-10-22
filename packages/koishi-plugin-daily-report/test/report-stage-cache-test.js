@@ -7,6 +7,7 @@ const { createReportEvidence } = require('../lib/report-evidence')
 const { saveReportSnapshot } = require('../lib/report-snapshots')
 const { updateReportBatchCatalog } = require('../lib/report-batch-catalog')
 const { runGroundedReport } = require('../lib/report-runner')
+const { ReportRequestBoundaryError } = require('../lib/report-request-pool')
 const { createTopicContext, createTopicOverviewMergeContext, getTopicInstructions, readTopicOverview,
   createTopicCardContext, getTopicCatalogInstructions, readTopicCards, createTopicCatalogContext, readTopicCatalogSelection } = require('../lib/report-topics')
 const { createGroundedOutputContext, getGroundedOutputInstructions, readGroundedQuotes } = require('../lib/report-outputs')
@@ -43,23 +44,43 @@ function stageFixtureModel(policies, mode = 'normal') {
     const policy = stage === 'classification' ? policies.classification : policies.stages[stage], node = attempt === 1 ? policy.first : policy.recovery
     const step = { ...node, stepIndex: 0, priorityIndex: 0, configurationIdentity: stageFixtureDigest(node.routeIdentity + node.model) }
     const usage = { readable: true, promptTokens: 100, completionTokens: 20, totalTokens: 120 }
-    extra._onRequestAttempt(step); extra._onRequestUsage(usage)
+    extra._onRequestAttempt(step)
+    if (attempt === 1 && ((mode === 'transient-classification' && stage === 'classification') || (mode === 'transient-quotes' && stage === 'quotes'))) {
+      calls.push({ stage, attempt, input })
+      throw new ReportRequestBoundaryError('upstream', '上游连接超时', { code: 'HTTP_502', status: 502, retryable: true })
+    }
+    extra._onRequestUsage(usage)
     extra._onRequestExecution({ ...step, modelVersion: null, modelVersionReadable: false,
-      finishReason: mode === 'card-finish-repair' && JSON.parse(input).kind === 'topic-cards-2' && attempt === 1 ? 'content_filter' : mode === 'truncated-overview' && stage === 'overview' && attempt === 1 ? 'length' : 'stop', finishReasonReadable: true, usage })
+      finishReason: mode === 'card-finish-repair' && JSON.parse(input).kind === 'topic-cards-9' && attempt === 1 ? 'content_filter' : mode === 'truncated-overview' && stage === 'overview' && attempt === 1 ? 'length' : 'stop', finishReasonReadable: true, usage })
     calls.push({ stage, attempt, input })
     const payload = JSON.parse(input)
-    if (stage === 'classification') return JSON.stringify({ groups: Object.fromEntries(payload.items.map((_, index) => [mode === 'insufficient' ? 'social:1' : 'event:' + ((mode === 'global-selection' ? index : Math.floor(index / 4)) + 1), '测试讨论'])), records: Object.fromEntries(payload.items.map((item, index) => [item.ref,
-      mode === 'insufficient' ? 'social:1' : 'event:' + ((mode === 'global-selection' ? index : Math.floor(index / 4)) + 1)])),
+    if (stage === 'classification') return JSON.stringify({ groups: Object.fromEntries(payload.items.map((_, index) => [mode === 'insufficient' ? 'social:1' : 'event:' + ((mode === 'global-selection' ? index : Math.floor(index / (mode === 'many-split-cards' ? 6 : 4))) + 1), '测试讨论'])), records: Object.fromEntries(payload.items.map((item, index) => [item.ref,
+      mode === 'insufficient' ? 'social:1' : 'event:' + ((mode === 'global-selection' ? index : Math.floor(index / (mode === 'many-split-cards' ? 6 : 4))) + 1)])),
       quotes: payload.items.slice(0, 3).map(item => ({ kind: 'quote', ref: item.ref, criterion: 'distinct_expression' })), completed: true })
-    if (payload.kind === 'topic-cards-2') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.filter((_, index) => mode !== 'card-repair' || attempt !== 1 || index < payload.candidates.length - 1).map(candidate => {
+    // 固定旧协议仅用于真实文件身份隔离测试，返回原已知的对象式证据。
+    if (payload.kind === 'topic-cards-6') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => [candidate.ref,
+      [{ refs: candidate.refs, status: 'ok', scope: '实际讨论', evidence: [{ ref: candidate.sources[0].ref, text: candidate.sources[0].text }] }]])) })
+    if (payload.kind === 'topic-cards-9') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.filter((_, index) => mode !== 'card-repair' || attempt !== 1 || index < payload.candidates.length - 1).map((candidate, index) => {
       const source = candidate.sources[0], ok = mode !== 'insufficient'
-      const text = mode === 'card-evidence-repair' && attempt === 1 ? candidate.sources[1].text : source.text
-      return [candidate.ref, { status: ok ? 'ok' : 'insufficient', scope: ok ? '实际讨论' : '', summary: ok ? '具体问题交流' : '',
-        evidence: ok ? [{ ref: source.ref, text: Array.from(text).slice(0, 64).join('') }] : [] }]
+      if (mode === 'many-split-cards') return [candidate.ref, candidate.sources.map(entry => ({ refs: [entry.ref], status: 'ok',
+        scope: '独立具体讨论', evidence: [entry.ref] }))]
+      if (mode === 'split-cards' && candidate.sources.length >= 2) return [candidate.ref, [candidate.sources.slice(0, 1), candidate.sources.slice(1)].map(sources => ({
+        refs: sources.map(entry => entry.ref), status: 'ok', scope: '实际子问题', evidence: [sources[0].ref] }))]
+      const omit = (mode === 'card-core-repair' && attempt === 1)
+        || (mode === 'unassigned-core' && payload.candidates.reduce((sum, value) => sum + value.refs.length, 0) >= 20)
+      const refs = omit && candidate === payload.candidates.at(-1) ? candidate.refs.slice(0, -1) : candidate.refs
+      const evidence = mode === 'multi-evidence' ? candidate.refs.slice(0, 3) : [source.ref]
+      if (mode === 'tolerant-cards') return [candidate.ref, [{ refs: candidate.refs, status: 'ok', scope: '实际讨论',
+        evidence: [...candidate.sources.map(entry => ({ ref: entry.ref, text: entry.text })), source.ref] },
+        { refs: [], status: 'insufficient', scope: '', evidence: [] }]]
+      if (mode === 'card-evidence-repair' && attempt === 1) evidence[0] = payload.candidates[(index + 1) % payload.candidates.length].refs[0]
+      return [candidate.ref, [{ refs, status: ok ? 'ok' : 'insufficient', scope: ok ? '实际讨论' : '',
+        evidence: ok ? evidence : [] }]]
     })) })
     if (stage === 'grouping') return JSON.stringify({ groups: mode === 'long-overview' && payload.candidates.length > 1 ? [{ refs: payload.candidates.map(candidate => candidate.ref),
-      scope: '实际讨论', summary: '具体问题交流', representatives: [payload.candidates[0].ref] }] : [], completed: true })
-    if (payload.kind === 'topic-selection-2') return JSON.stringify({ selected: payload.candidates.slice(0, payload.displayLimit).map(candidate => candidate.ref), completed: true })
+      scope: '实际讨论', representatives: [payload.candidates[0].ref] }] : [], completed: true })
+    if (payload.kind === 'topic-selection-4') return JSON.stringify({ selected: ['c' + payload.candidates.length], completed: true })
+    if (payload.kind === 'topic-selection-3') return JSON.stringify({ selected: payload.candidates.slice(0, payload.displayLimit).map(candidate => candidate.ref), completed: true })
     if (stage === 'overview') return JSON.stringify({ title: mode === 'truncated-overview' && attempt === 1 ? '不得采用截断返回' : '中性话题概述',
       summary: '围绕本期实际问题展开了讨论。', refs: [payload.sources[0].ref], completed: true })
     if (stage === 'quotes') return JSON.stringify(mode === 'insufficient' ? { items: [] }
@@ -123,8 +144,218 @@ async function stageCacheCase(check, name, run) {
   try { await withStageCacheFixture(run); check(name, true) } catch (error) { check(name, false, error.stack || String(error)) }
 }
 
+// 紧凑目录仍经实际文件校验，隐式行号在新任务恢复当前候选，不能串用普通对象协议。
+async function runCompactCatalogStageCacheTest(check) {
+  await stageCacheCase(check, '紧凑六百项目录实际缓存零请求重绑末项，原对象协议不误命中', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(3), cold = prepareStageTask(fixture, 'compact-cold', messages, policies)
+    const cards = (snapshot, prefix) => Array.from({ length: 600 }, (_, index) => {
+      const fragment = snapshot.fragments[index % 3]
+      return { status: 'ok', scope: '独立具体讨论' + index, leaves: [prefix + index], candidate: { id: prefix + index, fragments: [fragment] },
+        evidence: [{ fragment, text: fragment.text, excerptOnly: true, truncated: false, sourceCharacters: Array.from(fragment.text).length }] }
+    })
+    const original = cards(cold.snapshot, 'old-'), context = createTopicCatalogContext(cold.snapshot, original, 10, true)
+    assert.equal(JSON.parse(context.input).candidates.length, 600)
+    const descriptor = { stage: 'selection', mode: 'detailed', system: getTopicCatalogInstructions('selection'), input: context.input,
+      maxTokens: 4096, bindings: bindTopicStageRequest(cold.snapshot, context, cold.snapshot.fragments) }
+    await executeFixtureStageUnit(cold, descriptor, text => readTopicCatalogSelection(text, context, 10))
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'compact-hot', messages.map(message => ({ ...message, user: '当前昵称' })), policies)
+    const current = cards(hot.snapshot, 'current-'), rebuilt = createTopicCatalogContext(hot.snapshot, current, 10, true)
+    assert.equal(rebuilt.input, context.input)
+    const bindings = bindTopicStageRequest(hot.snapshot, rebuilt, hot.snapshot.fragments)
+    const hit = hot.options.stageCache.read(hot.snapshot, { ...descriptor, bindings }, text => readTopicCatalogSelection(text, rebuilt, 10))
+    assert(hit); assert.equal(hit.value[0].id, 'current-599'); assert.equal(hit.value[0].fragments[0], hot.snapshot.fragments[2])
+    assert.equal(hot.model.calls.length, 0)
+    const ordinary = createTopicCatalogContext(hot.snapshot, current, 10)
+    assert.equal(hot.options.stageCache.read(hot.snapshot, { ...descriptor, input: ordinary.input, bindings }, text => readTopicCatalogSelection(text, ordinary, 10)), null)
+  })
+}
+
 // 覆盖同任务编排、模式隔离、恢复、摘要依据、损坏失效和当前成员恢复。
 async function runReportStageCacheTests(check) {
+  await runCompactCatalogStageCacheTest(check)
+  await stageCacheCase(check, '临时5xx恢复完成但缺首轮执行证明不发布可信缓存，后续新任务只重算该模块', async fixture => {
+    const policies = stageFixturePolicies()
+    for (const stage of ['classification', 'quotes']) {
+      const messages = stageFixtureMessages(12).map(message => ({ ...message, content: message.content + ' ' + stage }))
+      const cold = prepareStageTask(fixture, 'transient-' + stage, messages, policies, 'transient-' + stage)
+      const first = await runGroundedReport(cold.data, true, cold.options)
+      assert.equal(first.meta.retryCount, 1)
+      assert(cold.diagnostics.some(value => value.code === 'actual_model_unverified'))
+      fixture.state.now++
+      const hot = prepareStageTask(fixture, 'transient-hot-' + stage, messages, policies, 'normal', { directory: cold.directory })
+      const second = await runGroundedReport(hot.data, true, hot.options)
+      assert.equal(hot.model.calls.length, 1); assert.equal(hot.model.calls[0].stage, stage)
+      assert.equal(second.meta.evidence.processedMessageCount, 12)
+      fixture.state.now++
+    }
+  })
+  await stageCacheCase(check, '已知容器错层及空未知父经真实缓存保留原返回、告警与当前来源', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(12)
+    const cold = prepareStageTask(fixture, 'container-cold', messages, policies)
+    const request = cold.options.request
+    cold.options.request = async (...args) => {
+      const text = await request(...args)
+      if (JSON.parse(args[3]).kind !== 'topic-cards-9') return text
+      const entries = Object.entries(JSON.parse(text).cards), first = entries.shift()
+      return JSON.stringify({ cards: { [first[0]]: first[1], c999: [] }, ...Object.fromEntries(entries) })
+    }
+    const first = await runGroundedReport(cold.data, true, cold.options)
+    assert.equal(first.audit.recoveries, 0); assert.equal(first.audit.topicCards.length, 3)
+    assert.equal(first.audit.topicCards[0].formatWarnings[0].code, 'ignored_empty_unknown_parent')
+    assert(first.audit.topicCards.slice(1).every(card => card.formatWarnings[0].code === 'misplaced_parent_container'))
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'container-hot', messages, policies, 'normal', { directory: cold.directory })
+    const second = await runGroundedReport(hot.data, true, hot.options)
+    assert.equal(hot.model.calls.length, 0); assert.deepEqual(second.audit.topicCards, first.audit.topicCards)
+    assert.equal(second.meta.evidence.deepReadMessageCount, 12); assert.deepEqual(second.audit.selected, first.audit.selected)
+  })
+  await stageCacheCase(check, '少量未归类来源审计与警告保留，实际缓存重放不猜语义归属且零新请求', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(60)
+    const cold = prepareStageTask(fixture, 'unassigned-cold', messages, policies, 'unassigned-core')
+    const first = await runGroundedReport(cold.data, true, cold.options)
+    const unassigned = first.audit.topicCards.flatMap(card => card.unassignedFragmentIds || [])
+    assert.deepEqual(unassigned, ['48:1']); assert.equal(first.audit.recoveries, 0)
+    assert(first.audit.topicCards.every(card => !card.fragmentIds.includes('48:1')))
+    assert(first.meta.warnings.some(warning => warning.includes('1条原文已完成分类但未归入话题卡')))
+    assert.equal(new Set(first.audit.topicCards.flatMap(card => [...card.fragmentIds, ...(card.unassignedFragmentIds || [])])).size, 60)
+    assert(!first.audit.selected.some(candidate => candidate.fragmentIds.includes('48:1')))
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'unassigned-hot', messages, policies, 'normal', { directory: cold.directory })
+    const second = await runGroundedReport(hot.data, true, hot.options)
+    assert.equal(hot.model.calls.length, 0); assert.deepEqual(second.audit.topicCards, first.audit.topicCards)
+    assert.deepEqual(second.meta.warnings, first.meta.warnings); assert.deepEqual(second.audit.selected, first.audit.selected)
+  })
+  await stageCacheCase(check, '已知格式告警经实际缓存重放保留，原回包不改且全部来源按新任务重绑', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(12)
+    const cold = prepareStageTask(fixture, 'tolerant-cold', messages, policies, 'tolerant-cards')
+    const first = await runGroundedReport(cold.data, true, cold.options)
+    assert.equal(first.audit.recoveries, 0); assert.equal(first.audit.topicCards.length, 3)
+    assert(first.audit.topicCards.every(card => card.fragmentIds.length === 4 && card.evidence.length === 3))
+    assert(first.audit.topicCards.every(card => card.formatWarnings.length === 3))
+    assert.equal(new Set(first.audit.topicCards.flatMap(card => card.fragmentIds)).size, 12)
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'tolerant-hot', messages, policies, 'normal', { directory: cold.directory })
+    const second = await runGroundedReport(hot.data, true, hot.options)
+    assert.equal(hot.model.calls.length, 0); assert.deepEqual(second.audit.topicCards, first.audit.topicCards)
+    assert.equal(second.meta.evidence.deepReadMessageCount, 12)
+    assert.deepEqual(second.audit.selected, first.audit.selected)
+  })
+  await stageCacheCase(check, '旧对象式证据缓存不能命中新引用协议，真实新任务重绑摘录零请求复用', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(4)
+    const cold = prepareStageTask(fixture, 'reference-evidence-cold', messages, policies)
+    const candidates = [{ id: 'first', fragments: cold.snapshot.fragments.slice(0, 2) }, { id: 'second', fragments: cold.snapshot.fragments.slice(2) }]
+    const current = createTopicCardContext(cold.snapshot, candidates)
+    const legacy = { ...current, input: JSON.stringify({ ...JSON.parse(current.input), kind: 'topic-cards-6' }) }
+    const previousReply = { cards: Object.fromEntries(JSON.parse(legacy.input).candidates.map(candidate => [candidate.ref,
+      [{ refs: candidate.refs, status: 'ok', scope: '实际讨论', evidence: [{ ref: candidate.sources[0].ref, text: candidate.sources[0].text }] }]])) }
+    const previousCards = candidates.map(candidate => ({ candidate: { ...candidate, scopeHints: ['实际讨论'], cardRange: '实际讨论' },
+      parentId: candidate.id, leaves: [candidate.id], status: 'ok', scope: '实际讨论', evidence: [{ fragment: candidate.fragments[0], text: candidate.fragments[0].text }] }))
+    // 保存旧版身份与产物作隔离对照；可容错读取不代表旧请求自动命中新请求。
+    const readPrevious = text => { assert.deepEqual(JSON.parse(text), previousReply); return previousCards }
+    const descriptor = { stage: 'selection', mode: 'detailed', system: '受控旧topic-cards-6固定协议', input: legacy.input,
+      maxTokens: 4096, requireNormalFinish: true, bindings: bindTopicStageRequest(cold.snapshot, legacy, cold.snapshot.fragments) }
+    await executeFixtureStageUnit(cold, descriptor, readPrevious)
+    assert(readTopicCards(JSON.stringify(previousReply), current).every(card => card.formatWarnings[0].code === 'legacy_evidence_object'))
+    const revised = { ...descriptor, system: getTopicCatalogInstructions('cards'), input: current.input,
+      bindings: bindTopicStageRequest(cold.snapshot, current, cold.snapshot.fragments) }
+    assert.equal(cold.options.stageCache.read(cold.snapshot, revised, text => readTopicCards(text, current)), null)
+    await executeFixtureStageUnit(cold, revised, text => readTopicCards(text, current))
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'reference-evidence-hot', messages, policies, 'normal', { directory: cold.directory })
+    const rebound = createTopicCardContext(hot.snapshot, candidates.map(candidate => ({ ...candidate,
+      fragments: candidate.fragments.map(fragment => hot.snapshot.byFragmentId.get(fragment.id)) })))
+    const hit = hot.options.stageCache.read(hot.snapshot, { ...revised, input: rebound.input,
+      bindings: bindTopicStageRequest(hot.snapshot, rebound, hot.snapshot.fragments) }, text => readTopicCards(text, rebound))
+    assert(hit); assert.equal(hot.model.calls.length, 0)
+    assert(hit.value.every(card => card.evidence.every(entry => entry.excerptOnly && entry.fragment === hot.snapshot.byFragmentId.get(entry.fragment.id))))
+  })
+  await stageCacheCase(check, '多条原文证据经正式编排与目录保留，当前人物重绑和新任务零请求复用', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(12)
+    const cold = prepareStageTask(fixture, 'multi-evidence-cold', messages, policies, 'multi-evidence')
+    const first = await runGroundedReport(cold.data, true, cold.options)
+    assert.equal(first.audit.topicCards.length, 3)
+    assert(first.audit.topicCards.every(card => card.evidence.length === 3))
+    const directoryCall = cold.model.calls.find(call => JSON.parse(call.input).kind === 'topic-directory-3')
+    assert(JSON.parse(directoryCall.input).candidates.every(candidate => candidate.evidence.length === 3))
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'multi-evidence-hot', messages, policies, 'normal', { directory: cold.directory })
+    const second = await runGroundedReport(hot.data, true, hot.options)
+    assert.equal(hot.model.calls.length, 0); assert.deepEqual(second.audit.topicCards, first.audit.topicCards)
+    assert.deepEqual(second.audit.selected, first.audit.selected)
+    assert.equal(second.meta.evidence.deepReadMessageCount, 12)
+  })
+  await stageCacheCase(check, '每父六子卡共享整批24上限，正式目录／最终深读与新任务零请求重放', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(24)
+    const cold = prepareStageTask(fixture, 'many-split-cold', messages, policies, 'many-split-cards')
+    const first = await runGroundedReport(cold.data, true, cold.options)
+    assert.equal(first.audit.topicCards.length, 24)
+    const counts = new Map()
+    for (const card of first.audit.topicCards) counts.set(card.parentId, (counts.get(card.parentId) || 0) + 1)
+    assert.deepEqual([...counts.values()], [6, 6, 6, 6])
+    assert.equal(new Set(first.audit.topicCards.flatMap(card => card.fragmentIds)).size, 24)
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'many-split-hot', messages, policies, 'many-split-cards', { directory: cold.directory })
+    const second = await runGroundedReport(hot.data, true, hot.options)
+    assert.equal(hot.model.calls.length, 0); assert.deepEqual(second.audit.topicCards, first.audit.topicCards)
+    assert.deepEqual(second.audit.selected, first.audit.selected)
+    assert.equal(second.meta.evidence.deepReadMessageCount, first.meta.evidence.deepReadMessageCount)
+  })
+  await stageCacheCase(check, '漏核心父完整重制一次，实际缓存定向重放与新任务零请求保持完整来源', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(12)
+    const cold = prepareStageTask(fixture, 'card-core-cold', messages, policies, 'card-core-repair')
+    const first = await runGroundedReport(cold.data, false, cold.options)
+    const calls = cold.model.calls.filter(call => JSON.parse(call.input).kind === 'topic-cards-9')
+    assert.equal(calls.length, 2); assert.equal(first.audit.recoveries, 1)
+    const initial = JSON.parse(calls[0].input), repaired = JSON.parse(calls[1].input)
+    assert.deepEqual(repaired.requiredCandidateRefs, [initial.candidates.at(-1).ref])
+    assert.deepEqual(repaired.candidates, [initial.candidates.at(-1)]); assert.equal(repaired.maxCards, 22)
+    assert.equal(new Set(first.audit.topicCards.flatMap(card => card.fragmentIds)).size, 12)
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'card-core-hot', messages, policies, 'normal', { directory: cold.directory })
+    const second = await runGroundedReport(hot.data, false, hot.options)
+    assert.equal(hot.model.calls.length, 0); assert.deepEqual(second.audit.topicCards, first.audit.topicCards)
+    assert(second.audit.stageCache.length > 0)
+  })
+  await stageCacheCase(check, '子卡父身份与来源经实际全编排缓存重放，新任务零请求保持子范围', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(12)
+    const cold = prepareStageTask(fixture, 'split-cards-cold', messages, policies, 'split-cards')
+    const first = await runGroundedReport(cold.data, true, cold.options)
+    assert.equal(first.audit.topicCards.length, 6)
+    assert.equal(cold.model.calls.filter(call => JSON.parse(call.input).kind === 'topic-cards-9').length, 1)
+    assert(first.audit.topicCards.every(card => card.parentId && card.fragmentIds.length < 4))
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'split-cards-hot', messages, policies, 'split-cards', { directory: cold.directory })
+    const second = await runGroundedReport(hot.data, true, hot.options)
+    assert.equal(hot.model.calls.length, 0)
+    assert.deepEqual(second.audit.topicCards, first.audit.topicCards)
+    assert.deepEqual(second.audit.selected, first.audit.selected)
+    assert.equal(second.meta.evidence.deepReadMessageCount, 12)
+  })
+  await stageCacheCase(check, '卡片局部上下文使旧供料失效，新请求真实文件零调用复用', async fixture => {
+    const policies = stageFixturePolicies(), messages = stageFixtureMessages(30)
+    const cold = prepareStageTask(fixture, 'card-local-old', messages, policies)
+    const candidates = [{ id: 'first', fragments: [cold.snapshot.fragments[4]] }, { id: 'second', fragments: [cold.snapshot.fragments[24]] }]
+    const legacy = createTopicContext(cold.snapshot, candidates, 'inline')
+    legacy.input = JSON.stringify({ kind: 'topic-cards-9', supply: 'candidate-inline-unhinted-2', ...JSON.parse(legacy.input),
+      requiredCandidateRefs: [...legacy.candidates.keys()], candidateCount: legacy.candidates.size })
+    const provenance = candidates.flatMap(candidate => candidate.fragments)
+    const descriptor = { stage: 'selection', mode: 'detailed', system: getTopicCatalogInstructions('cards'), input: legacy.input,
+      maxTokens: 4096, requireNormalFinish: true, bindings: bindTopicStageRequest(cold.snapshot, legacy, provenance) }
+    await executeFixtureStageUnit(cold, descriptor, text => readTopicCards(text, legacy))
+    const current = createTopicCardContext(cold.snapshot, candidates)
+    const revised = { ...descriptor, input: current.input, bindings: bindTopicStageRequest(cold.snapshot, current, provenance) }
+    assert.equal(cold.options.stageCache.read(cold.snapshot, revised, text => readTopicCards(text, current)), null)
+    await executeFixtureStageUnit(cold, revised, text => readTopicCards(text, current))
+    fixture.state.now++
+    const hot = prepareStageTask(fixture, 'card-local-hot', messages, policies, 'normal', { directory: cold.directory })
+    const rebound = createTopicCardContext(hot.snapshot, candidates.map(candidate => ({ ...candidate,
+      fragments: candidate.fragments.map(fragment => hot.snapshot.byFragmentId.get(fragment.id)) })))
+    const hit = hot.options.stageCache.read(hot.snapshot, { ...revised, input: rebound.input,
+      bindings: bindTopicStageRequest(hot.snapshot, rebound, [...rebound.sources.values()].flat()) }, text => readTopicCards(text, rebound))
+    assert(hit); assert.equal(hit.value.length, 2); assert.equal(hot.model.calls.length, 0)
+    assert(hit.value.every(card => card.candidate.fragments.every(fragment => hot.snapshot.byFragmentId.get(fragment.id) === fragment)))
+  })
   await stageCacheCase(check, '新卡片正常结束是缓存身份条件，非正常首轮仅整输入恢复且下次零请求', async fixture => {
     const policies = stageFixturePolicies(), messages = stageFixtureMessages(), cold = prepareStageTask(fixture, 'card-finish-cold', messages, policies, 'card-finish-repair')
     const first = await runGroundedReport(cold.data, false, cold.options)
@@ -156,7 +387,7 @@ async function runReportStageCacheTests(check) {
   await stageCacheCase(check, '材料卡合法缺漏只补候选全文，首轮与恢复可信交换新任务零请求复用', async fixture => {
     const policies = stageFixturePolicies(), messages = stageFixtureMessages(), cold = prepareStageTask(fixture, 'card-repair-cold', messages, policies, 'card-repair')
     const first = await runGroundedReport(cold.data, false, cold.options)
-    const calls = cold.model.calls.filter(call => JSON.parse(call.input).kind === 'topic-cards-2')
+    const calls = cold.model.calls.filter(call => JSON.parse(call.input).kind === 'topic-cards-9')
     assert.equal(calls.length, 2)
     const initial = JSON.parse(calls[0].input), repaired = JSON.parse(calls[1].input)
     assert.equal(repaired.candidates.length, 1)
@@ -172,7 +403,7 @@ async function runReportStageCacheTests(check) {
     const policies = stageFixturePolicies(), messages = stageFixtureMessages(24)
     const cold = prepareStageTask(fixture, 'global-comparison-cold', messages, policies, 'global-selection')
     const first = await runGroundedReport(cold.data, false, cold.options)
-    assert(cold.model.calls.some(call => JSON.parse(call.input).kind === 'topic-selection-2'))
+    assert(cold.model.calls.some(call => JSON.parse(call.input).kind === 'topic-selection-3'))
     const comparisons = cold.store.list('unit').candidates.filter(unit => unit.metadata.stage === 'selection')
       .map(unit => cold.store.inspect(unit.id, 'unit', () => {})).filter(unit => unit.records[0]?.material === 'topic-summary')
     assert(comparisons.length > 0)
@@ -430,4 +661,4 @@ async function runReportStageCacheTests(check) {
   })
 }
 
-module.exports = { runReportStageCacheTests }
+module.exports = { runReportStageCacheTests, runCompactCatalogStageCacheTest }

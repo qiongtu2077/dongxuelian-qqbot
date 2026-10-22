@@ -84,7 +84,7 @@ async function runDailyWorkerTask(task, runtime = {}) {
 }
 // 后台使用独立明确入口，任何缺省配置均关闭；不把重型模型请求交给统计工作器。
 async function runDailyPreanalysisWorkerTask(task, runtime) {
-    if (process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1')
+    if (process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1' || process.env.DAILY_REPORT_GROUNDED_ENABLED !== '1')
         throw new Error('日报预分析尚未启用');
     if (task.notify?.target !== 'none')
         throw new Error('日报预分析任务禁止结果通知');

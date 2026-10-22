@@ -219,6 +219,15 @@ async function runPipelineCompletenessTests(check, withMockedAiAnalyzer) {
       assert.ok(fs.readFileSync(result.textPath, 'utf8').includes('后段独立主题'))
     }, async (data, analysis, context) => { renderContext = context; throw new Error('图片渲染单次失败') })
   })
+  await verify(check, '正式管线默认三十分钟且原截止传到图片，保存预留仍为三十秒', async () => {
+    const clock = 1791000000000
+    let renderContext
+    await withPipeline(makeInput(3), makeModelRequest([]), withMockedAiAnalyzer, async (pipeline, outputDir, period) => {
+      const result = await pipeline.generateDailyReportResult({ channelKey: 'test', reportPeriod: period, outputDir, now: () => clock })
+      assert(result.ok); assert.equal(renderContext.deadlineMs, clock + 1800000)
+      assert.equal(renderContext.workDeadlineMs, clock + 1770000)
+    }, async (_data, _analysis, context) => { renderContext = context; return Buffer.from('test-image') })
+  })
   await verify(check, '正式管线渲染用尽570秒预算保留完整文字和30秒保存时间', async () => {
     let clock = 1791000000000
     const startedAtMs = clock

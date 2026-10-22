@@ -12,6 +12,7 @@ const report_storage_1 = require("./report-storage");
 const report_snapshots_1 = require("./report-snapshots");
 const report_batch_catalog_1 = require("./report-batch-catalog");
 const report_model_1 = require("./report-model");
+const report_grounded_entry_1 = require("./report-grounded-entry");
 const report_background_1 = require("./report-background");
 const report_background_ledger_1 = require("./report-background-ledger");
 const report_classification_cache_1 = require("./report-classification-cache");
@@ -38,7 +39,7 @@ function preparePreanalysisInput(options, store) {
     const data = collectReportData(options.channelKey, options.period, (message, record) => {
         store.currentTimeMs();
         // 目录采用完整窗口，窗口外或未入选的损失记录不能被入选完整性掩盖。
-        if (record.bodyComplete === false || record.recordVersion !== 2 || record.realMessageId !== true) {
+        if (record.bodyComplete !== true || record.recordVersion !== 2 || record.realMessageId !== true) {
             throw new Error('日报预分析完整窗口缺少可信完整正文或永久身份');
         }
         fullMessages.push(message);
@@ -59,11 +60,14 @@ function preparePreanalysisInput(options, store) {
 }
 // 排队前核对预算与真实未完成封闭批次；零模型请求，成功候选先记录持久化调度间隔。
 async function planReportPreanalysisTask(options) {
+    const configuration = (0, report_grounded_entry_1.readGroundedReportConfiguration)();
+    if (!configuration || process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1')
+        return { ready: false, reason: 'disabled' };
     const store = preanalysisStore(options);
     store.currentTimeMs();
     if (options.hasForegroundPending())
         return { ready: false, reason: 'foreground' };
-    const model = await (0, report_model_1.createGroundedModelRequest)({ configuredNode: { provider: 'custom-1c571761199978de80368aba', model: 'deepseek-v4-flash' } });
+    const model = await (0, report_model_1.createGroundedModelRequest)({ configuredNode: configuration });
     const ledger = new report_background_ledger_1.ReportBackgroundLedger({ store, startedAtMs: options.startedAtMs,
         unitIdentity: (0, report_cache_provenance_1.reportCacheDigest)({ purpose: 'planning', taskId: options.taskId }),
         policy: model.classificationCachePolicy, hasForegroundPending: options.hasForegroundPending });
@@ -89,6 +93,9 @@ async function planReportPreanalysisTask(options) {
 }
 // 工作器重新读取真实来源及当前可信产物，仍只执行一个分类单元。
 async function runReportPreanalysisTask(options) {
+    const configuration = (0, report_grounded_entry_1.readGroundedReportConfiguration)();
+    if (!configuration || process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1')
+        return { status: 'idle', reason: 'disabled' };
     const store = preanalysisStore(options);
     store.currentTimeMs();
     if (options.hasForegroundPending())
@@ -96,7 +103,7 @@ async function runReportPreanalysisTask(options) {
     const input = preparePreanalysisInput(options, store);
     if (!input)
         return { status: 'idle', reason: 'no_records' };
-    const model = await (0, report_model_1.createGroundedModelRequest)({ configuredNode: { provider: 'custom-1c571761199978de80368aba', model: 'deepseek-v4-flash' } });
+    const model = await (0, report_model_1.createGroundedModelRequest)({ configuredNode: configuration });
     store.currentTimeMs();
     const result = await (0, report_background_1.runReportBackgroundBatch)({ store, ...input,
         startedAtMs: options.startedAtMs, signal: options.signal, hasForegroundPending: options.hasForegroundPending,

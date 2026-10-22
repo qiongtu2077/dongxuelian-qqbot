@@ -45,7 +45,7 @@ function backgroundModel(policy, mode = 'normal', hook) {
       return JSON.stringify({ groups: { 'social:1': '社交互动' }, records, quotes: [], completed: true })
     }
     if (stage === 'grouping') return '{"groups":[],"completed":true}'
-    if (payload.kind === 'topic-cards-2') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => [candidate.ref, { status: 'insufficient', scope: '', summary: '', evidence: [] }])) })
+    if (payload.kind === 'topic-cards-9') return JSON.stringify({ cards: Object.fromEntries(payload.candidates.map(candidate => [candidate.ref, [{ refs: candidate.refs, status: 'insufficient', scope: '', evidence: [] }]])) })
     throw new Error('固定社交材料不能请求输出：' + stage)
   }
   return { calls, request }

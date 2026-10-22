@@ -9,6 +9,7 @@ import { PagedReportStore } from './report-storage'
 import { saveReportSnapshot } from './report-snapshots'
 import { updateStoredReportBatchCatalog, selectReportCatalogBatches } from './report-batch-catalog'
 import { createGroundedModelRequest } from './report-model'
+import { readGroundedReportConfiguration } from './report-grounded-entry'
 import { runReportBackgroundBatch } from './report-background'
 import { ReportBackgroundLedger } from './report-background-ledger'
 import { ReportClassificationCache } from './report-classification-cache'
@@ -40,7 +41,7 @@ function preparePreanalysisInput(options: PreanalysisOptions, store: PagedReport
   const data = collectReportData(options.channelKey, options.period, (message, record) => {
     store.currentTimeMs()
     // 目录采用完整窗口，窗口外或未入选的损失记录不能被入选完整性掩盖。
-    if (record.bodyComplete === false || record.recordVersion !== 2 || record.realMessageId !== true) {
+    if (record.bodyComplete !== true || record.recordVersion !== 2 || record.realMessageId !== true) {
       throw new Error('日报预分析完整窗口缺少可信完整正文或永久身份')
     }
     fullMessages.push(message)
@@ -60,10 +61,12 @@ function preparePreanalysisInput(options: PreanalysisOptions, store: PagedReport
 
 // 排队前核对预算与真实未完成封闭批次；零模型请求，成功候选先记录持久化调度间隔。
 export async function planReportPreanalysisTask(options: PreanalysisOptions): Promise<{ ready: boolean; reason: string; catalogId?: string }> {
+  const configuration = readGroundedReportConfiguration()
+  if (!configuration || process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1') return { ready: false, reason: 'disabled' }
   const store = preanalysisStore(options)
   store.currentTimeMs()
   if (options.hasForegroundPending()) return { ready: false, reason: 'foreground' }
-  const model = await createGroundedModelRequest({ configuredNode: { provider: 'custom-1c571761199978de80368aba', model: 'deepseek-v4-flash' } })
+  const model = await createGroundedModelRequest({ configuredNode: configuration })
   const ledger = new ReportBackgroundLedger({ store, startedAtMs: options.startedAtMs,
     unitIdentity: reportCacheDigest({ purpose: 'planning', taskId: options.taskId }),
     policy: model.classificationCachePolicy, hasForegroundPending: options.hasForegroundPending })
@@ -85,12 +88,14 @@ export async function planReportPreanalysisTask(options: PreanalysisOptions): Pr
 
 // 工作器重新读取真实来源及当前可信产物，仍只执行一个分类单元。
 export async function runReportPreanalysisTask(options: PreanalysisOptions): Promise<Record<string, unknown>> {
+  const configuration = readGroundedReportConfiguration()
+  if (!configuration || process.env.DAILY_REPORT_PREANALYSIS_ENABLED !== '1') return { status: 'idle', reason: 'disabled' }
   const store = preanalysisStore(options)
   store.currentTimeMs()
   if (options.hasForegroundPending()) return { status: 'idle', reason: 'foreground_pending' }
   const input = preparePreanalysisInput(options, store)
   if (!input) return { status: 'idle', reason: 'no_records' }
-  const model = await createGroundedModelRequest({ configuredNode: { provider: 'custom-1c571761199978de80368aba', model: 'deepseek-v4-flash' } })
+  const model = await createGroundedModelRequest({ configuredNode: configuration })
   store.currentTimeMs()
   const result = await runReportBackgroundBatch({ store, ...input,
     startedAtMs: options.startedAtMs, signal: options.signal, hasForegroundPending: options.hasForegroundPending,
