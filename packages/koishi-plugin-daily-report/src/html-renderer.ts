@@ -539,13 +539,13 @@ function renderTemplate(template: string, data: ReportData, analysis: AnalysisRe
   return result
 }
 
-// 查找浏览器
+// 优先直接安装的Chrome/Chromium，最后尝试兼容包装器和Snap入口。
 function findBrowser(): string | null {
   const candidates = process.platform === 'win32'
     ? ['C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe']
-    : ['/snap/bin/chromium','/usr/bin/chromium-browser','/usr/bin/chromium',
-       '/usr/bin/google-chrome','/usr/bin/google-chrome-stable']
+    : ['/usr/bin/google-chrome','/usr/bin/google-chrome-stable','/usr/bin/chromium',
+       '/usr/bin/chromium-browser','/snap/bin/chromium']
   for (const p of candidates) {
     if (fs.existsSync(p)) return p
   }

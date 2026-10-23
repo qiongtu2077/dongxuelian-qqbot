@@ -11,8 +11,8 @@ const { renderHtmlToImage } = require('../../koishi-plugin-daily-report/lib/html
 const { readResourceActivityLease } = require('../lib/resource-scheduler/resource-activity-lease')
 const { GITHUB_LIMITS } = require('../lib/github-preview/models')
 
-// Use a real absolute deadline, with all network samples supplied by explicit transports.
-function context(ms = 10000) { return { signal: new AbortController().signal, deadline: Date.now() + ms, taskId: 'github-local-browser' } }
+// Use the production target budget, with a fresh absolute deadline for each independent operation.
+function context(ms = GITHUB_LIMITS.targetMs) { return { signal: new AbortController().signal, deadline: Date.now() + ms, taskId: 'github-local-browser' } }
 
 // The initiating post is independent of replies and contains original public metadata only.
 function metadata(kind = 'issue', bodyHtml = '<p>发起者原文，保留内容。</p>') {
@@ -76,7 +76,7 @@ async function verifyRender(kind, options = {}) {
     assert.equal(requestOptions.headers, undefined)
     return options.avatarFailure ? new Response(null, { status: 503 }) : new Response(avatarPng)
   }
-  let owned, closeOwned, cleanupStarted, layout, requests = 0
+  let owned, closeOwned, cleanupStarted, layout, requests = 0, screenshotStarted = false
   const controller = new AbortController()
   let abortTimer
   puppeteer.launch = async launchOptions => {
@@ -92,19 +92,23 @@ async function verifyRender(kind, options = {}) {
         layout = await page.evaluate(() => ({ yellow: getComputedStyle(document.querySelector('.masthead')).borderBottomColor, avatar: document.querySelector('img.avatar')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) }))
         return screenshot(...args)
       }
-      if (options.stall) page.screenshot = () => new Promise(() => {})
+      if (options.stall) page.screenshot = () => { screenshotStarted = true; return new Promise(() => {}) }
       if (options.guardFailure) page.setRequestInterception = async () => { throw new Error('guard setup failed') }
       if (options.cancel) abortTimer = setTimeout(() => controller.abort(new Error('group removed')), 100)
       return page
     }
     return owned
   }
-  const started = performance.now(), work = { ...context(options.stall ? GITHUB_LIMITS.targetMs : 10000), signal: controller.signal }
+  const started = performance.now(), work = { ...context(), signal: controller.signal }
   try {
     const data = metadata(kind)
     data.avatar = 'https://avatars.githubusercontent.com/u/browser-' + kind + (options.avatarFailure ? '-failed' : '-ok')
     const promise = ['repository', 'user'].includes(kind) ? renderGithubCard(data, work) : renderGithubIssue(data, work)
-    if (options.stall) { await assert.rejects(promise); assert(performance.now() - started >= 29500); assert(performance.now() - started < 34000) }
+    if (options.stall) {
+      await assert.rejects(promise, /超时|总时限已耗尽/)
+      assert.equal(screenshotStarted, true, 'timeout case must reach the intentionally stalled screenshot')
+      assert(performance.now() - started >= 29500); assert(performance.now() - started < 34000)
+    }
     else if (options.cancel) await assert.rejects(promise, /group removed/)
     else if (options.guardFailure) await assert.rejects(promise, /guard setup failed/)
     else {
@@ -140,7 +144,8 @@ async function main() {
   const html = buildGithubIssueHtml(metadata('pull'), '<pre><code>' + 'very-long-code-'.repeat(80) + '</code></pre><table><tr><td>' + 'long-cell'.repeat(80) + '</td></tr></table>', null)
   const image = await renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, networkPolicy: 'offline', captureSelector: '#github-preview' })
   assert((await sharp(image).metadata()).height > 400)
-  await assert.rejects(renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, networkPolicy: 'offline', captureSelector: '#missing-root' }), /根元素不存在/)
+  const missingRootWork = context()
+  await assert.rejects(renderHtmlToImage(html, { signal: missingRootWork.signal, deadlineMs: missingRootWork.deadline, networkPolicy: 'offline', captureSelector: '#missing-root' }), /根元素不存在/)
   await verifyRender('pull', { cancel: true })
   await verifyRender('issue', { guardFailure: true })
   await verifyRender('issue', { stuckClose: true })
