@@ -21,6 +21,7 @@ export interface TopicContext {
     comparisonLimit?: number;
     cardLimit?: number;
     cardCoverageAllowance?: number;
+    deferCardCoverage?: boolean;
     cacheMaterial?: {
         kind: 'raw';
         batch: EvidenceBatch;
@@ -103,7 +104,8 @@ export declare function createTopicCardContext(snapshot: ReportEvidence, candida
 export declare class TopicCardCoverageError extends AnalysisUnitCoverageError {
     readonly cards: TopicCard[];
     readonly missing: string[];
-    constructor(cards: TopicCard[], missing: string[], allowed: string[], details?: string);
+    readonly missingSources: Readonly<Record<string, readonly string[]>>;
+    constructor(cards: TopicCard[], missing: string[], allowed: string[], missingSources: Readonly<Record<string, readonly string[]>>, details?: string);
 }
 export declare function readTopicCards(text: string, context: TopicContext): TopicCard[];
 export declare function createTopicCardRepair(error: unknown, context: TopicContext): AnalysisUnitRecovery<TopicCard[]> | undefined;

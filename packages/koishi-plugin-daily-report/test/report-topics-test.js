@@ -425,7 +425,7 @@ function checkMultipleCardEvidence() {
   assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: { c1: [{ refs: ['r1'], status: 'ok', scope: '错误有内容', evidence: ['r1'] }] } }), blankContext), /QUOTE_UNSUPPORTED/)
 }
 
-// 仅删除精确空的不足卡；原索引可审计、核心覆盖及父级原子恢复均不放宽。
+// 仅删除精确空的不足卡；合法子卡、原索引及警告在缺漏恢复中保持不变。
 function checkEmptyInsufficientCards() {
   const { snapshot, candidates } = topicFixture(), context = topics.createTopicCardContext(snapshot, candidates)
   const empty = { refs: [], status: 'insufficient', scope: '', evidence: [] }
@@ -447,11 +447,15 @@ function checkEmptyInsufficientCards() {
     let failure
     try { topics.readTopicCards(response([value, empty]), context) } catch (error) { failure = error }
     assert(failure instanceof topics.TopicCardCoverageError); assert.deepEqual(failure.missing, ['c1'])
-    assert.equal(failure.cards.length, 2); assert(failure.cards.every(card => !card.formatWarnings))
+    assert.equal(failure.cards.length, value === empty ? 2 : 3)
     const repair = topics.createTopicCardRepair(failure, context)
-    const repaired = repair.validate(JSON.stringify({ cards: { c1: [first, empty] } }))
-    assert.equal(repaired.length, 3); assert.equal(new Set(repaired.flatMap(card => card.candidate.fragments)).size, 4)
+    const added = value === empty ? first : { ...first, refs: ['r2'], evidence: ['r2'] }
+    const repaired = repair.validate(JSON.stringify({ cards: { c1: [added, empty] } }))
+    assert.equal(repaired.length, value === empty ? 3 : 4)
+    assert.equal(new Set(repaired.flatMap(card => card.candidate.fragments)).size, 4)
+    assert.equal(new Set(repaired.map(card => card.candidate.id)).size, repaired.length)
     assert.equal(repaired[0].formatWarnings[0].childIndex, 2)
+    if (value !== empty) assert.equal(repaired[0], failure.cards[0])
   }
   for (const invalid of [{ ...empty, scope: ' ' }, { ...empty, status: 'ok' }, { ...empty, evidence: ['r1'] },
     { ...empty, refs: null }, { ...empty, other: true }, { ...empty, status: 'unknown' }]) {
@@ -554,7 +558,7 @@ function checkUnassignedCoreTolerance() {
     c2: [{ refs: [], status: 'insufficient', scope: '', evidence: [] }] }), split), /REF_UNCOVERED/)
 }
 
-// 漏核心父超过容错额度时仍整父替换，完整父保持本人来源；非法字段不允许保留首轮。
+// 缺核心只补遗漏来源，首轮子卡保持本人来源和身份；容量与非法字段仍严格拒绝。
 function checkIncompleteParentRepair() {
   const { snapshot, candidates } = topicFixture(), context = topics.createTopicCardContext(snapshot, candidates)
   const card = (refs, scope, ref) => ({ refs, status: 'ok', scope, evidence: [ref] })
@@ -566,27 +570,96 @@ function checkIncompleteParentRepair() {
   try { topics.readTopicCards(response({ c1: [partial], c2: [complete] }), context) } catch (error) { failure = error }
   assert(failure instanceof topics.TopicCardCoverageError)
   assert.deepEqual(failure.missing, ['c1', 'c3']); assert(failure.message.includes('c1:r2'))
-  assert.equal(failure.cards.length, 1); assert.equal(failure.cards[0].parentId, candidates[1].id)
+  assert.deepEqual(failure.missingSources, { c1: ['r2'], c3: ['r4'] })
+  assert.equal(failure.cards.length, 2); assert.equal(failure.cards[0].parentId, candidates[0].id)
   const repair = topics.createTopicCardRepair(failure, context), payload = JSON.parse(repair.input), initial = JSON.parse(context.input)
-  assert.deepEqual(payload.requiredCandidateRefs, ['c1', 'c3']); assert.equal(payload.maxCards, 23)
-  assert.deepEqual(payload.candidates, [initial.candidates[0], initial.candidates[2]])
+  assert.equal(payload.repairMode, 'missing-core-only-1')
+  assert.deepEqual(payload.requiredCandidateRefs, ['c1', 'c3']); assert.equal(payload.maxCards, 22)
+  assert.deepEqual(payload.candidates.map(candidate => candidate.refs), [['r2'], ['r4']])
+  assert.deepEqual(payload.candidates.map(candidate => candidate.sources.map(source => source.ref)), [['r2'], ['r4']])
+  assert.deepEqual(payload.candidates[0].retainedSources, initial.candidates[0].sources.slice(0, 1))
+  assert.deepEqual(payload.candidates[1].retainedSources, [])
   assert.deepEqual(payload.members, initial.members); assert.deepEqual(payload.context, initial.context)
-  const replaced = card(['r1', 'r2'], '完整安装讨论', 'r2')
-  const result = repair.validate(response({ c1: [replaced], c3: [missing] }))
-  assert.deepEqual(result.map(value => value.parentId), candidates.map(value => value.id))
-  assert.deepEqual(result[0].candidate.fragments, snapshot.fragments.slice(0, 2))
-  assert.equal(result[1], failure.cards[0]); assert(!result.some(value => value.scope === partial.scope))
-  assert.throws(() => repair.validate(response({ c1: [partial], c3: [missing] })), /REF_UNCOVERED/)
-  assert.throws(() => repair.validate(response({ c1: [replaced], c2: [complete], c3: [missing] })), /REF_UNKNOWN/)
+  const added = card(['r2'], '补充安装讨论', 'r2')
+  const result = repair.validate(response({ c1: [added], c3: [missing] }))
+  assert.deepEqual(result.map(value => value.parentId), ['a', 'a', 'b', 'c'])
+  assert.deepEqual(result.map(value => value.candidate.id), ['a', 'a:repair:1', 'b', 'c'])
+  assert.deepEqual(result.map(value => value.leaves), result.map(value => [value.candidate.id]))
+  assert.deepEqual(result.map(value => value.candidate.fragments), snapshot.fragments.map(fragment => [fragment]))
+  assert.equal(result[0], failure.cards[0]); assert.equal(result[2], failure.cards[1])
+  assert.equal(result[0].scope, partial.scope); assert.equal(new Set(result.map(value => value.candidate.id)).size, 4)
+  assert.throws(() => repair.validate(response({ c1: [partial], c3: [missing] })), /REF_UNKNOWN|不属于父候选/)
+  assert.throws(() => repair.validate(response({ c1: [added], c2: [complete], c3: [missing] })), /REF_UNKNOWN/)
+  assert.throws(() => repair.validate(response({ c1: [{ ...added, evidence: ['r1'] }], c3: [missing] })), /REF_UNKNOWN|不属于该候选/)
+  assert.throws(() => repair.validate(response({ c1: [{ ...added, scope: 'r1提供的背景' }], c3: [missing] })), /LOCAL_REF_IN_TEXT/)
   for (const bad of [{ ...complete, summary: '非法' }, { ...complete, refs: ['r1'] }, { ...complete, evidence: [{ ref: 'r3', text: '编造' }] }]) {
     assert.throws(() => topics.readTopicCards(response({ c1: [partial], c2: [bad] }), context), error => !(error instanceof topics.TopicCardCoverageError))
   }
   assert.throws(() => topics.readTopicCards(response({ c1: [partial], c2: [complete] }), { ...context, cardLimit: 2 }), /容量/)
-  const tight = { ...context, cardLimit: 3 }
+  assert.throws(() => topics.readTopicCards(response({ c1: [partial], c2: [complete] }), { ...context, cardLimit: 3 }), /容量/)
+  const tight = { ...context, cardLimit: 4 }
   try { topics.readTopicCards(response({ c1: [partial], c2: [complete] }), tight) } catch (error) { failure = error }
   const tightRepair = topics.createTopicCardRepair(failure, tight)
   assert.equal(JSON.parse(tightRepair.input).maxCards, 2)
-  assert.throws(() => tightRepair.validate(response({ c1: [partial, { ...partial, refs: ['r2'], evidence: ['r2'] }], c3: [missing] })), /容量/)
+  assert.equal(tightRepair.validate(response({ c1: [added], c3: [missing] })).length, 4)
+  assert.throws(() => tightRepair.validate(response({ c1: [added, added], c3: [missing] })), /容量/)
+}
+
+// 使用合成来源重现远端父的单条缺口，已覆盖来源不得因补漏再次消失。
+function checkIncrementalParentSources() {
+  const snapshot = evidence.createReportEvidence(Array.from({ length: 80 }, (_, index) => ({ userId: 'member', content: '合成讨论原文' + index })))
+  const candidates = Array.from({ length: 11 }, (_, index) => ({ id: 'parent-' + (index + 1),
+    fragments: snapshot.fragments.slice(index * 7, index === 10 ? 80 : (index + 1) * 7) }))
+  const context = topics.createTopicCardContext(snapshot, candidates), initial = JSON.parse(context.input)
+  const missingSources = { c1: ['r7'], c2: ['r14'], c3: ['r21'], c11: ['r73'] }
+  const entries = Object.fromEntries(initial.candidates.map(candidate => [candidate.ref, [{
+    refs: candidate.refs.filter(ref => !(missingSources[candidate.ref] || []).includes(ref)), status: 'ok', scope: '独立合成讨论',
+    evidence: [candidate.ref === 'c11' ? 'r75' : candidate.refs[0]] }]]))
+  let failure
+  try { topics.readTopicCards(JSON.stringify({ cards: entries }), context) } catch (error) { failure = error }
+  assert(failure instanceof topics.TopicCardCoverageError); assert.deepEqual(failure.missingSources, missingSources)
+  const previous = failure.cards.find(card => card.parentId === 'parent-11')
+  assert(previous.candidate.fragments.includes(snapshot.fragments[74])); assert(previous.candidate.fragments.includes(snapshot.fragments[77]))
+  const repair = topics.createTopicCardRepair(failure, context), payload = JSON.parse(repair.input)
+  assert.equal(payload.maxCards, 13); assert.equal(payload.repairMode, 'missing-core-only-1')
+  assert.deepEqual(payload.candidates.map(candidate => [candidate.ref, candidate.refs]), Object.entries(missingSources))
+  const last = payload.candidates.find(candidate => candidate.ref === 'c11')
+  assert.deepEqual(last.sources.map(source => source.ref), ['r73'])
+  assert(last.retainedSources.some(source => source.ref === 'r75')); assert(last.retainedSources.some(source => source.ref === 'r78'))
+  const response = { cards: Object.fromEntries(payload.candidates.map(candidate => [candidate.ref, [{
+    refs: candidate.refs, status: 'ok', scope: '缺漏的合成讨论', evidence: [candidate.refs[0]] }]])) }
+  const result = repair.validate(JSON.stringify(response))
+  assert.equal(result.length, 15); assert.equal(new Set(result.map(card => card.candidate.id)).size, 15)
+  assert.equal(new Set(result.flatMap(card => card.candidate.fragments)).size, 80)
+  assert.equal(result.find(card => card.candidate.id === previous.candidate.id), previous)
+  assert.deepEqual(result.find(card => card.candidate.id === 'parent-11:repair:1').candidate.fragments, [snapshot.fragments[72]])
+}
+
+// 最终缺漏额度对原请求只计算一次，合法补漏可省略已留卡父但不能分父累加容错。
+function checkIncrementalCoverageAllowance() {
+  const snapshot = evidence.createReportEvidence(Array.from({ length: 60 }, (_, index) => ({ userId: 'member', content: '合成原始材料' + index })))
+  const candidates = [{ id: 'first', fragments: snapshot.fragments.slice(0, 40) }, { id: 'second', fragments: snapshot.fragments.slice(40) }]
+  const context = topics.createTopicCardContext(snapshot, candidates), payload = JSON.parse(context.input)
+  const response = cards => JSON.stringify({ cards })
+  const initial = Object.fromEntries(payload.candidates.map((candidate, index) => [candidate.ref, [{
+    refs: candidate.refs.slice(0, index === 0 ? -1 : -4), status: 'ok', scope: '已验证的合成讨论', evidence: [candidate.refs[0]] }]]))
+  let failure
+  try { topics.readTopicCards(response(initial), context) } catch (error) { failure = error }
+  assert(failure instanceof topics.TopicCardCoverageError)
+  assert.deepEqual(failure.missingSources, { c1: ['r40'], c2: ['r57','r58','r59','r60'] })
+  const repair = topics.createTopicCardRepair(failure, context)
+  const addition = { refs: ['r57','r58'], status: 'ok', scope: '新增合成讨论', evidence: ['r57'] }
+  const result = repair.validate(response({ c2: [addition] }))
+  assert.equal(result.length, 3)
+  assert.deepEqual(result.flatMap(card => (card.unassignedFragments || []).map(fragment => fragment.id)), ['40:1','59:1','60:1'])
+  assert.equal(new Set(result.flatMap(card => [...card.candidate.fragments, ...(card.unassignedFragments || [])])).size, 60)
+  const split = repair.validate(response({ c2: [
+    { ...addition, refs: ['r57'] }, { ...addition, refs: ['r58'], evidence: ['r58'] },
+  ] }))
+  assert.deepEqual(split.map(card => card.candidate.id), ['first', 'second', 'second:repair:1', 'second:repair:2'])
+  assert.deepEqual(split.map(card => card.leaves), split.map(card => [card.candidate.id]))
+  assert.throws(() => repair.validate(response({ c2: [{ ...addition, refs: ['r57'] }] })), /REF_UNCOVERED/)
+  assert.throws(() => repair.validate(response({})), /REF_UNCOVERED/)
 }
 
 // 目录合并不丢叶候选，统计按真实来源去重，未知、重复及代表错绑均拒绝。
@@ -662,7 +735,9 @@ function runReportTopicTests(check) {
     ['共享来源逐卡消歧，不能用别名并集掩盖归属歧义', checkCardParentAliasAmbiguity],
     ['多证据逐条来源、有界摘录和明确格式告警，越权与改写仍失败', checkMultipleCardEvidence],
     ['精确空不足子卡带告警忽略，原索引与完整父覆盖及恢复保留', checkEmptyInsufficientCards],
-    ['漏核心父原子重制、合法父保留、容量及非法整批拒绝', checkIncompleteParentRepair],
+    ['缺核心增量补漏、首轮卡保留、容量及非法整批拒绝', checkIncompleteParentRepair],
+    ['远端父缺漏只供遗漏来源、已覆盖来源保留及新增身份唯一', checkIncrementalParentSources],
+    ['最终累计缺漏沿用原请求单次额度且允许保留父无新增卡', checkIncrementalCoverageAllowance],
     ['少量未归类原文单列审计、阈值与非法优先、恢复沿用原额度', checkUnassignedCoreTolerance],
     ['无淘汰目录保留叶候选、统计及最终选题严格校验', checkTopicDirectory],
     ['紧凑完整目录逐项保留范围证据统计、未知时间及引用边界', checkCompactTopicDirectory]]) {

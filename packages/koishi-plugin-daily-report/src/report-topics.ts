@@ -17,6 +17,7 @@ export interface TopicContext {
   comparisonLimit?: number
   cardLimit?: number
   cardCoverageAllowance?: number
+  deferCardCoverage?: boolean
   cacheMaterial?: { kind: 'raw'; batch: EvidenceBatch } | { kind: 'comparison'; batch: EvidenceBatch; excerpts: ReadonlyMap<string, string> }
     | { kind: 'summary'; summaries: ReadonlyMap<string, { title: string; summary: string }> }
 }
@@ -146,7 +147,7 @@ export function getTopicComparisonInstructions(): string { return COMPARISON_INS
 
 // 新调用图的三个独立提示均进入实际请求身份，旧评分不用于新目录。
 export function getTopicCatalogInstructions(stage: keyof typeof TOPIC_CATALOG_PROTOCOLS): string {
-  return stage === 'cards' ? CARD_INSTRUCTIONS + '\nrequiredCandidateRefs是cards父键的唯一白名单，必须逐个原样使用；拆出新讨论只能向同一父的数组增加子卡，不能新增c13、c6b、c9_shared等父键。例如c1拆两卡仍写{"cards":{"c1":[{"refs":["r1"],"status":"ok","scope":"问题一","evidence":["r1"]},{"refs":["r2"],"status":"ok","scope":"问题二","evidence":["r2"]}]}}，其余实际父继续写在cards内。\n每个c.sources就近提供它自己的全部核心原文；evidence只列本c.sources中属于本子卡refs的r引用，不返回原文text。不能引用另一c的来源，也不能把c序号当作r序号。context只读辅助不作本卡证据。范围只写讨论对象，不叙述成员身份。返回前检查该字段：出现本次任何p/r/m/c编号时，省略主语或改写为“有人／该成员”；证据只返回r引用，不复写或截取原文。' : stage === 'directory' ? DIRECTORY_INSTRUCTIONS + '每次最多返回八个合并组，其他候选原样保留，不为覆盖所有候选而拼成大组。' : CATALOG_SELECTION_INSTRUCTIONS
+  return stage === 'cards' ? CARD_INSTRUCTIONS + '\nrequiredCandidateRefs是cards父键的唯一白名单，必须逐个原样使用；拆出新讨论只能向同一父的数组增加子卡，不能新增c13、c6b、c9_shared等父键。例如c1拆两卡仍写{"cards":{"c1":[{"refs":["r1"],"status":"ok","scope":"问题一","evidence":["r1"]},{"refs":["r2"],"status":"ok","scope":"问题二","evidence":["r2"]}]}}，其余实际父继续写在cards内。\n每个c.sources就近提供它自己的全部核心原文；evidence只列本c.sources中属于本子卡refs的r引用，不返回原文text。不能引用另一c的来源，也不能把c序号当作r序号。context只读辅助不作本卡证据。范围只写讨论对象，不叙述成员身份。返回前检查该字段：出现本次任何p/r/m/c编号时，省略主语或改写为“有人／该成员”；证据只返回r引用，不复写或截取原文。\nrepairMode为missing-core-only-1时，各父refs就是本轮必须补齐的遗漏清单，sources仅含这些遗漏原文；retainedSources只读背景，已有子卡已保留，不能再次引用背景或重写旧卡。只新增遗漏来源的子卡，maxCards已经扣除保留卡数。' : stage === 'directory' ? DIRECTORY_INSTRUCTIONS + '每次最多返回八个合并组，其他候选原样保留，不为覆盖所有候选而拼成大组。' : CATALOG_SELECTION_INSTRUCTIONS
 }
 
 // 卡片读取完整候选材料，清单由程序提供；完整片段拆分仍由编排器执行。
@@ -172,8 +173,9 @@ function assertCardScope(scope: unknown, refs: Iterable<string>): asserts scope 
 
 // 首轮合法卡片先保留，缺漏只能恢复原候选，不能从错误文字推断归属。
 export class TopicCardCoverageError extends AnalysisUnitCoverageError {
-  // 保存同一作用域的合法卡片及缺失编号，供唯一恢复而非猜补。
-  constructor(public readonly cards: TopicCard[], public readonly missing: string[], allowed: string[], details?: string) {
+  // 保存全部合法子卡和逐父遗漏来源，唯一恢复不再推倒已验证的核心覆盖。
+  constructor(public readonly cards: TopicCard[], public readonly missing: string[], allowed: string[],
+    public readonly missingSources: Readonly<Record<string, readonly string[]>>, details?: string) {
     super(details || '[REF_UNCOVERED] 缺少材料卡：' + missing.join(','), allowed, missing)
   }
 }
@@ -273,7 +275,7 @@ export function readTopicCards(text: string, context: TopicContext): TopicCard[]
   const root = readCardContainers(text, context.candidates)
   const restoredParents = restoreCardParentAliases(root.cards, context)
   const cards = new Map<string, TopicCard[]>(), batch = context.cacheMaterial?.kind === 'raw' ? context.cacheMaterial.batch : undefined
-  const aliases = [...context.candidates.keys(), ...context.sources.keys(), ...(batch?.members.keys() || []), ...(batch?.auxiliary.keys() || []),
+  const aliases = [...context.candidates.keys(), ...context.sources.keys(), ...(batch?.core.keys() || []), ...(batch?.members.keys() || []), ...(batch?.auxiliary.keys() || []),
     ...restoredParents.map(value => value.aliasRef)]
   // 先拒绝未知父编号，避免较早的覆盖缺口掩盖后续非法键并给出错误恢复方向。
   for (const ref of Object.keys(root.cards)) assertExchangeRef(ref, context.candidates, '材料卡候选')
@@ -325,11 +327,20 @@ export function readTopicCards(text: string, context: TopicContext): TopicCard[]
     cards.set(ref, values)
   }
   const absent = [...context.candidates.keys()].filter(ref => !cards.has(ref))
-  if (cardCount + absent.length > (context.cardLimit ?? 24)) throw new Error('[TEXT_BUDGET] 子卡总数超过容量或未为缺父候选预留空间')
+  if (cardCount + (context.deferCardCoverage ? 0 : absent.length) > (context.cardLimit ?? 24)) throw new Error('[TEXT_BUDGET] 子卡总数超过容量或未为缺父候选预留空间')
+  const ordered = [...context.candidates.keys()].flatMap(ref => cards.get(ref) || [])
+  // 覆盖错误也保留已经核验的容器告警，增量恢复不得丢失首轮审计。
+  if (ordered.length) {
+    if (root.emptyUnknown.length) ordered[0].formatWarnings = [...(ordered[0].formatWarnings || []),
+      ...root.emptyUnknown.map(parentRef => ({ code: 'ignored_empty_unknown_parent' as const, parentRef }))]
+    if (root.rootMarker) ordered[0].formatWarnings = [...(ordered[0].formatWarnings || []), { code: 'ignored_root_marker', marker: 'cards' }]
+    if (root.emptyRootFields.length) ordered[0].formatWarnings = [...(ordered[0].formatWarnings || []),
+      ...root.emptyRootFields.map(field => ({ code: 'ignored_empty_root_field' as const, field }))]
+  }
   const unassignedRefs = new Set(uncovered.flatMap(item => item.refs))
   const allowance = Math.min(3, context.cardCoverageAllowance ?? Math.floor(context.sources.size * 0.05))
-  // 少量缺口单列父级审计，不补到任何语义卡；全部父和字段必须已经合法。
-  if (uncovered.length && !absent.length && unassignedRefs.size <= allowance && uncovered.every(item => cards.get(item.ref)!.length)) {
+  // 恢复回包只做合法性检查，遗漏额度在与首轮合并后按原始完整批次结算一次。
+  if (!context.deferCardCoverage && uncovered.length && !absent.length && unassignedRefs.size <= allowance && uncovered.every(item => cards.get(item.ref)!.length)) {
     for (const item of uncovered) {
       const owner = cards.get(item.ref)![0], fragments = item.refs.flatMap(ref => [...context.sources.get(ref)!])
       owner.unassignedFragments = fragments
@@ -338,7 +349,7 @@ export function readTopicCards(text: string, context: TopicContext): TopicCard[]
     }
     uncovered.length = 0
   }
-  if (uncovered.length) {
+  if (uncovered.length || absent.length) {
     // 只反馈真实局部编号且保持恢复预留有界；不截断一个引用，也不把原话写入错误。
     const details: string[] = []
     for (const item of uncovered) {
@@ -346,38 +357,85 @@ export function readTopicCards(text: string, context: TopicContext): TopicCard[]
       if (Array.from([...details, detail].join('；')).length > 240) break
       details.push(detail)
     }
-    const incomplete = new Set(uncovered.map(item => item.ref))
-    const missing = [...context.candidates.keys()].filter(ref => !cards.has(ref) || incomplete.has(ref))
-    // 漏核心的父候选整父丢弃；唯一恢复重读其全部原文，不给遗漏核心猜补归属。
-    const retained = [...cards].filter(([ref]) => !incomplete.has(ref)).flatMap(([, values]) => values)
-    throw new TopicCardCoverageError(retained, missing, [...context.candidates.keys()],
-      '[REF_UNCOVERED] 父候选子卡并集未完整覆盖核心：' + details.join('；')
-      + '。请重制对应原父cards.c数组内全部子卡并覆盖该父全部核心；不足子卡也必须列refs，不得创建新父编号。')
+    const missingSources: Record<string, readonly string[]> = Object.fromEntries(uncovered.map(item => [item.ref, item.refs]))
+    for (const ref of absent) missingSources[ref] = [...context.sources].filter(([, fragments]) =>
+      fragments.some(fragment => context.candidates.get(ref)!.fragments.includes(fragment))).map(([key]) => key)
+    const missing = [...context.candidates.keys()].filter(ref => Object.prototype.hasOwnProperty.call(missingSources, ref))
+    if (!context.deferCardCoverage && cardCount + missing.length > (context.cardLimit ?? 24)) {
+      throw new Error('[TEXT_BUDGET] 子卡容量不足，无法为每个待补父候选预留新增卡')
+    }
+    throw new TopicCardCoverageError(ordered, missing, [...context.candidates.keys()], missingSources,
+      details.length ? '[REF_UNCOVERED] 父候选子卡并集未完整覆盖核心：' + details.join('；')
+        + '。请只为对应原父cards.c数组补充缺失引用的子卡；已验证子卡保留，不得重写或创建新父编号。' : undefined)
   }
-  if (absent.length) throw new TopicCardCoverageError([...cards.values()].flat(), absent, [...context.candidates.keys()])
-  const ordered = [...context.candidates.keys()].flatMap(ref => cards.get(ref)!)
-  if (root.emptyUnknown.length) ordered[0].formatWarnings = [...(ordered[0].formatWarnings || []),
-    ...root.emptyUnknown.map(parentRef => ({ code: 'ignored_empty_unknown_parent' as const, parentRef }))]
-  if (root.rootMarker) ordered[0].formatWarnings = [...(ordered[0].formatWarnings || []), { code: 'ignored_root_marker', marker: 'cards' }]
-  if (root.emptyRootFields.length) ordered[0].formatWarnings = [...(ordered[0].formatWarnings || []),
-    ...root.emptyRootFields.map(field => ({ code: 'ignored_empty_root_field' as const, field }))]
   return ordered
 }
 
-// 合法缺父或漏核心按父原子恢复，沿用原短引用、完整父原文及必要私有绑定。
+// 保留首轮对象，仅给同父新增卡独立身份；最终按原完整批次核对容量和遗漏额度。
+function mergeTopicCardRepair(retained: readonly TopicCard[], additions: readonly TopicCard[], context: TopicContext): TopicCard[] {
+  const groups = new Map<string, TopicCard[]>([...context.candidates].map(([ref, parent]): [string, TopicCard[]] => {
+    const existing = retained.filter(card => card.parentId === parent.id)
+    const extra = additions.filter(card => card.parentId === parent.id).map((card, index) => {
+      if (!existing.length) return card
+      const id = parent.id + ':repair:' + (index + 1)
+      return { ...card, candidate: { ...card.candidate, id }, leaves: [id] }
+    })
+    return [ref, [...existing, ...extra]]
+  }))
+  const all = [...groups.values()].flat()
+  if (all.length > (context.cardLimit ?? 24)) throw new Error('[TEXT_BUDGET] 补漏合计子卡超过原批容量')
+  if (new Set(all.map(card => card.candidate.id)).size !== all.length) throw new Error('[FIELD_DUPLICATE] 补漏子卡身份重复')
+  const gaps = new Map<string, EvidenceFragment[]>(), missingSources: Record<string, readonly string[]> = {}
+  for (const [ref, parent] of context.candidates) {
+    const covered = new Set(groups.get(ref)!.flatMap(card => card.candidate.fragments.map(fragment => fragment.id)))
+    const missing = parent.fragments.filter(fragment => !covered.has(fragment.id))
+    if (missing.length) {
+      gaps.set(ref, missing)
+      missingSources[ref] = [...context.sources].filter(([, fragments]) => fragments.some(fragment => missing.includes(fragment))).map(([key]) => key)
+    }
+  }
+  const uniqueMissing = new Set([...gaps.values()].flat().map(fragment => fragment.id))
+  const allowance = Math.min(3, context.cardCoverageAllowance ?? Math.floor(context.sources.size * 0.05))
+  if (uniqueMissing.size > allowance || [...groups.values()].some(cards => !cards.length)) {
+    const missing = [...context.candidates.keys()].filter(ref => gaps.has(ref) || !groups.get(ref)!.length)
+    throw new TopicCardCoverageError(all, missing, [...context.candidates.keys()], missingSources,
+      '[REF_UNCOVERED] 补漏后原父核心仍未完整分配：' + missing.map(ref => ref + ':' + (missingSources[ref] || []).slice(0, 8).join(',')).join('；'))
+  }
+  // 少量剩余来源仅单列审计，不回填任何卡片的语义核心；不修改首轮保留对象。
+  for (const [ref, fragments] of gaps) {
+    const cards = groups.get(ref)!, first = cards[0]
+    cards[0] = { ...first, unassignedFragments: fragments, formatWarnings: [...(first.formatWarnings || []),
+      { code: 'unassigned_core_fragments', parentRef: ref, fragmentIds: fragments.map(fragment => fragment.id) }] }
+  }
+  return [...groups.values()].flat()
+}
+
+// 仅补结构化缺失清单；已处理原文留作只读背景，不能重写或重复归入首轮子卡。
 export function createTopicCardRepair(error: unknown, context: TopicContext): AnalysisUnitRecovery<TopicCard[]> | undefined {
   if (!(error instanceof TopicCardCoverageError)) return
   const missing = new Set(error.missing), payload = JSON.parse(context.input)
-  payload.candidates = payload.candidates.filter((value: { ref: string }) => missing.has(value.ref))
+  payload.repairMode = 'missing-core-only-1'
+  payload.candidates = payload.candidates.filter((value: { ref: string }) => missing.has(value.ref)).map((value: { ref: string; refs: string[]; sources: Array<{ ref: string }> }) => {
+    const pending = new Set(error.missingSources[value.ref])
+    return { ...value, refs: value.refs.filter(ref => pending.has(ref)), sources: value.sources.filter(source => pending.has(source.ref)),
+      retainedSources: value.sources.filter(source => !pending.has(source.ref)) }
+  })
   payload.requiredCandidateRefs = payload.candidates.map((value: { ref: string }) => value.ref); payload.candidateCount = payload.candidates.length
   payload.maxCards = (context.cardLimit ?? 24) - error.cards.length
   const refs = new Set(payload.candidates.flatMap((value: { refs: string[] }) => value.refs))
-  const subset = { ...context, cardLimit: payload.maxCards, cardCoverageAllowance: context.cardCoverageAllowance ?? Math.min(3, Math.floor(context.sources.size * 0.05)),
-    input: JSON.stringify(payload), candidates: new Map([...context.candidates].filter(([ref]) => missing.has(ref))),
-    sources: new Map([...context.sources].filter(([ref]) => refs.has(ref))) }
-  return { system: '只为本次列出的父候选重制全部材料卡，覆盖各自全部核心；其他父的完整卡片已保留，不重写、不返回。\n' + getTopicCatalogInstructions('cards'), input: subset.input, validate(text) {
-    const all = [...error.cards, ...readTopicCards(text, subset)]
-    return [...context.candidates.values()].flatMap(candidate => all.filter(card => card.parentId === candidate.id))
+  const subset: TopicContext = { ...context, cardLimit: payload.maxCards, deferCardCoverage: true,
+    input: JSON.stringify(payload), candidates: new Map([...context.candidates].filter(([ref]) => missing.has(ref)).map(([ref, candidate]) => {
+      const pending = new Set(error.missingSources[ref].flatMap(source => [...context.sources.get(source)!]))
+      return [ref, { ...candidate, fragments: candidate.fragments.filter(fragment => pending.has(fragment)) }]
+    })), sources: new Map([...context.sources].filter(([ref]) => refs.has(ref))) }
+  return { system: '只处理每父refs明确列出的遗漏核心，已有合法子卡全部保留。retainedSources仅供理解上下文，不能写进refs或evidence，也不返回旧卡；只返回新增子卡。\n' + getTopicCatalogInstructions('cards'), input: subset.input, validate(text) {
+    let additions: TopicCard[]
+    try { additions = readTopicCards(text, subset) } catch (failure) {
+      // 合法但仍漏核心的回包交给原批全局校验；非法字段、证据、引用或容量错误继续失败。
+      if (!(failure instanceof TopicCardCoverageError)) throw failure
+      additions = failure.cards
+    }
+    return mergeTopicCardRepair(error.cards, additions, context)
   } }
 }
 

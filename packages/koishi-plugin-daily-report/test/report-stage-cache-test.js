@@ -301,7 +301,7 @@ async function runReportStageCacheTests(check) {
     assert.deepEqual(second.audit.selected, first.audit.selected)
     assert.equal(second.meta.evidence.deepReadMessageCount, first.meta.evidence.deepReadMessageCount)
   })
-  await stageCacheCase(check, '漏核心父完整重制一次，实际缓存定向重放与新任务零请求保持完整来源', async fixture => {
+  await stageCacheCase(check, '缺核心只增量补漏，实际缓存两轮重放与新任务零请求保留首轮卡及完整来源', async fixture => {
     const policies = stageFixturePolicies(), messages = stageFixtureMessages(12)
     const cold = prepareStageTask(fixture, 'card-core-cold', messages, policies, 'card-core-repair')
     const first = await runGroundedReport(cold.data, false, cold.options)
@@ -309,8 +309,25 @@ async function runReportStageCacheTests(check) {
     assert.equal(calls.length, 2); assert.equal(first.audit.recoveries, 1)
     const initial = JSON.parse(calls[0].input), repaired = JSON.parse(calls[1].input)
     assert.deepEqual(repaired.requiredCandidateRefs, [initial.candidates.at(-1).ref])
-    assert.deepEqual(repaired.candidates, [initial.candidates.at(-1)]); assert.equal(repaired.maxCards, 22)
+    assert.equal(repaired.repairMode, 'missing-core-only-1'); assert.equal(repaired.maxCards, 21)
+    assert.deepEqual(repaired.candidates[0].refs, initial.candidates.at(-1).refs.slice(-1))
+    assert.deepEqual(repaired.candidates[0].sources, initial.candidates.at(-1).sources.slice(-1))
+    assert.deepEqual(repaired.candidates[0].retainedSources, initial.candidates.at(-1).sources.slice(0, -1))
+    assert.equal(first.audit.topicCards.length, 4)
+    const retained = first.audit.topicCards.find(card => card.fragmentIds.includes('9:1'))
+    const addition = first.audit.topicCards.find(card => card.fragmentIds.includes('12:1'))
+    assert.deepEqual(retained.fragmentIds, ['9:1','10:1','11:1'])
+    assert.deepEqual(addition.fragmentIds, ['12:1']); assert.equal(addition.parentId, retained.parentId)
+    assert.equal(addition.id, retained.parentId + ':repair:1')
+    assert.equal(new Set(first.audit.topicCards.map(card => card.id)).size, 4)
     assert.equal(new Set(first.audit.topicCards.flatMap(card => card.fragmentIds)).size, 12)
+    // 两轮交换须原样重放，不能把只有缺漏来源的第二轮误存为整批结果。
+    const targeted = cold.store.list('unit').candidates.filter(unit => unit.metadata.stage === 'selection')
+      .map(unit => cold.store.inspect(unit.id, 'unit', () => {})).find(unit => unit.records.some(row => row.type === 'exchange' && row.value.recovery === 'targeted'))
+    assert(targeted)
+    const exchange = targeted.records.find(row => row.type === 'exchange').value
+    assert.equal(exchange.responses.length, 2)
+    assert.deepEqual(JSON.parse(exchange.responses[1]).cards[repaired.requiredCandidateRefs[0]][0].refs, repaired.candidates[0].refs)
     fixture.state.now++
     const hot = prepareStageTask(fixture, 'card-core-hot', messages, policies, 'normal', { directory: cold.directory })
     const second = await runGroundedReport(hot.data, false, hot.options)
@@ -384,7 +401,7 @@ async function runReportStageCacheTests(check) {
     const second = await runGroundedReport(hot.data, false, hot.options)
     assert.equal(hot.model.calls.length, 0); assert.deepEqual(second.audit.topicCards, first.audit.topicCards)
   })
-  await stageCacheCase(check, '材料卡合法缺漏只补候选全文，首轮与恢复可信交换新任务零请求复用', async fixture => {
+  await stageCacheCase(check, '材料卡缺父只补该父全部原文，首轮与恢复可信交换新任务零请求复用', async fixture => {
     const policies = stageFixturePolicies(), messages = stageFixtureMessages(), cold = prepareStageTask(fixture, 'card-repair-cold', messages, policies, 'card-repair')
     const first = await runGroundedReport(cold.data, false, cold.options)
     const calls = cold.model.calls.filter(call => JSON.parse(call.input).kind === 'topic-cards-9')
@@ -392,7 +409,9 @@ async function runReportStageCacheTests(check) {
     const initial = JSON.parse(calls[0].input), repaired = JSON.parse(calls[1].input)
     assert.equal(repaired.candidates.length, 1)
     assert.deepEqual(repaired.requiredCandidateRefs, [initial.candidates.at(-1).ref])
-    assert(repaired.candidates[0].sources.every(source => initial.candidates.at(-1).refs.includes(source.ref)))
+    assert.deepEqual(repaired.candidates[0].refs, initial.candidates.at(-1).refs)
+    assert.deepEqual(repaired.candidates[0].sources, initial.candidates.at(-1).sources)
+    assert.deepEqual(repaired.candidates[0].retainedSources, [])
     fixture.state.now++
     const hot = prepareStageTask(fixture, 'card-repair-hot', messages, policies, 'card-repair', { directory: cold.directory })
     const second = await runGroundedReport(hot.data, false, hot.options)

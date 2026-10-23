@@ -336,6 +336,46 @@ async function checkRunnerRecovery() {
   assert.equal(unavailableCalls, 1)
 }
 
+// 材料卡唯一恢复只提交遗漏原文，编排与审计保留首轮子范围和新增卡的唯一身份。
+async function checkIncrementalCardRunner() {
+  const { options, saved } = runnerOptions(), cardCalls = [], data = reportData(12)
+  options.request = async (stage, attempt, system, input, tokens, extra) => {
+    extra._onRequestAttempt(); extra._onRequestExecution({ finishReason: 'stop', finishReasonReadable: true })
+    const payload = JSON.parse(input)
+    if (stage === 'classification') return JSON.stringify({ groups: { 'event:1': '合成讨论一', 'event:2': '合成讨论二', 'event:3': '合成讨论三' },
+      records: Object.fromEntries(payload.items.map((item, index) => [item.ref, 'event:' + (Math.floor(index / 4) + 1)])), quotes: [], completed: true })
+    const value = modelReply(stage, payload)
+    if (payload.kind === 'topic-cards-9') {
+      cardCalls.push({ attempt, payload })
+      if (attempt === 1) {
+        const last = payload.candidates.at(-1)
+        value.cards[last.ref][0].refs = last.refs.slice(0, -1)
+      } else {
+        const initial = cardCalls[0].payload.candidates.at(-1)
+        assert.equal(payload.repairMode, 'missing-core-only-1'); assert.equal(payload.maxCards, 21)
+        assert.deepEqual(payload.requiredCandidateRefs, [initial.ref])
+        assert.deepEqual(payload.candidates[0].refs, ['r12'])
+        assert.deepEqual(payload.candidates[0].sources, initial.sources.slice(-1))
+        assert.deepEqual(payload.candidates[0].retainedSources, initial.sources.slice(0, -1))
+      }
+    }
+    return JSON.stringify(value)
+  }
+  const result = await runGroundedReport(data, false, options)
+  assert.equal(cardCalls.length, 2); assert.equal(result.audit.recoveries, 1)
+  assert.equal(result.audit.topicCards.length, 4)
+  const retained = result.audit.topicCards.find(card => card.fragmentIds.includes('9:1'))
+  const addition = result.audit.topicCards.find(card => card.fragmentIds.includes('12:1'))
+  assert.deepEqual(retained.fragmentIds, ['9:1','10:1','11:1'])
+  assert.deepEqual(addition.fragmentIds, ['12:1']); assert.equal(addition.parentId, retained.parentId)
+  assert.equal(addition.id, retained.parentId + ':repair:1')
+  assert.equal(new Set(result.audit.topicCards.map(card => card.id)).size, 4)
+  assert.equal(new Set(result.audit.topicCards.flatMap(card => card.fragmentIds)).size, 12)
+  assert.equal(result.meta.evidence.deepReadMessageCount, 12)
+  const completed = saved.find(row => row.unit.stage === 'selection' && row.attempts.length === 2)
+  assert(completed)
+}
+
 // 可信临时5xx只走已有唯一恢复；原材料、计额、取消和原截止不变。
 async function checkTemporaryUpstreamRecovery() {
   const temporary = () => new ReportRequestBoundaryError('upstream', '上游连接超时', { code: 'HTTP_502', status: 502, retryable: true })
@@ -698,6 +738,7 @@ async function runReportRunnerTests(check) {
     ['父候选来源拆分经实际目录、选题、概述和审计保持独立', checkSplitCardRunner],
     ['目录两层后完整紧凑选尾部，仍超容量准确失败且不分批淘汰', checkCatalogCapacityFailure],
     ['新编排长正文尾片段、分段概述与普通模式', checkLongRunner], ['新编排唯一补漏及隐藏重试拒绝', checkRunnerRecovery],
+    ['材料卡只补遗漏原文、保留首轮子卡及唯一身份和完整来源', checkIncrementalCardRunner],
     ['可信临时5xx唯一原输入恢复，非临时错误与取消／截止／八次预算仍停止', checkTemporaryUpstreamRecovery],
     ['本地超时等待真实清理、原输入唯一恢复且拒绝迟到正文', checkOwnedTimeoutCleanup], ['前台本地超时恢复仍遵守两轮/八次/原截止', checkOwnedTimeoutRunner],
     ['局部编号错误进入唯一恢复，仍非法时两次准确失败且不发布', checkDisplayAliasRecovery],
