@@ -180,13 +180,16 @@ function testResourceModel(resource) {
   assert.match(resource.taskErrorDisplay('worker heartbeat stale: local-video-sender-main'), /误判为失联/)
   assert.match(resource.taskErrorDisplay('worker heartbeat stale: agent-worker'), /长时间未更新运行状态/)
   assert.match(resource.taskErrorDisplay('task_id_conflict'), /编号与历史记录重复/)
-  assert.strictEqual(resource.resourceEventDisplay('media_task_done'), '媒体分析任务已完成')
+  assert.strictEqual(resource.resourceEventDisplay('media_task_done'), '媒体处理任务已完成')
+  assert.strictEqual(resource.taskKindDisplay('media_image_cache'), '原图缓存任务')
+  assert.strictEqual(resource.taskContentDisplay({ kind: 'media_image_cache' }), '下载并缓存原图')
+  assert.strictEqual(resource.taskStepDisplay({ step: 'caching_image' }), '缓存图片原图')
   assert.strictEqual(resource.resourceEventDisplay('unknown_event'), '其他系统事件')
   assert.strictEqual(resource.resourceEventSourceDisplay('S1'), '资源检查')
   assert.strictEqual(resource.eventDetail({ event: 'admission_decided', reason: 'resource budget accepted' }), '资源满足要求，允许执行。')
   assert.strictEqual(resource.eventDetail({ event: 'media_task_done', createdAt: '2026-10-05T12:22:56.771Z' }), '')
   assert.strictEqual(resource.workerDisplay({ workerType: 'agent', workerHealthCode: 'stopped_idle', backlogTotal: 0 }).label, '已停止')
-  assert.strictEqual(resource.workerDisplay({ workerType: 'media', workerHealthCode: 'idle', backlogTotal: 0 }).name, '媒体分析处理器')
+  assert.strictEqual(resource.workerDisplay({ workerType: 'media', workerHealthCode: 'idle', backlogTotal: 0 }).name, '媒体处理器')
   assert.strictEqual(resource.workerDisplay({ workerType: 'daily', workerHealthCode: 'working', runningCount: 1 }).name, '日报处理器')
   assert.strictEqual(
     resource.workerDisplay({ workerType: 'agent', workerHealthCode: 'running_unresponsive_backlog', backlogTotal: 1, runningCount: 1 }).label,
@@ -195,6 +198,7 @@ function testResourceModel(resource) {
   assert.strictEqual(resource.workerDisplay({ workerType: 'daily', workerHealthCode: 'claiming_idle', backlogTotal: 1 }).label, '处理器空闲')
   assert.strictEqual(resource.workerDisplay({ workerType: 'daily', workerHealthCode: 'task_timeout_idle', backlogTotal: 0 }).label, '处理器空闲，上一个任务超时')
   assert.strictEqual(resource.mediaQueueDisplay('image', { queueTotal: 96, queueLimit: 120, readyCount: 90, deferredCount: 6, runningCount: 1 }, 'near_limit').label, '接近上限')
+  assert.strictEqual(resource.mediaQueueDisplay('imageCache', { queueTotal: 1, queueLimit: 120 }, 'queued').name, '原图缓存')
   assert.match(resource.mediaSummaryDisplay({ mediaRiskCode: 'at_limit', mediaRiskKinds: ['file', 'voice'] }).detail, /文件、语音/)
 }
 
@@ -251,9 +255,14 @@ function testResourceReadability(readability) {
   assert.strictEqual(mediaWorker.workerHealthCode, 'running_unresponsive_backlog')
   assert.strictEqual(mediaWorker.runningCount, 1)
   const mediaRisk = readability.buildMediaRisk(base.media)
-  assert.deepStrictEqual(mediaRisk.mediaRiskByKind, { image: 'idle', file: 'near_limit', voice: 'at_limit' })
+  assert.deepStrictEqual(mediaRisk.mediaRiskByKind, { image: 'idle', imageCache: 'idle', file: 'near_limit', voice: 'at_limit' })
   assert.strictEqual(mediaRisk.mediaRiskCode, 'at_limit')
   assert.deepStrictEqual(mediaRisk.mediaRiskKinds, ['voice'])
+  const cacheOnly = { queues: { imageCache: { queueTotal: 2, readyCount: 1, deferredCount: 1, runningCount: 0, queueLimit: 2 } } }
+  const cacheWorker = readability.buildResourceReadability({ ...base, media: cacheOnly, workers: [{ name: 'media-worker', kind: 'media', alive: false }], tasks: [] }).workers[0]
+  assert.strictEqual(cacheWorker.workerHealthCode, 'stopped_backlog')
+  assert.strictEqual(cacheWorker.backlogTotal, 2)
+  assert.deepStrictEqual(readability.buildMediaRisk(cacheOnly).mediaRiskKinds, ['imageCache'])
 }
 
 // Verifies fixed 120-record keyset pagination, stable ordering, filters, and lazy detail output.

@@ -37,6 +37,8 @@ declare function extractCqAttrValue(body?: unknown, name?: string): string;
 declare function extractImageRefFromContent(content?: unknown): ImageRef;
 declare function appendUniqueSegments(target: unknown[], segments: unknown): void;
 declare function getMessageSegments(session?: SegmentSession): unknown[];
+declare function getCurrentImageSegments(session?: SegmentSession): unknown[];
+declare function hasAmbiguousImageMessage(session?: SegmentSession, content?: unknown): boolean;
 declare function normalizeSegmentData(segment?: unknown): Record<string, unknown>;
 declare function extractFileRefFromContent(content?: unknown): FileRef | null;
 declare function getFileSegmentData(session?: SegmentSession): Record<string, unknown> | FileRef | null;
@@ -49,6 +51,8 @@ declare const _default: {
     extractImageRefFromContent: typeof extractImageRefFromContent;
     appendUniqueSegments: typeof appendUniqueSegments;
     getMessageSegments: typeof getMessageSegments;
+    getCurrentImageSegments: typeof getCurrentImageSegments;
+    hasAmbiguousImageMessage: typeof hasAmbiguousImageMessage;
     normalizeSegmentData: typeof normalizeSegmentData;
     extractFileRefFromContent: typeof extractFileRefFromContent;
     getFileSegmentData: typeof getFileSegmentData;

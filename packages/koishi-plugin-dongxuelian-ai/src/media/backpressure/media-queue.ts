@@ -19,15 +19,17 @@ const {
   writeJsonAtomic,
 } = require('../../resource-common/files') as typeof import('../../resource-common/files')
 const { redactSensitiveText } = require('../../core/redactor') as typeof import('../../core/redactor')
+const { readRandomImageAuthorization } = require('../image/image-random-demand') as typeof import('../image/image-random-demand')
 
 interface MediaTaskInput {
-  kind: 'media_image_analysis' | 'media_file_analysis' | 'media_voice_transcription' | string
+  kind: 'media_image_cache' | 'media_image_analysis' | 'media_file_analysis' | 'media_voice_transcription' | string
   channelKey: string
   messageId: string
   url?: string
   fileId?: string | null
   priority?: number
   ttlMs?: number
+  expiresAt?: string
   payload?: Record<string, unknown>
 }
 
@@ -58,7 +60,7 @@ interface MediaTask {
 }
 
 interface MediaQueueKindStatus {
-  kind: 'image' | 'file' | 'voice'
+  kind: MediaQueueKind
   queueTotal: number
   readyCount: number
   deferredCount: number
@@ -66,6 +68,26 @@ interface MediaQueueKindStatus {
   queueLimit: number
   doneCount: number
   cacheReusableCount: number
+}
+
+type MediaQueueKind = 'image' | 'image_cache' | 'file' | 'voice'
+type ImageDemandSource = 'explicit-image' | 'random-image' | 'history-tool'
+
+interface ImageAnalysisDemand {
+  version: 1
+  source: ImageDemandSource
+  question: string
+  force: boolean
+  randomAuthorization?: { token: string; expiresAt: number }
+}
+
+interface ImageAnalysisPayloadOptions {
+  source: ImageDemandSource
+  question?: string
+  force?: boolean
+  userId?: string
+  conversationKey?: string
+  randomAuthorization?: unknown
 }
 
 interface MediaDiagnosticTask {
@@ -112,6 +134,7 @@ const MEDIA_ARCHIVE_ROOT = path.join(MEDIA_ROOT, 'archive')
 const MEDIA_RETENTION_CONTROL_FILE = path.join(MEDIA_ROOT, 'retention-control.json')
 const MEDIA_CACHE_INDEX_FILE = path.join(MEDIA_ROOT, 'cache-index.json')
 const MAX_IMAGE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_IMAGE_MAX || 120)
+const MAX_IMAGE_CACHE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_IMAGE_CACHE_MAX || 120)
 const MAX_FILE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_FILE_MAX || 60)
 const MAX_VOICE_QUEUE = Number(process.env.MEDIA_BACKPRESSURE_VOICE_MAX || 80)
 const DEFAULT_MEDIA_TTL_MS = Number(process.env.MEDIA_BACKPRESSURE_TTL_MS || 2 * 60 * 60 * 1000)
@@ -140,6 +163,7 @@ function ensureMediaDirs(): void {
     MEDIA_ROOT,
     MEDIA_QUEUE_ROOT,
     path.join(MEDIA_QUEUE_ROOT, 'image'),
+    path.join(MEDIA_QUEUE_ROOT, 'image_cache'),
     path.join(MEDIA_QUEUE_ROOT, 'file'),
     path.join(MEDIA_QUEUE_ROOT, 'voice'),
     MEDIA_RUNNING_ROOT,
@@ -176,31 +200,69 @@ function parseMediaTask(value: unknown): MediaTask | null {
   return task as MediaTask
 }
 
-// 根据 URL/file/message 生成去重 hash。
+// --- 图片按需来源与去重 --- //
+
+// 仅接受新入口登记的图片需求；旧任务的用户和会话信息不构成识图许可。
+function getImageAnalysisDemand(payload: unknown): ImageAnalysisDemand | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
+  const demand = (payload as Record<string, unknown>).imageDemand
+  if (!demand || typeof demand !== 'object' || Array.isArray(demand)) return null
+  const value = demand as Record<string, unknown>
+  if (value.version !== 1 || !['explicit-image', 'random-image', 'history-tool'].includes(String(value.source))) return null
+  if (typeof value.question !== 'string' || typeof value.force !== 'boolean') return null
+  const randomAuthorization = readRandomImageAuthorization(value.randomAuthorization)
+  if (value.source === 'random-image' && !randomAuthorization) return null
+  return { version: 1, source: value.source as ImageDemandSource, question: value.question.trim(), force: value.force, ...(value.source === 'random-image' && randomAuthorization ? { randomAuthorization } : {}) }
+}
+
+// 为获准参与回复的内部入口构造持久化识图需求，保留本轮问题及原图用途。
+function buildImageAnalysisPayload(options: ImageAnalysisPayloadOptions): Record<string, unknown> {
+  const randomAuthorization = readRandomImageAuthorization(options.randomAuthorization)
+  if (options.source === 'random-image' && !randomAuthorization) throw new Error('random image analysis authorization is missing')
+  const imageDemand: ImageAnalysisDemand = {
+    version: 1,
+    source: options.source,
+    question: String(options.question || '').trim(),
+    force: options.force === true,
+    ...(options.source === 'random-image' && randomAuthorization ? { randomAuthorization } : {}),
+  }
+  if (!getImageAnalysisDemand({ imageDemand })) throw new Error('invalid image analysis demand source')
+  return { imageDemand, userId: String(options.userId || ''), conversationKey: String(options.conversationKey || '') }
+}
+
+// 图片按频道、原消息与问题用途去重；缓存和旧任务不会吞掉新的有效模型需求。
 function createMediaHash(input: MediaTaskInput): string {
   const hash = crypto.createHash('sha256')
   hash.update(String(input.kind || ''))
   hash.update('\n')
+  if (input.kind === 'media_image_cache' || input.kind === 'media_image_analysis') {
+    const demand = getImageAnalysisDemand(input.payload)
+    hash.update(JSON.stringify([String(input.channelKey || ''), String(input.messageId || ''), demand ? [demand.question, demand.force, demand.randomAuthorization?.token || ''] : 'cache-only']))
+    return hash.digest('hex')
+  }
   hash.update(String(input.url || input.fileId || input.messageId || ''))
   return hash.digest('hex')
 }
 
 // 返回媒体类型目录。
 function mediaKindDir(kind: string): string {
+  if (kind === 'media_image_cache') return path.join(MEDIA_QUEUE_ROOT, 'image_cache')
   if (/voice/i.test(kind)) return path.join(MEDIA_QUEUE_ROOT, 'voice')
   if (/file/i.test(kind)) return path.join(MEDIA_QUEUE_ROOT, 'file')
   return path.join(MEDIA_QUEUE_ROOT, 'image')
 }
 
-// 将内部媒体任务 kind 归一为资源中心使用的三类队列键。
-function mediaKindKey(kind: string): 'image' | 'file' | 'voice' {
+// 将原图缓存与三类媒体分析分别映射到资源中心队列键。
+function mediaKindKey(kind: string): MediaQueueKind {
+  if (kind === 'media_image_cache') return 'image_cache'
   if (/voice/i.test(kind)) return 'voice'
   if (/file/i.test(kind)) return 'file'
   return 'image'
 }
 
 // 返回媒体队列键对应的既有容量上限。
-function mediaQueueLimit(kind: 'image' | 'file' | 'voice'): number {
+function mediaQueueLimit(kind: MediaQueueKind): number {
+  if (kind === 'image_cache') return MAX_IMAGE_CACHE_QUEUE
   if (kind === 'voice') return MAX_VOICE_QUEUE
   if (kind === 'file') return MAX_FILE_QUEUE
   return MAX_IMAGE_QUEUE
@@ -211,6 +273,7 @@ function getMediaQueueWatchDirs(kind = ''): string[] {
   if (kind) return [mediaKindDir(kind)]
   return [
     path.join(MEDIA_QUEUE_ROOT, 'image'),
+    path.join(MEDIA_QUEUE_ROOT, 'image_cache'),
     path.join(MEDIA_QUEUE_ROOT, 'file'),
     path.join(MEDIA_QUEUE_ROOT, 'voice'),
   ]
@@ -420,6 +483,19 @@ function findExistingMediaTask(hash: string, kind = ''): MediaTask | null {
   return null
 }
 
+// 检查同一原图是否已有新入口登记的有效需求，避免旧缓存任务覆盖真实 pending 状态。
+function hasImageAnalysisDemand(channelKey: string, messageId: string, excludeTaskId = ''): boolean {
+  const files = [
+    ...listJsonFiles(mediaKindDir('media_image_analysis'), { maxFiles: 20000 }),
+    ...listJsonFiles(MEDIA_RUNNING_ROOT, { maxFiles: 20000 }),
+  ]
+  return files.some(file => {
+    const task = readMediaTaskFile(file)
+    return !!task && task.id !== excludeTaskId && task.kind === 'media_image_analysis' && task.channelKey === channelKey && task.messageId === messageId
+      && Date.parse(task.expiresAt) > Date.now() && !!getImageAnalysisDemand(task.payload)
+  })
+}
+
 // 读取媒体任务文件，非法任务返回 null。
 function readMediaTaskFile(file: string): MediaTask | null {
   return parseMediaTask(readJsonFile<unknown>(file, null))
@@ -540,9 +616,11 @@ function completeMediaTask(task: MediaTask, result: Record<string, unknown> = {}
   }
   writeJsonAtomic(dst, next)
   invalidatePendingMediaProbeCache()
-  if (task.urlHash) {
+  // 失败、旧任务转缓存及空结果均不能成为以后有效需求的完成缓存。
+  const imageTask = task.kind === 'media_image_cache' || task.kind === 'media_image_analysis'
+  if (task.urlHash && (!imageTask || result.ok === true)) {
     const index = readCacheIndex()
-    index[task.urlHash] = { taskId: task.id, kind: task.kind, channelKey: task.channelKey, messageId: task.messageId, updatedAt: next.updatedAt, result }
+    index[task.urlHash] = { taskId: task.id, kind: task.kind, channelKey: task.channelKey, messageId: task.messageId, updatedAt: next.updatedAt, expiresAt: task.expiresAt, result }
     writeCacheIndex(trimCacheIndex(index))
   }
   writeMediaEvent('media_task_done', { taskId: next.id, kind: next.kind, hasResult: Object.keys(result || {}).length > 0 })
@@ -652,7 +730,7 @@ function discardInterruptedMediaTasks(reason = 'restart_discarded'): DiscardInte
 // 队列超限时丢弃低优先级旧任务。
 function enforceMediaQueueLimit(kind: string): number {
   const dir = mediaKindDir(kind)
-  const max = /voice/i.test(kind) ? MAX_VOICE_QUEUE : /file/i.test(kind) ? MAX_FILE_QUEUE : MAX_IMAGE_QUEUE
+  const max = mediaQueueLimit(mediaKindKey(kind))
   const files = listJsonFiles(dir, { maxFiles: Math.max(1, max + 1) })
   if (files.length <= max) return 0
   const tasks = listJsonFiles(dir, { maxFiles: 20000 })
@@ -683,7 +761,11 @@ function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult {
   cleanupExpiredMediaTasks(input.kind)
   const hash = createMediaHash(input)
   const cacheIndex = readCacheIndex()
-  if (cacheIndex[hash]) {
+  const cached = cacheIndex[hash] as Record<string, unknown> | undefined
+  const isImageTask = input.kind === 'media_image_cache' || input.kind === 'media_image_analysis'
+  const cachedResult = cached?.result as Record<string, unknown> | undefined
+  const reusable = cached && (!isImageTask || (cachedResult?.ok === true && Date.parse(String(cached.expiresAt || '')) > Date.now()))
+  if (reusable) {
     writeMediaEvent('media_cache_reused', { kind: input.kind, channelKey: input.channelKey, messageId: input.messageId, urlHash: hash })
     return { reused: true, cache: cacheIndex[hash], urlHash: hash }
   }
@@ -702,8 +784,8 @@ function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult {
     url: String(input.url || ''),
     fileId: input.fileId || null,
     createdAt: nowIso(),
-    expiresAt: new Date(now + Math.max(60000, Number(input.ttlMs || DEFAULT_MEDIA_TTL_MS))).toISOString(),
-    priority: Number.isFinite(Number(input.priority)) ? Number(input.priority) : 80,
+    expiresAt: input.expiresAt || new Date(now + Math.max(1, Number(input.ttlMs || DEFAULT_MEDIA_TTL_MS))).toISOString(),
+    priority: Number.isFinite(Number(input.priority)) ? Number(input.priority) : input.kind === 'media_image_cache' ? 95 : 80,
     status: 'pending',
     payload: input.payload || {},
   }
@@ -747,28 +829,36 @@ function listUnfinishedMediaTasksForDiagnostics(): MediaDiagnosticTask[] {
   }))
 }
 
-// 汇总单类媒体队列的当前排队、延后、运行、完成和缓存数量。
+// 旧未执行任务转为缓存；历史上已经真实分析完成的记录保留原来的分析分类。
+function mediaTaskStatusKind(task: MediaTask): MediaQueueKind {
+  if (task.kind === 'media_image_analysis' && (task.result?.mode === 'image_cache'
+    || (['pending', 'running'].includes(task.status) && !getImageAnalysisDemand(task.payload)))) return 'image_cache'
+  return mediaKindKey(task.kind)
+}
+
+// 将旧无来源分析归为缓存，真实新需求仍保留独立的图片分析统计。
 function buildMediaQueueKindStatus(
-  kind: 'image' | 'file' | 'voice',
+  kind: MediaQueueKind,
   pending: MediaTask[],
   running: MediaTask[],
   done: MediaTask[],
   cacheValues: Record<string, unknown>[],
   now = Date.now(),
 ): MediaQueueKindStatus {
-  const pendingForKind = pending.filter(task => mediaKindKey(task.kind) === kind)
+  const pendingForKind = pending.filter(task => mediaTaskStatusKind(task) === kind)
   const deferredCount = pendingForKind.filter(task => isMediaTaskDeferred(task, now)).length
   return {
     kind,
     queueTotal: pendingForKind.length,
     readyCount: pendingForKind.length - deferredCount,
     deferredCount,
-    runningCount: running.filter(task => mediaKindKey(task.kind) === kind).length,
+    runningCount: running.filter(task => mediaTaskStatusKind(task) === kind).length,
     queueLimit: mediaQueueLimit(kind),
-    doneCount: done.filter(task => mediaKindKey(task.kind) === kind).length,
+    doneCount: done.filter(task => mediaTaskStatusKind(task) === kind).length,
     cacheReusableCount: cacheValues.filter(item => {
       const storedKind = String(item?.kind || '')
-      return !!storedKind && mediaKindKey(storedKind) === kind
+      const result = item.result as Record<string, unknown> | undefined
+      return !!storedKind && (result?.mode === 'image_cache' ? 'image_cache' : mediaKindKey(storedKind)) === kind
     }).length,
   }
 }
@@ -777,7 +867,7 @@ function buildMediaQueueKindStatus(
 function sanitizeRunningMediaTask(task: MediaTask): Record<string, unknown> {
   return {
     id: task.id,
-    kind: task.kind,
+    kind: mediaTaskStatusKind(task) === 'image_cache' ? 'media_image_cache' : task.kind,
     status: task.status,
     claimedBy: String(task.claimedBy || ''),
     claimedAt: String(task.claimedAt || ''),
@@ -785,7 +875,7 @@ function sanitizeRunningMediaTask(task: MediaTask): Record<string, unknown> {
   }
 }
 
-// 汇总媒体处理队列状态，保留旧字段并补充三类队列的可读审计数据。
+// 汇总媒体处理队列状态，分别显示图片分析、原图缓存、文件与语音。
 function getMediaBackpressureStatus(): Record<string, unknown> {
   ensureMediaDirs()
   const pending = listJsonFiles(MEDIA_QUEUE_ROOT, { recursive: true, maxFiles: 20000 })
@@ -797,8 +887,10 @@ function getMediaBackpressureStatus(): Record<string, unknown> {
   const cacheIndex = readCacheIndex()
   const cacheValues = Object.values(cacheIndex)
     .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
+    .filter(item => !['media_image_cache', 'media_image_analysis'].includes(String(item.kind || '')) || Date.parse(String(item.expiresAt || '')) > Date.now())
   const queues = {
     image: buildMediaQueueKindStatus('image', pending, running, done, cacheValues),
+    imageCache: buildMediaQueueKindStatus('image_cache', pending, running, done, cacheValues),
     file: buildMediaQueueKindStatus('file', pending, running, done, cacheValues),
     voice: buildMediaQueueKindStatus('voice', pending, running, done, cacheValues),
   }
@@ -814,6 +906,7 @@ function getMediaBackpressureStatus(): Record<string, unknown> {
     .sort((a, b) => b.localeCompare(a))[0] || ''
   return {
     imagePending: queues.image.queueTotal,
+    imageCachePending: queues.imageCache.queueTotal,
     filePending: queues.file.queueTotal,
     voicePending: queues.voice.queueTotal,
     running: running.map(sanitizeRunningMediaTask),
@@ -835,6 +928,9 @@ export = {
   ensureMediaDirs,
   writeMediaEvent,
   createMediaHash,
+  getImageAnalysisDemand,
+  buildImageAnalysisPayload,
+  hasImageAnalysisDemand,
   readCacheIndex,
   writeCacheIndex,
   cleanupExpiredMediaTasks,

@@ -18,9 +18,11 @@ function realSleep(ms) {
   return new Promise(resolve => realSetTimeout(resolve, ms))
 }
 
+// 在固定真实预算内等待模拟模型调用，兼容业务时钟被测试暂停的场景。
 async function waitForMockCalls(mocked, count, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs
-  while (mocked.calls.length < count && Date.now() < deadline) {
+  // 观察预算使用真实单调时钟；业务假时钟停止推进时也须按时结束等待。
+  const deadline = performance.now() + timeoutMs
+  while (mocked.calls.length < count && performance.now() < deadline) {
     await flushAsync(4)
     await realSleep(10)
   }
@@ -610,4 +612,36 @@ async function run(t) {
   })
 }
 
-module.exports = { run }
+// 使用 fake timers 验证真实延迟计时器，后续 session 视图变化不能改换已选图片。
+async function runDelayedImageTarget(t) {
+  await withScenario({ fakeTimers: true, data: { randomWhitelist: ['10001'], randomRate: { 10001: 1 }, randomVoiceRate: { 10001: 0 } } }, async ({ ready, makeSession, run, clock }) => {
+    await ready()
+    const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+    const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
+    conversation.channelSharedCache.set('10001', [
+      { userId: '2010', role: 'user', speakerName: 'member', content: '第一句', messageId: 'delayed-before-1', ts: Date.now() - 5000 },
+      { userId: '2010', role: 'user', speakerName: 'member', content: '第二句', messageId: 'delayed-before-2', ts: Date.now() },
+    ])
+    await store.storeImageUrl('10001', 'delayed-original-image', 'https://example.test/original.jpg', 'original-file')
+    await store.cacheImageFile('10001', 'delayed-original-image', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64'))
+    const session = makeSession({ userId: '2010', author: { id: '2010', name: 'member' }, messageId: 'delayed-original-image', content: '<img src="https://example.test/original.jpg" file="original-file"/>', event: { message: [{ type: 'image', data: { url: 'https://example.test/original.jpg', file: 'original-file' } }] } })
+    const mocked = mockFetch([{ json: { choices: [{ message: { content: '<image_fact>图片中是一只猫。</image_fact>看着很精神。' } }] } }])
+    await withFetch(mocked, async () => {
+      await run(session, { flushTicks: 20 })
+      t.check('scenario delayed image trigger waits for original timer', mocked.calls.length === 0)
+      await store.storeImageUrl('10001', 'later-image', 'https://example.test/later.jpg', 'later-file')
+      session.messageId = 'later-image'
+      session.content = '<img src="https://example.test/later.jpg"/>'
+      session.event.message = [{ type: 'image', data: { url: 'https://example.test/later.jpg', file: 'later-file' } }]
+      await clock.tick(15000)
+      await waitForMockCalls(mocked, 1)
+      await session.waitForSend(() => true)
+      const original = await store.getImageEntry('10001', 'delayed-original-image')
+      const later = await store.getImageEntry('10001', 'later-image')
+      t.check('scenario delayed image uses vision chain once after existing timer gate', mocked.calls.length === 1 && mocked.calls[0].requestBody?.model === 'glm-4.6v-flash', JSON.stringify(mocked.calls))
+      t.check('scenario delayed image fact stays bound to original target', original?.analysis?.includes('猫') && !later?.analyzed, JSON.stringify({ original, later }))
+    })
+  })
+}
+
+module.exports = { run: async t => { await run(t); await runDelayedImageTarget(t) } }

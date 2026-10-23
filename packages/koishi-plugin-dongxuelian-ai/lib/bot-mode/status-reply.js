@@ -37,6 +37,7 @@ const RESOURCE_TASK_LABELS = {
     mcp_local_check: '本地检查',
     external_video_download: '外部视频下载',
     pet_bridge_chat: '宠物桥接聊天',
+    media_image_cache: '图片原图缓存',
     media_image_analysis: '图片分析',
     media_file_analysis: '文件分析',
     media_voice_transcription: '语音转写',

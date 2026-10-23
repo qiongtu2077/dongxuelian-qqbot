@@ -50,6 +50,7 @@ const {
 const {
   scheduleDailyStatsCleanup,
   scheduleReportSourceCleanup,
+  scheduleImageStorageCleanup,
   scheduleDailyPrecomputePlanning,
   clearStartupSchedulers,
 } = require('./startup-schedulers') as typeof import('./startup-schedulers')
@@ -349,6 +350,7 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     cleanupDailyStatsFiles().catch(error => ctx.logger('dongxuelian-ai').warn(`daily stats cleanup failed: ${getLifecycleErrorMessage(error)}`))
     scheduleDailyStatsCleanup(ctx)
     scheduleReportSourceCleanup(ctx)
+    scheduleImageStorageCleanup(ctx)
     scheduleDailyPrecomputePlanning(ctx)
     try {
       const config = agentConfig.getAgentConfig()

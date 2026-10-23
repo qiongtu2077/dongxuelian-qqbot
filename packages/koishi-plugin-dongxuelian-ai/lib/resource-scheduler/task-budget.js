@@ -170,6 +170,10 @@ const DEFAULT_BUDGETS = {
         queueTimeoutMs: 5000,
         runTimeoutMs: 120000,
     },
+    [RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE]: {
+        exclusive: false, priority: 95, minMemMb: 300, degradable: false, deferable: true,
+        fallbacks: [], queueTimeoutMs: 300000, runTimeoutMs: 30000,
+    },
     [RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS]: {
         exclusive: false,
         priority: 80,

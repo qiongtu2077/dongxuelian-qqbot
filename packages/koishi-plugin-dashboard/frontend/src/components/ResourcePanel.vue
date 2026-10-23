@@ -473,7 +473,7 @@ export default {
     const mediaQueues = computed(() => {
       const queues = asRecord(media.value.queues)
       const risks = asRecord(media.value.mediaRiskByKind)
-      return ['image', 'file', 'voice'].map(kind => ({
+      return ['image', 'imageCache', 'file', 'voice'].map(kind => ({
         kind,
         display: mediaQueueDisplay(kind, asRecord(queues[kind]), risks[kind]),
       }))

@@ -116,6 +116,22 @@ function getMessageSegments(session: SegmentSession = {}): unknown[] {
   return segments
 }
 
+// 从适配器的当前消息视图提取图片，不叠加不同视图中的同一张图片。
+function getCurrentImageSegments(session: SegmentSession = {}): unknown[] {
+  const message = session.event?.message
+  const segments = Array.isArray(message) ? message
+    : isMessageSegmentRecord(message) && Array.isArray(message.elements) ? message.elements
+      : Array.isArray(session.elements) ? session.elements : []
+  return segments.filter(segment => isMessageSegmentRecord(segment) && ['image', 'img'].includes(String(segment.type || '')))
+}
+
+// 多图消息尚无独立图片身份；仅解析协议数量，禁止把首图冒充唯一目标。
+function hasAmbiguousImageMessage(session: SegmentSession = {}, content: unknown = session.content): boolean {
+  const segments = getCurrentImageSegments(session)
+  if (segments.length) return segments.length > 1
+  return (String(content || '').match(/\[CQ:(?:image|img),[^\]]*\]|<(?:image|img)\b[^>]*>/gi) || []).length > 1
+}
+
 function normalizeSegmentData(segment: unknown = {}): Record<string, unknown> {
   const value = isMessageSegmentRecord(segment) ? segment as SegmentRef : {}
   return Object.assign(
@@ -197,6 +213,8 @@ export = {
   extractImageRefFromContent,
   appendUniqueSegments,
   getMessageSegments,
+  getCurrentImageSegments,
+  hasAmbiguousImageMessage,
   normalizeSegmentData,
   extractFileRefFromContent,
   getFileSegmentData,

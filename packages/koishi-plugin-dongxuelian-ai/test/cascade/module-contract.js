@@ -213,6 +213,11 @@ async function runModuleContract(context) {
     randomVoiceRate: path.join(LIB, 'behavior', 'random-voice-rate'),
     voiceAssets: path.join(LIB, 'media', 'voice', 'voice-assets'),
     imageStore: path.join(LIB, 'media', 'image', 'image-store'),
+    imageSource: path.join(LIB, 'media', 'image', 'image-source'),
+    imageRequest: path.join(LIB, 'media', 'image', 'image-request'),
+    imageTurn: path.join(LIB, 'media', 'image', 'image-turn'),
+    imageRandomDemand: path.join(LIB, 'media', 'image', 'image-random-demand'),
+    mediaQueue: path.join(LIB, 'media', 'backpressure', 'media-queue'),
     imageAnalyzer: path.join(LIB, 'media', 'image', 'image-analyzer'),
     imageAnalysisSanitizer: path.join(LIB, 'media', 'image', 'image-analysis-sanitizer'),
     publicManagementRuntime: path.join(LIB, 'public', 'management-runtime'),
@@ -413,6 +418,7 @@ async function runModuleContract(context) {
     ],
     startupSchedulers: [
       'getNextShanghaiMidnightDelayMs', 'scheduleDailyStatsCleanup',
+      'scheduleImageStorageCleanup',
       'clearStartupSchedulers',
     ],
     pluginLifecycle: [
@@ -421,6 +427,7 @@ async function runModuleContract(context) {
     messageSegment: [
       'decodeEntityAttribute', 'extractAttrValue', 'extractCqAttrValue',
       'extractImageRefFromContent', 'appendUniqueSegments', 'getMessageSegments',
+      'getCurrentImageSegments', 'hasAmbiguousImageMessage',
       'normalizeSegmentData', 'extractFileRefFromContent', 'getFileSegmentData',
     ],
     incomingFile: [
@@ -787,12 +794,18 @@ async function runModuleContract(context) {
     ],
     imageStore: [
       'storeImageUrl', 'getImageEntry', 'getRecentImages', 'getRecentImagesCached', 'markAnalyzed',
-      'markAnalysisUnavailable', 'storeAssistantImageAnchor',
+      'markAnalysisUnavailable', 'markAnalysisPending', 'finishImageAnalysisStatus', 'storeAssistantImageAnchor',
       'isAlreadyAnalyzed', 'getCachedAnalysis', 'replaceImagePlaceholder',
       'cacheImageFile', 'readCachedImage', 'enforceChannelCacheLimit',
+      'cleanupImageStorage',
     ],
+    imageSource: ['readImageSource', 'cleanupImageSourceLocks'],
+    imageRequest: ['acquireImageRequest', 'cleanupImageRequests', 'hasActiveImageRequest'],
+    imageTurn: ['prepareImageTurn', 'messagesContainImage'],
+    imageRandomDemand: ['createRandomImageDemand', 'readRandomImageAuthorization', 'isRandomImageDemandValid', 'revokeRandomImageDemand', 'clearRandomImageDemands', 'cleanupRandomImageDemands'],
+    mediaQueue: ['enqueueMediaTask', 'getImageAnalysisDemand', 'buildImageAnalysisPayload', 'hasImageAnalysisDemand'],
     imageAnalyzer: [
-      'enqueueAnalysis',
+      'enqueueAnalysis', 'analyzeImageNow',
     ],
     imageAnalysisSanitizer: [
       'sanitizeImageAnalysis', 'looksLikePersonaImageReply',
@@ -846,8 +859,8 @@ async function runModuleContract(context) {
   check('persona profile re-exports source reader helpers from dedicated source module', modules.personaProfile.safePersonaProfileFile === modules.personaProfileSources.safePersonaProfileFile && modules.personaProfile.readLegacyPersonaProfileData === modules.personaProfileSources.readLegacyPersonaProfileData)
   ;(() => {
     const kinds = modules.resourceTaskKinds || {}
-    check('resourceTaskKinds exports task kind constants', kinds.RESOURCE_TASK_KIND && kinds.RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS === 'media_image_analysis' && kinds.RESOURCE_TASK_KIND.DAILY_REPORT === 'daily_report')
-    check('resourceTaskKinds classifies media task kinds', kinds.isMediaTaskKind && kinds.isMediaTaskKind('media_image_analysis') && kinds.isMediaTaskKind('media_file_analysis') && kinds.isMediaTaskKind('media_voice_transcription') && !kinds.isMediaTaskKind('daily_report'))
+    check('resourceTaskKinds exports task kind constants', kinds.RESOURCE_TASK_KIND && kinds.RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS === 'media_image_analysis' && kinds.RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE === 'media_image_cache' && kinds.RESOURCE_TASK_KIND.DAILY_REPORT === 'daily_report')
+    check('resourceTaskKinds classifies media task kinds', kinds.isMediaTaskKind && kinds.isMediaTaskKind('media_image_analysis') && kinds.isMediaTaskKind('media_image_cache') && kinds.isImageCacheTaskKind('media_image_cache') && !kinds.isImageMediaTaskKind('media_image_cache') && kinds.isMediaTaskKind('media_file_analysis') && kinds.isMediaTaskKind('media_voice_transcription') && !kinds.isMediaTaskKind('daily_report'))
     check('resourceTaskKinds classifies scheduler special kinds', kinds.isStatusQueryKind && kinds.isStatusQueryKind('status_query') && kinds.isNormalChatKind('normal_chat') && kinds.isDailyReportKind('daily_report_render') && !kinds.isDailyReportKind('daily_summary'))
     check('resourceTaskKinds classifies chromium task kinds', kinds.isChromiumTaskKind && kinds.isChromiumTaskKind('browser_action') && kinds.isChromiumTaskKind('daily_report_render') && !kinds.isChromiumTaskKind('daily_report'))
   })()
@@ -857,7 +870,7 @@ async function runModuleContract(context) {
   check('handler.handleCommand exported', typeof handler.handleCommand === 'function')
   check('repeat candidate builder exported', typeof index.buildRepeatCandidate === 'function')
   check('repeat checker exported', typeof index.checkGroupRepeat === 'function')
-  check('vision session key list exported', Array.isArray(modules.vision.VISION_SESSION_KEYS) && modules.vision.VISION_SESSION_KEYS.length === 3)
+  check('vision session key list exports source and target identity keys', Array.isArray(modules.vision.VISION_SESSION_KEYS) && JSON.stringify(modules.vision.VISION_SESSION_KEYS) === JSON.stringify(['_visionUrls', '_visionFile', '_isVisionRequest', '_visionTargetMessageId', '_visionTargetChannelKey']))
   check('jailbreak pattern groups exported', modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERN_GROUPS && typeof modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERN_GROUPS === 'object')
   check('jailbreak pattern list exported', Array.isArray(modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERNS) && modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERNS.length > 0)
   check('jailbreak combined regexp exported', modules.jailbreakRuleset.JAILBREAK_INPUT_RE instanceof RegExp)

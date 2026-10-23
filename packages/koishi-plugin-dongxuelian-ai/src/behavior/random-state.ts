@@ -8,6 +8,7 @@ const {
   RANDOM_TRIGGER_WARMUP,
   RANDOM_TRIGGER_RAMP,
 } = require('../core/constants') as typeof import('../core/constants')
+const { revokeRandomImageDemand, clearRandomImageDemands } = require('../media/image/image-random-demand') as typeof import('../media/image/image-random-demand')
 
 interface PendingRandomEntry {
   timer?: NodeJS.Timeout
@@ -102,6 +103,7 @@ function muteRandomChannel(channelKey: string, durationMs: number = 600000, now:
   if (!key) return false
   if (getRandomMuteRemaining(key, now) >= durationMs) return false
   channelMutedUntil.set(key, now + durationMs)
+  revokeRandomImageDemand(key)
   return true
 }
 
@@ -117,6 +119,7 @@ function bumpChannelMessageVersion(channelKey: string): number {
   const key = normalizeChannelKey(channelKey)
   if (!key) return getChannelMessageVersion(key)
   const next = getChannelMessageVersion(key) + 1
+  revokeRandomImageDemand(key)
   channelMessageVersions.set(key, next)
   trimRandomChannelState()
   return next
@@ -130,6 +133,7 @@ function bumpExplicitInteractionVersion(channelKey: string): number {
   const key = normalizeChannelKey(channelKey)
   if (!key) return getExplicitInteractionVersion(key)
   const next = getExplicitInteractionVersion(key) + 1
+  revokeRandomImageDemand(key)
   channelExplicitVersions.set(key, next)
   trimRandomChannelState()
   return next
@@ -165,6 +169,7 @@ function takePendingRandom(channelKey: string): PendingRandomEntry | null {
 
 function cancelPendingRandom(channelKey: string, reason: string = ''): boolean {
   const key = normalizeChannelKey(channelKey)
+  revokeRandomImageDemand(key)
   const pending = channelPendingRandom.get(key)
   if (!pending) return false
   if (pending.timer) clearTimeout(pending.timer)
@@ -173,6 +178,7 @@ function cancelPendingRandom(channelKey: string, reason: string = ''): boolean {
 }
 
 function clearRandomPendingState(): void {
+  clearRandomImageDemands()
   for (const [, entry] of channelPendingRandom) {
     if (entry && entry.timer) clearTimeout(entry.timer)
   }

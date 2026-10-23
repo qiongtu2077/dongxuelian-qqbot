@@ -4,9 +4,11 @@
  * 边界: 不发送消息，不绕过 S1/S0。
  */
 const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
+const { normalizeTaskBudget } = require('../resource-scheduler/task-budget') as typeof import('../resource-scheduler/task-budget')
 const {
   RESOURCE_TASK_KIND,
   isImageMediaTaskKind,
+  isImageCacheTaskKind,
   isFileMediaTaskKind,
   isVoiceMediaTaskKind,
 } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
@@ -14,6 +16,11 @@ const { decideBackgroundDirective } = require('../resource-scheduler/background-
 const { acquireResourceGate, isResourceGateStorageError } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 const { writeProcessCleanupEvent } = require('../resource-system/system-protection') as typeof import('../resource-system/system-protection')
 const { analyzeImageNow } = require('../media/image/image-analyzer') as typeof import('../media/image/image-analyzer')
+const { finishImageAnalysisStatus } = require('../media/image/image-store') as typeof import('../media/image/image-store')
+const { hasActiveImageRequest } = require('../media/image/image-request') as typeof import('../media/image/image-request')
+const { isRandomImageDemandValid } = require('../media/image/image-random-demand') as typeof import('../media/image/image-random-demand')
+const { readImageSource } = require('../media/image/image-source') as typeof import('../media/image/image-source')
+const { getImageEntry, markAnalysisUnavailable } = require('../media/image/image-store') as typeof import('../media/image/image-store')
 const { analyzeFileNow } = require('../media/file/file-analyzer') as typeof import('../media/file/file-analyzer')
 const { transcribeVoice } = require('../media/voice/voice') as typeof import('../media/voice/voice')
 const { loadCapabilityConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
@@ -26,6 +33,9 @@ const {
   requeueMediaTask,
   completeMediaTask,
   failMediaTask,
+  getImageAnalysisDemand,
+  writeMediaEvent,
+  hasImageAnalysisDemand,
 } = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
 
 interface MediaWorkerOptions {
@@ -35,6 +45,7 @@ interface MediaWorkerOptions {
 }
 
 interface MediaTaskPayloadLike {
+  imageDemand?: unknown
   userId?: unknown
   url?: unknown
   file?: unknown
@@ -56,6 +67,17 @@ const MEDIA_TASK_TIMEOUT_MS = Math.max(10000, Math.min(10 * 60 * 1000, Number(pr
 // 判断媒体任务类型是否为图片分析。
 function isImageMediaTask(task: MediaTaskLike): boolean {
   return isImageMediaTaskKind(task?.kind)
+}
+
+// 纯缓存和未登记新需求的旧图片任务，都按缓存资源预算执行。
+function isImageCacheTask(task: MediaTaskLike): boolean {
+  return isImageCacheTaskKind(task.kind) || (isImageMediaTask(task) && !getImageAnalysisDemand(task.payload))
+}
+
+// 纯缓存及旧任务转换遵守缓存自身的运行预算，不能沿用模型分析的长超时。
+function getMediaTaskTimeoutMs(task: MediaTaskLike): number {
+  const kind = isImageCacheTask(task) ? RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE : task.kind
+  return Math.min(MEDIA_TASK_TIMEOUT_MS, normalizeTaskBudget({ kind }).runTimeoutMs)
 }
 
 // 判断媒体任务类型是否为文件分析。
@@ -118,9 +140,33 @@ async function runVoiceTranscriptionTask(task: MediaTaskLike): Promise<Record<st
 
 // 执行已领取的媒体任务，并返回分析结果摘要。
 async function runClaimedMediaTask(task: MediaTaskLike): Promise<Record<string, unknown>> {
+  if (isImageCacheTask(task)) {
+    const legacy = isImageMediaTask(task)
+    if (legacy) {
+      const entry = await getImageEntry(task.channelKey, task.messageId)
+      if (entry && !entry.analyzed && !hasImageAnalysisDemand(task.channelKey, task.messageId)) {
+        await markAnalysisUnavailable(task.channelKey, task.messageId, 'recorded')
+      }
+    }
+    const source = await readImageSource(String(task.channelKey || ''), String(task.messageId || ''))
+    writeMediaEvent('image_cache_completed', { taskId: task.id, channelKey: task.channelKey, messageId: task.messageId, legacy, ok: !!source, reason: source ? 'cached' : 'source_unavailable_or_expired' })
+    return { mode: 'image_cache', ok: !!source, legacy, reason: source ? 'cached' : 'source_unavailable_or_expired' }
+  }
   if (isImageMediaTask(task)) {
-    const analysis = await analyzeImageNow(String(task.channelKey || ''), String(task.messageId || ''))
-    return { mode: 'image', analysis: analysis || '', ok: !!analysis }
+    // 在实际执行前重验来源，已领取的旧任务也没有发出模型请求的权限。
+    const demand = getImageAnalysisDemand(task.payload)
+    if (!demand) throw new Error('image analysis demand is missing')
+    let analysis: string | null = null
+    try {
+      analysis = await analyzeImageNow(String(task.channelKey || ''), String(task.messageId || ''), {
+        source: demand.source, question: demand.question, force: demand.force, randomAuthorization: demand.randomAuthorization,
+      })
+      return { mode: 'image', source: demand.source, analysis: analysis || '', ok: !!analysis }
+    } finally {
+      const cancelled = demand.source === 'random-image' && !isRandomImageDemandValid(task.channelKey, task.messageId, demand.randomAuthorization)
+      await finishImageAnalysisStatus(task.channelKey, task.messageId, analysis ? 'completed' : cancelled ? 'cancelled' : 'failed',
+        () => !hasImageAnalysisDemand(task.channelKey, task.messageId, task.id) && !hasActiveImageRequest(task.channelKey, task.messageId))
+    }
   }
   if (isFileMediaTask(task)) {
     const analysis = await analyzeFileNow(String(task.channelKey || ''), String(task.messageId || ''))
@@ -133,13 +179,14 @@ async function runClaimedMediaTask(task: MediaTaskLike): Promise<Record<string, 
 // 给媒体分析加 S8 超时兜底；超时后 media-worker 退出，由 supervisor 拉起新进程。
 async function runClaimedMediaTaskWithTimeout(task: MediaTaskLike): Promise<Record<string, unknown>> {
   let timer: NodeJS.Timeout | null = null
+  const timeoutMs = getMediaTaskTimeoutMs(task)
   try {
     return await Promise.race([
       runClaimedMediaTask(task),
       new Promise<Record<string, unknown>>((_, reject) => {
         timer = setTimeout(() => {
-          reject(new Error(`media worker task timed out after ${MEDIA_TASK_TIMEOUT_MS}ms`))
-        }, MEDIA_TASK_TIMEOUT_MS)
+          reject(new Error(`media worker task timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
         if (timer.unref) timer.unref()
       }),
     ])
@@ -157,7 +204,7 @@ function handleMediaTaskTimeout(workerName: string, task: MediaTaskLike, error: 
     workerName,
     taskId: task?.id || '',
     kind: task?.kind || '',
-    timeoutMs: MEDIA_TASK_TIMEOUT_MS,
+    timeoutMs: getMediaTaskTimeoutMs(task),
     error: message,
   })
   process.exitCode = process.exitCode || 76
@@ -167,7 +214,7 @@ function handleMediaTaskTimeout(workerName: string, task: MediaTaskLike, error: 
 async function drainOneMediaTask(options: MediaWorkerOptions = {}): Promise<boolean> {
   const workerName = String(options.workerName || 'media-worker')
   const gate = decideBackgroundDirective({
-    kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS,
+    kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE,
     source: workerName,
     channelKey: 'media',
     userId: '',
@@ -182,10 +229,12 @@ async function drainOneMediaTask(options: MediaWorkerOptions = {}): Promise<bool
   if (!task) return false
   let gateHandle: { updateStep(step: string, memAvailableMb?: number | null): void; release(reason?: string): void } | null = null
   try {
+    const effectiveKind = isImageCacheTask(task) ? RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE : task.kind
+    const step = isImageCacheTask(task) ? 'caching_image' : 'analyzing_media'
     options.onTaskChange?.({ id: task.id, claimedAt: String(task.claimedAt || '') })
     const admission = admitTask({
       taskId: task.id,
-      kind: task.kind,
+      kind: effectiveKind,
       source: workerName,
       channelKey: task.channelKey,
       userId: String(task.payload?.userId || ''),
@@ -199,16 +248,16 @@ async function drainOneMediaTask(options: MediaWorkerOptions = {}): Promise<bool
 
     gateHandle = await acquireResourceGate({
       taskId: task.id,
-      kind: task.kind,
+      kind: effectiveKind,
       owner: workerName,
       channelKey: task.channelKey,
       userId: String(task.payload?.userId || ''),
       priority: task.priority,
-      timeoutMs: 180000,
+      timeoutMs: getMediaTaskTimeoutMs(task),
       waitTimeoutMs: Number.isFinite(Number(options.gateWaitMs)) ? Number(options.gateWaitMs) : 15000,
-      step: 'analyzing_media',
+      step,
     })
-    gateHandle.updateStep('analyzing_media')
+    gateHandle.updateStep(step)
     const result = await runClaimedMediaTaskWithTimeout(task)
     completeMediaTask(task, result)
     return true

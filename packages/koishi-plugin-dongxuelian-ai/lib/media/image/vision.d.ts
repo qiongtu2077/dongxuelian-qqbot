@@ -8,6 +8,7 @@ interface SegmentLike {
 interface VisionSessionLike {
     content?: string;
     quote?: {
+        messageId?: string;
         content?: unknown;
         message?: SegmentLike[];
     };
@@ -17,11 +18,15 @@ interface VisionSessionLike {
     _visionUrls?: unknown;
     _visionFile?: unknown;
     _isVisionRequest?: unknown;
+    _visionTargetMessageId?: unknown;
+    _visionTargetChannelKey?: unknown;
     [key: string]: unknown;
 }
 interface VisionPayload {
     urls: string[];
     file: string | null;
+    targetMessageId?: string;
+    targetChannelKey?: string;
 }
 interface AnalyzedMessageFlags {
     hasVisual?: boolean;
@@ -58,7 +63,7 @@ interface AppendVisionResult {
     reply?: string;
     visionContext?: VisionContext;
 }
-declare function markSessionForVision(session: VisionSessionLike | null | undefined, urls?: unknown[], file?: unknown): boolean;
+declare function markSessionForVision(session: VisionSessionLike | null | undefined, urls?: unknown[], file?: unknown, targetMessageId?: string): boolean;
 declare function getVisionPayload(session: VisionSessionLike | null | undefined): VisionPayload;
 declare function isVisionSession(session: VisionSessionLike | null | undefined): boolean;
 declare function clearVisionSession(session: VisionSessionLike | null | undefined): void;

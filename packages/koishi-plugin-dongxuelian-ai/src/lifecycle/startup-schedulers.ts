@@ -16,6 +16,10 @@ const { listDailyCoverage } = require('../daily-precompute/precompute-status') a
 const { decideBackgroundDirective } = require('../resource-scheduler/background-directive') as typeof import('../resource-scheduler/background-directive')
 const { cleanupReportRecords } = require('../daily-precompute/report-records') as typeof import('../daily-precompute/report-records')
 const { runDailyPreanalysisPlanningTick } = require('../resource-workers/daily-preanalysis-submission') as typeof import('../resource-workers/daily-preanalysis-submission')
+const { cleanupImageStorage } = require('../media/image/image-store') as typeof import('../media/image/image-store')
+const { cleanupImageSourceLocks } = require('../media/image/image-source') as typeof import('../media/image/image-source')
+const { cleanupImageRequests } = require('../media/image/image-request') as typeof import('../media/image/image-request')
+const { cleanupRandomImageDemands } = require('../media/image/image-random-demand') as typeof import('../media/image/image-random-demand')
 
 interface StartupSchedulerContext {
   bots?: Array<{ selfId?: string; userId?: string }>
@@ -27,6 +31,8 @@ type StartupTimer = ReturnType<typeof setTimeout> | null
 let dailyCleanupTimer: StartupTimer = null
 let dailyPrecomputeTimer: StartupTimer = null
 let reportSourceCleanupTimer: StartupTimer = null
+let imageStorageCleanupTimer: StartupTimer = null
+let imageCleanupGeneration = 0
 let reportCleanupGeneration = 0
 let dailyPlanningGeneration = 0
 const DAILY_SLOT_BACKLOG_STOP_MAX_PENDING = Math.max(1, Number(process.env.DAILY_SLOT_BACKLOG_STOP_MAX_PENDING || 8))
@@ -65,6 +71,31 @@ function getNextShanghaiNoonDelayMs(now: number = Date.now()): number {
   let noon = Date.UTC(year, month - 1, day, 4)
   if (noon <= now) noon += 24 * 60 * 60 * 1000
   return Math.max(1000, noon - now)
+}
+
+// 启动补检后每五分钟回收失效原图和请求结果；停止时使在途维护失去续排资格。
+function scheduleImageStorageCleanup(ctx: StartupSchedulerContext): void {
+  const generation = ++imageCleanupGeneration
+  const runImageStorageCleanup = async (): Promise<void> => {
+    try {
+      const result = await cleanupImageStorage()
+      await cleanupImageSourceLocks()
+      await cleanupImageRequests()
+      cleanupRandomImageDemands()
+      if (result.removedRecords || result.removedFiles) {
+        logDebug(ctx, 'image-storage-cleanup', `channels=${result.channels} records=${result.removedRecords} files=${result.removedFiles}`)
+      }
+    } catch (error) {
+      ctx.logger('dongxuelian-ai').warn(`image storage cleanup failed: ${getStartupSchedulerErrorMessage(error)}`)
+    } finally {
+      if (generation !== imageCleanupGeneration) return
+      imageStorageCleanupTimer = setTimeout(runImageStorageCleanup, 5 * 60 * 1000)
+      imageStorageCleanupTimer.unref?.()
+    }
+  }
+  if (imageStorageCleanupTimer) clearTimeout(imageStorageCleanupTimer)
+  imageStorageCleanupTimer = setTimeout(runImageStorageCleanup, 1000)
+  imageStorageCleanupTimer.unref?.()
 }
 
 // 启动补检，随后五分钟轮转维护并对齐中午；终态后无需等下一天即可释放过期来源。
@@ -155,7 +186,13 @@ function scheduleDailyPrecomputePlanning(ctx: StartupSchedulerContext): void {
 }
 
 
+// 释放各维护定时器并阻止已经在途的图片与日报维护重新安排运行。
 function clearStartupSchedulers(): void {
+  imageCleanupGeneration++
+  if (imageStorageCleanupTimer) {
+    clearTimeout(imageStorageCleanupTimer)
+    imageStorageCleanupTimer = null
+  }
   dailyPlanningGeneration++
   reportCleanupGeneration++
   if (reportSourceCleanupTimer) {
@@ -177,6 +214,7 @@ export = {
   scheduleDailyStatsCleanup,
   getNextShanghaiNoonDelayMs,
   scheduleReportSourceCleanup,
+  scheduleImageStorageCleanup,
   runDailyPrecomputePlanningTick,
   scheduleDailyPrecomputePlanning,
   clearStartupSchedulers,

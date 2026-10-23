@@ -16,6 +16,11 @@ interface ApiConfig {
 }
 interface RequestExtraBody {
     _purpose?: 'chat' | 'topic_switch' | 'identity_judge';
+    _imageRequest?: {
+        source: 'explicit-image' | 'random-image' | 'history-tool';
+        target: string;
+        demandId: string;
+    };
     reasoning_effort?: 'low' | 'high' | 'max';
     _timeoutMs?: number | string;
     _thinkingEnabled?: boolean;

@@ -11,15 +11,12 @@ const { filterExternalToolDefinitions, buildExternalToolPolicyHint } = require('
 const { isToolEnabled } = require('../agent/config');
 const safety = require('../agent/safety');
 const pending = require('../agent/pending');
-const { admitTask } = require('../resource-scheduler/admission');
-const { enqueueMediaTask } = require('../media/backpressure/media-queue');
-const { shouldEnqueueMediaForAdmission } = require('../media/backpressure/media-requests');
 const toolPolicy = require('./chat-tool-policy');
 const CHAT_TOOL_TIMEOUT_MS = 3000;
 const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000;
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000;
-const SHORT_MEDIA_FOLLOWUP_MAX_CHARS = 12;
 const DEFAULT_CHAT_TOOL_CHANNEL = 'qq';
+const { createRandomImageDemand } = require('../media/image/image-random-demand');
 function getChatToolErrorMessage(error) {
     return error instanceof Error ? error.message : String(error || 'unknown error');
 }
@@ -43,6 +40,7 @@ function isChatToolAllowed(channel, name) {
         return false;
     return isToolEnabled(channel || DEFAULT_CHAT_TOOL_CHANNEL, name);
 }
+// 按频道和本轮图片权限暴露聊天工具。
 function getChatToolDefinitions(options = {}) {
     const tools = [
         {
@@ -150,12 +148,13 @@ function getChatToolDefinitions(options = {}) {
             type: 'function',
             function: {
                 name: 'analyze_historical_image',
-                description: '分析群聊历史中某张未分析的图片。需要用户明确问到图片内容时才调用，不要主动调用。',
+                description: '按当前问题读取选定图片。先复用已有摘要；摘要不足以回答小字、完整文字或其他细节时设置 force=true 重新读取原图。历史或引用图由当前问题的语义决定目标，目标不唯一时先澄清；随机回复仅能处理当前选定的图片。',
                 parameters: {
                     type: 'object',
                     properties: {
                         messageId: { type: 'string', description: '图片消息 ID（从 read_image_history 获取）' },
                         question: { type: 'string', description: '用户关于这张图的问题' },
+                        force: { type: 'boolean', description: '已有摘要无法回答本次细节时为 true；可直接用摘要回答时为 false' },
                     },
                     required: [],
                 },
@@ -302,7 +301,8 @@ function getChatToolDefinitions(options = {}) {
     const channel = resolveChatToolChannel(options);
     const enabledTools = tools.filter(tool => isChatToolAllowed(channel, tool.function?.name || ''));
     const filtered = options.randomTriggered
-        ? enabledTools.filter(tool => !toolPolicy.isRandomReplyBlockedTool(tool.function?.name || ''))
+        ? enabledTools.filter(tool => !toolPolicy.isRandomReplyBlockedTool(tool.function?.name || '')
+            && (!!options.selectedImageMessageId || !['read_image_history', 'analyze_historical_image'].includes(tool.function.name)))
         : enabledTools;
     return filterExternalToolDefinitions(filtered, options.userText || options.currentText || '');
 }
@@ -323,10 +323,6 @@ function buildChatToolFailureContent(name, error) {
         return '文件仍在分析或处理超时，可稍后再读取。';
     }
     return '工具执行失败';
-}
-function looksLikeShortMediaFollowUp(text = '') {
-    const value = String(text || '').replace(/\s+/g, '').trim();
-    return !!(value && value.length <= SHORT_MEDIA_FOLLOWUP_MAX_CHARS);
 }
 function executeGetCurrentTime() {
     const now = new Date();
@@ -385,6 +381,7 @@ function guardDangerousChatTool(name = '', args = {}, context = {}, channel = DE
     }
     return safeResult.error || `工具 ${name} 未通过安全检查，未执行。`;
 }
+// 执行本轮获准工具，图片目标须经过随机或双候选范围校验。
 async function executeChatTool(toolCall, context = {}) {
     const name = toolCall?.function?.name || '';
     const channel = resolveChatToolChannel(context);
@@ -425,17 +422,20 @@ async function executeChatTool(toolCall, context = {}) {
             });
         }
         case 'read_image_history': {
-            const { getRecentImages } = require('../media/image/image-store');
+            const { getRecentImages, getImageEntry } = require('../media/image/image-store');
             const ck = context.channelKey || '';
             if (!ck)
                 return '无法获取频道信息';
             const limit = Math.min(Math.max(parsePositiveInt(args.limit, 5), 1), 10);
-            const images = await getRecentImages(ck, limit);
+            // 随机参与只暴露已经选定的一张图，不能借一次门控遍历频道图片。
+            const selected = context.randomTriggered && context.selectedImageMessageId ? await getImageEntry(ck, context.selectedImageMessageId) : null;
+            const images = context.randomTriggered ? (selected ? [{ ...selected, messageId: context.selectedImageMessageId }] : []) : await getRecentImages(ck, limit);
             if (!images.length)
                 return '最近没有图片记录。';
             return images.map((img, i) => {
                 const time = new Date(img.ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-                const status = img.analyzed ? `已分析: ${(img.analysis || '').slice(0, 80)}` : '未分析';
+                const state = { pending: '识图排队中', failed: '本次识图失败', cancelled: '本次识图已取消', completed: '本次识图已完成' }[img.analysisStatus] || '';
+                const status = [img.analyzed ? `已有摘要: ${(img.analysis || '').slice(0, 80)}` : '没有客观摘要', state].filter(Boolean).join('；');
                 return `${i + 1}. [${time}] msgId=${img.messageId} ${status}`;
             }).join('\n');
         }
@@ -444,38 +444,27 @@ async function executeChatTool(toolCall, context = {}) {
             return analyzeFile.execute(args, context);
         }
         case 'analyze_historical_image': {
-            const { getImageEntry, getCachedAnalysis } = require('../media/image/image-store');
-            const ck = context.channelKey || '';
             const msgId = getArgString(args, 'messageId').trim();
-            if (!ck || !msgId)
-                return '需要提供 messageId（从 read_image_history 获取）。';
-            const cached = await getCachedAnalysis(ck, msgId);
-            if (cached)
-                return `图片内容：${cached}`;
-            const entry = await getImageEntry(ck, msgId);
-            if (!entry)
-                return '找不到该图片记录。';
-            const admission = admitTask({
-                kind: 'media_image_analysis',
-                source: 'chat-tool',
-                channelKey: ck,
-                userId: context.userId || '',
-                exclusive: false,
-            });
-            const shouldQueue = shouldEnqueueMediaForAdmission(admission);
-            if (shouldQueue) {
-                enqueueMediaTask({
-                    kind: 'media_image_analysis',
-                    channelKey: ck,
-                    messageId: msgId,
-                    url: String(entry.url || entry.file || ''),
-                    payload: { entry: 'chat-tool-analyze-historical-image', userId: context.userId || '' },
-                });
+            if (context.randomTriggered && (!context.selectedImageMessageId || msgId !== context.selectedImageMessageId))
+                return '随机回复只能读取当前选定的图片，不能读取其他历史图片。';
+            let randomAuthorization = null;
+            if (context.randomTriggered) {
+                if (!context.isImageReplyFresh?.())
+                    return '本轮随机图片话题已经过时，未安排新的识图。';
+                randomAuthorization = createRandomImageDemand(context.channelKey || '', msgId, Number(context.randomImageExpiresAt));
+                if (!randomAuthorization)
+                    return '本轮随机图片话题已经过时，未安排新的识图。';
             }
-            const reason = admission.decision === 'run_now' ? 'media-worker 空闲时会处理' : admission.reason;
-            if (!shouldQueue)
-                return `当前资源状态为 ${admission.resourceState}，暂时不能加入图片分析队列，原因：${reason}。请稍后再试。`;
-            return `该图片已进入媒体分析队列，当前资源状态为 ${admission.resourceState}，原因：${reason}。稍后可通过 read_image_history 查看结果。`;
+            if (context.imageTargetSelection) {
+                const selection = context.imageTargetSelection;
+                if (!selection.candidateMessageIds.includes(msgId))
+                    return '本轮只能选择当前图或被引用图；目标不明确时请先澄清。';
+                if (selection.selectedMessageId && selection.selectedMessageId !== msgId)
+                    return '本轮已经选定一张图片，不能继续识别另一张图片。';
+                selection.selectedMessageId = msgId;
+            }
+            const analyzeImage = require('../agent/tools/analyze-image');
+            return analyzeImage.execute(args, { channelKey: context.channelKey, userId: context.userId, source: context.randomTriggered ? 'random-image' : 'history-tool', entry: 'chat-tool-analyze-historical-image', randomAuthorization });
         }
         case 'create_reminder': {
             const reminder = require('../agent/tools/create-reminder');
@@ -566,10 +555,13 @@ async function handleChatToolCalls(toolCalls, context = {}) {
     }
     return { results, heavyTools };
 }
+// 提供有限媒体候选和语义选择规则，不用短句或关键词决定是否识图。
 function getChatToolSystemHint(channelKey, options = {}) {
     const channel = resolveChatToolChannel(options);
     const can = (name) => {
         if (options.randomTriggered && toolPolicy.isRandomReplyBlockedTool(name))
+            return false;
+        if (options.randomTriggered && !options.selectedImageMessageId && ['read_image_history', 'analyze_historical_image'].includes(name))
             return false;
         return isChatToolAllowed(channel, name);
     };
@@ -585,7 +577,13 @@ function getChatToolSystemHint(channelKey, options = {}) {
     if (can('read_group_context'))
         hintParts.push('read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。');
     if (can('read_image_history'))
-        hintParts.push('read_image_history 返回的图片分析结果只能作为聊天背景知识，绝对不能主动提起图片内容，只有用户明确问到图片时才可以引用。');
+        hintParts.push('历史图片只在本轮问题需要时查看，先复用已有摘要；需要摘要之外的细节时用 analyze_historical_image 传入当前问题并设置 force=true。没有结果不能声称已看过图片。');
+    if (options.quotedImageMessageId && !options.randomTriggered)
+        hintParts.push(`本轮引用消息编号为 ${options.quotedImageMessageId}；只有语义上确实追问被引用图片时，才将该编号作为图片目标，独立文字问题不自动读引用图。`);
+    if (options.randomTriggered && options.selectedImageMessageId)
+        hintParts.push(`本轮已获准接图片话题，唯一允许图片目标为 ${options.selectedImageMessageId}，可围绕该图自然回应；不能查看其他图片。`);
+    if (options.imageTargetSelection)
+        hintParts.push(`本轮当前图片编号为 ${options.imageTargetSelection.candidateMessageIds[0]}，引用图片编号为 ${options.imageTargetSelection.candidateMessageIds[1]}。根据本轮问题只选择其中一张并调用 analyze_historical_image；目标不清楚时先询问具体哪张，不能先识当前图或逐张识别。`);
     if (can('create_reminder'))
         hintParts.push('用户明确要求“几分钟后提醒我/明天提醒/到点叫我”时必须调用 create_reminder。');
     if (can('create_scheduled_task'))
@@ -627,11 +625,9 @@ function getChatToolSystemHint(channelKey, options = {}) {
             if (recent.length > 0) {
                 const analyzed = recent.filter(img => img.analyzed).length;
                 if (can('read_image_history')) {
-                    const currentText = options.userText || options.currentText || '';
-                    const shortFollowUp = looksLikeShortMediaFollowUp(currentText);
-                    hint += `\n[图片上下文] 本群最近有${recent.length}张图片记录（${analyzed}张已分析）。如果当前消息是在图片后面的短承接、追问、评价或反应，且仅靠文字无法判断在说什么，应先用 read_image_history 查看最近图片；需要未分析图片内容时再用 analyze_historical_image。没有工具结果时不能编造图片内容。`;
-                    if (shortFollowUp)
-                        hint += ' 当前消息很短，可能是在接最近图片；先判断 active scene 锚点，再决定读图、澄清或不接。';
+                    hint += options.randomTriggered
+                        ? `\n[图片上下文] 只允许查看选定图片 ${options.selectedImageMessageId}。`
+                        : `\n[图片上下文] 本群最近有${recent.length}张图片记录（${analyzed}张已分析）。由当前问题的语义判断是否需要历史图片；不能仅因附近出现图片或消息较短就读图。需要时先查有限候选，引用追问绑定原图片编号，目标不唯一时自然澄清，不逐张识别试探。已有摘要足够则直接复用，其他情况才传当前问题识图。`;
                 }
             }
         }

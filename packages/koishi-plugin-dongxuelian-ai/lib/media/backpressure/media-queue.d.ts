@@ -1,11 +1,12 @@
 interface MediaTaskInput {
-    kind: 'media_image_analysis' | 'media_file_analysis' | 'media_voice_transcription' | string;
+    kind: 'media_image_cache' | 'media_image_analysis' | 'media_file_analysis' | 'media_voice_transcription' | string;
     channelKey: string;
     messageId: string;
     url?: string;
     fileId?: string | null;
     priority?: number;
     ttlMs?: number;
+    expiresAt?: string;
     payload?: Record<string, unknown>;
 }
 interface MediaTask {
@@ -32,6 +33,25 @@ interface MediaTask {
     error?: string;
     finishReason?: 'queue_limit' | 'processing_failed' | 'restart_interrupted' | 'legacy_unknown';
     result?: Record<string, unknown>;
+}
+type ImageDemandSource = 'explicit-image' | 'random-image' | 'history-tool';
+interface ImageAnalysisDemand {
+    version: 1;
+    source: ImageDemandSource;
+    question: string;
+    force: boolean;
+    randomAuthorization?: {
+        token: string;
+        expiresAt: number;
+    };
+}
+interface ImageAnalysisPayloadOptions {
+    source: ImageDemandSource;
+    question?: string;
+    force?: boolean;
+    userId?: string;
+    conversationKey?: string;
+    randomAuthorization?: unknown;
 }
 interface MediaDiagnosticTask {
     id: string;
@@ -63,6 +83,8 @@ interface MediaRetentionResult {
 declare function ensureMediaDirs(): void;
 declare function writeMediaEvent(event: string, data?: Record<string, unknown>): void;
 declare function parseMediaTask(value: unknown): MediaTask | null;
+declare function getImageAnalysisDemand(payload: unknown): ImageAnalysisDemand | null;
+declare function buildImageAnalysisPayload(options: ImageAnalysisPayloadOptions): Record<string, unknown>;
 declare function createMediaHash(input: MediaTaskInput): string;
 declare function readCacheIndex(): Record<string, unknown>;
 declare function writeCacheIndex(index: Record<string, unknown>): void;
@@ -70,6 +92,7 @@ declare function cleanupExpiredMediaTasks(kind?: string): number;
 declare function cleanupExpiredMediaTasksThrottled(kind?: string, now?: number): number;
 declare function cleanupFinishedMediaTasks(now?: number): MediaRetentionResult;
 declare function cleanupFinishedMediaTasksThrottled(now?: number): MediaRetentionResult;
+declare function hasImageAnalysisDemand(channelKey: string, messageId: string, excludeTaskId?: string): boolean;
 declare function isMediaTaskDeferred(task: MediaTask | null | undefined, now?: number): boolean;
 declare function listPendingMediaTasks(kind?: string, limit?: number): MediaTask[];
 declare function claimNextMediaTask(workerName?: string, kind?: string): MediaTask | null;
@@ -96,6 +119,9 @@ declare const _default: {
     ensureMediaDirs: typeof ensureMediaDirs;
     writeMediaEvent: typeof writeMediaEvent;
     createMediaHash: typeof createMediaHash;
+    getImageAnalysisDemand: typeof getImageAnalysisDemand;
+    buildImageAnalysisPayload: typeof buildImageAnalysisPayload;
+    hasImageAnalysisDemand: typeof hasImageAnalysisDemand;
     readCacheIndex: typeof readCacheIndex;
     writeCacheIndex: typeof writeCacheIndex;
     cleanupExpiredMediaTasks: typeof cleanupExpiredMediaTasks;

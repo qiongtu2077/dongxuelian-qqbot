@@ -39,7 +39,7 @@ const { handleCommand } = require('./handler'); // 指令路由（/help /reset �
 const { flushTokenUsage } = require('./core/api');
 const { analyzeIncomingMessage, normalizeText } = require('./message/message-reader');
 const { resolveForwardSummary } = require('./message/forward');
-const { prepareVisionRequest, isVisionSession } = require('./media/image/vision'); // 图片消息构建 + 视觉会话判断
+const { prepareVisionRequest, isVisionSession, getVisionPayload, markSessionForVision } = require('./media/image/vision'); // 图片消息构建 + 视觉会话判断
 const { handleIncomingMessageArtifacts, } = require('./message/incoming-message-flow'); // 入站图片/文件/语音材料处理
 const { handleSensitiveMessage, // 敏感消息拦截主逻辑
  } = require('./behavior/sensitive');
@@ -168,14 +168,6 @@ function buildThrottledResourceNotice(channelKey, resourceState, now = Date.now(
             resourceNoticeAtByChannel.delete(entryKey);
     }
     return '当前服务器可用内存低于 300 MB，除“AI状态”查询外，所有业务功能暂时暂停。';
-}
-// 日报/独占忙锁期间，显式图片追问只恢复到后台排队提示，不放开前台识图。
-function isImageQuickReadIntent(text = '') {
-    const value = normalizeText(text);
-    if (!value)
-        return false;
-    return /(?:这张图|这图|图里|图片|画面|表情)/.test(value)
-        || /^(?:这是什么|这啥|帮我看看|看看|看下|看一下|评价一下|分析一下)$/.test(value);
 }
 async function resolveGuardedFileQuickReadReply(channelKey, plain, entryUserId, preferDirectIntent = false) {
     const fileFollowupState = await buildFileFollowupState(channelKey, plain, { userId: entryUserId });
@@ -349,8 +341,7 @@ function apply(ctx) {
                     !analyzed.hasEmbed &&
                     (botDirective.botMode === 'report_silent' || botDirective.botMode === 'busy') &&
                     botDirective.resourceState !== 'red' &&
-                    session.messageId &&
-                    isImageQuickReadIntent(plain)) {
+                    session.messageId) {
                     markExplicitInteraction('image-quick-read');
                     return await analyzeHistoricalImage.execute({
                         messageId: String(session.messageId || ''),
@@ -358,6 +349,7 @@ function apply(ctx) {
                     }, {
                         channelKey,
                         userId: entryUserId,
+                        source: 'explicit-image',
                     });
                 }
             }
@@ -508,6 +500,7 @@ function apply(ctx) {
                 const pendingExplicitVersion = getExplicitInteractionVersion(channelKey);
                 const pendingMessageVersion = currentMessageVersion;
                 const pendingTriggerMessageId = session.messageId || '';
+                const pendingVisionPayload = prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: analyzed.hasVisual, includeQuote: false }) ? getVisionPayload(session) : undefined;
                 const timer = setTimeout(() => {
                     const p = takePendingRandom(channelKey);
                     if (!p)
@@ -529,8 +522,10 @@ function apply(ctx) {
                             if (shouldDropQueuedBotWork(ctx, channelKey, 'normal_chat', 'delayed-random-queue'))
                                 return;
                             const liveSession = withCurrentBot(session, resolveBot());
+                            if (p.visionPayload)
+                                markSessionForVision(liveSession, p.visionPayload.urls, p.visionPayload.file, p.visionPayload.targetMessageId);
                             const chatMeta = {};
-                            let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, directAt: false, nameMentioned: false, meta: chatMeta }), {
+                            let reply = await handleChatResult(await chat(liveSession, p.combinedText, ctx, { randomTriggered: true, sharedContextNote: p.sharedContextNote, quotedMessageNote: p.quotedMessageNote, forwardSummaryText: p.forwardSummaryText, replyToId: p.replyToId, directAt: false, nameMentioned: false, meta: chatMeta, randomImageExpiresAt: p.triggerAt + 60000, isImageReplyFresh: () => isRandomReplyFresh({ randomFreshness: { channelKey, triggerMessageVersion: p.triggerMessageVersion, explicitVersion: p.explicitVersion, triggerAt: p.triggerAt } }) }), {
                                 ctx,
                                 session: liveSession,
                                 channelKey,
@@ -610,6 +605,7 @@ function apply(ctx) {
                     personaName: currentPersonaName || '',
                     groupPersonaName,
                     highRisk: randomPersonaHighRisk,
+                    visionPayload: pendingVisionPayload,
                 });
             }
         }
@@ -705,13 +701,15 @@ function apply(ctx) {
                 return next();
             }
         }
-        // 引用/回复中的图片：当前消息不含图，但被引用的消息可能含图片
-        prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: false, includeQuote: true });
         if (explicitBotInteraction && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed)) {
             if (analyzed.hasFile && !analyzed.hasVisual && !analyzed.hasEmbed && !analyzed.hasUsableText)
                 return;
             // 有图片 → 尝试识图
-            if (!prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false }) && !analyzed.hasUsableText) {
+            const preparedVision = prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false });
+            // 多图共用一个消息编号，即使没有正文也必须先澄清唯一目标。
+            if (session._visionAmbiguous)
+                return '这条消息有多张图片，请单独发送需要查看的那一张。';
+            if (!preparedVision && !analyzed.hasUsableText) {
                 return;
             }
         }
@@ -775,7 +773,7 @@ function apply(ctx) {
                     return safeSendReplyWithFreshness(ctx, liveSession, autoRouteResult.reply || '', randomTriggered, resolveBot, randomSendOptions);
                 }
                 const chatMeta = {};
-                const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, directAt, nameMentioned, meta: chatMeta });
+                const chatResult = await chat(liveSession, userText, ctx, { randomTriggered, sharedContextNote, quotedMessageNote, forwardSummaryText, mentionUserIds, replyToId: analyzed.replyToId, directAt, nameMentioned, meta: chatMeta, randomImageExpiresAt: randomSendOptions.randomFreshness ? randomSendOptions.randomFreshness.triggerAt + 60000 : undefined, isImageReplyFresh: () => !randomTriggered || isRandomReplyFresh(randomSendOptions) });
                 const reply = await handleChatResult(chatResult, {
                     ctx,
                     session: liveSession,

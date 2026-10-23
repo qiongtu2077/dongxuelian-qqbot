@@ -21,6 +21,13 @@ interface DiagnosticEvent {
   code?: string; httpStatus?: number; reason?: string; summary?: string; upstreamCode?: string
   upstreamRequestId?: string; finishReason?: string; contentLength?: number; reasoningLength?: number
   maxTokens?: number; usageReadable?: boolean; inputTokens?: number; outputTokens?: number
+  imageSource?: string; imageTarget?: string; imageDemandId?: string
+}
+interface ImageRequestEvent {
+  source: 'explicit-image' | 'random-image' | 'history-tool'
+  target: string; demandId: string
+  event: 'requested' | 'owned' | 'reused' | 'pending' | 'unavailable' | 'completed' | 'failed'
+  force?: boolean; cache?: 'detail' | 'summary'
 }
 const DIAGNOSTIC_ROOT = path.join(DATA_DIR, 'ai-call-diagnostics')
 const RECENT_FILE = path.join(DIAGNOSTIC_ROOT, 'recent.json')
@@ -108,6 +115,34 @@ function getFailedModelUsage(error: unknown) {
 
 // --- 调用证据与最近状态 --- //
 
+// 只允许受控来源和哈希图片身份进入诊断，不记录原问题、群消息或图片地址。
+function readImageRequestDiagnostic(value: unknown): { source: ImageRequestEvent['source']; target: string; demandId: string } | null {
+  if (!value || typeof value !== 'object') return null
+  const data = value as Record<string, unknown>
+  if (!['explicit-image', 'random-image', 'history-tool'].includes(String(data.source))) return null
+  if (typeof data.target !== 'string' || !/^[a-f0-9]{64}$/.test(data.target)) return null
+  if (typeof data.demandId !== 'string' || !/^[a-f0-9-]{36}$/.test(data.demandId)) return null
+  return { source: data.source as ImageRequestEvent['source'], target: data.target, demandId: data.demandId }
+}
+
+// 有界记录识图业务需求和缓存复用，实际上游尝试仍由模型诊断单独计数。
+function recordImageRequestEvent(event: ImageRequestEvent): void {
+  const identity = readImageRequestDiagnostic(event)
+  if (!identity) return
+  try {
+    fs.mkdirSync(DIAGNOSTIC_ROOT, { recursive: true })
+    const now = new Date()
+    const day = now.toISOString().slice(0, 10)
+    const file = path.join(DIAGNOSTIC_ROOT, 'image-demand-' + day + '.jsonl')
+    const payload = { ...identity, event: event.event, ...(event.force !== undefined ? { force: !!event.force } : {}),
+      ...(event.cache ? { cache: event.cache } : {}), createdAt: now.toISOString() }
+    if (!fs.existsSync(file) || fs.statSync(file).size < 5 * 1024 * 1024) fs.appendFileSync(file, JSON.stringify(payload) + '\n', 'utf8')
+    for (const name of fs.readdirSync(DIAGNOSTIC_ROOT)) {
+      if (/^image-demand-\d{4}-\d{2}-\d{2}\.jsonl$/.test(name) && now.getTime() - Date.parse(name.slice(13, 23)) > 7 * 86400000) fs.unlinkSync(path.join(DIAGNOSTIC_ROOT, name))
+    }
+  } catch { console.warn('[ai-diagnostic] 图片需求诊断写入失败') }
+}
+
 // 为整次调用建立关联编号，各备用节点和恢复尝试共享该编号。
 function createDiagnosticRequestId(): string { return randomUUID() }
 
@@ -160,4 +195,4 @@ function formatRecentModelDiagnostic(): string {
   } catch { return '最近文字调用：暂无记录' }
 }
 
-export = { ModelRequestError, sanitizeDiagnosticText, assertModelResponseOk, getModelFailureReason, getFailedModelUsage, formatModelHttpStatus, createDiagnosticRequestId, buildModelFailureNotice, recordModelDiagnostic, formatRecentModelDiagnostic }
+export = { ModelRequestError, sanitizeDiagnosticText, assertModelResponseOk, getModelFailureReason, getFailedModelUsage, formatModelHttpStatus, createDiagnosticRequestId, buildModelFailureNotice, recordModelDiagnostic, formatRecentModelDiagnostic, readImageRequestDiagnostic, recordImageRequestEvent }

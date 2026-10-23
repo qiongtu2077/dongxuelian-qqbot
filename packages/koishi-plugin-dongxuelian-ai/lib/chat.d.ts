@@ -70,6 +70,8 @@ interface ChatRunOptions {
     nameMentioned?: boolean;
     mentionUserIds?: unknown[];
     meta?: Record<string, unknown>;
+    isImageReplyFresh?: () => boolean;
+    randomImageExpiresAt?: number;
     [key: string]: unknown;
 }
 interface ChatMessageLike {

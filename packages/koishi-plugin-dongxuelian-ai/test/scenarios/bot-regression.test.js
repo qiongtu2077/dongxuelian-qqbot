@@ -574,16 +574,25 @@ async function run(t) {
     const result = await withMemOverride(700, 1600, () => run(session, { flushTicks: 40 }))
     const mediaQueue = require(path.join(AI_ROOT, 'lib', 'media', 'backpressure', 'media-queue.js'))
     const imageStore = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
-    const queued = mediaQueue.listPendingMediaTasks('media_image_analysis', 20)
+    const queued = mediaQueue.listPendingMediaTasks('media_image_cache', 20)
       .find(task => task && task.channelKey === '10001' && task.messageId === 'yellow-passive-image-1')
     const entry = await imageStore.getImageEntry('10001', 'yellow-passive-image-1')
     t.check(
-      'scenario yellow passive image ingest queues work when its memory budget is met',
+      'scenario yellow passive image ingest only queues raw image cache',
       result.sent.length === 0 &&
         !!queued &&
         entry && entry.file === 'yellow-passive-image-file',
       JSON.stringify({ result: formatResult(result), queued, entry })
     )
+    t.check('scenario passive image never queues model analysis', mediaQueue.listPendingMediaTasks('media_image_analysis', 20).length === 0)
+    const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64')
+    await imageStore.cacheImageFile('10001', 'yellow-passive-image-1', imageBytes)
+    const mocked = mockFetch([])
+    await withFetch(mocked, async () => {
+      const worker = require(path.join(AI_ROOT, 'lib', 'resource-workers', 'media-worker.js'))
+      await withMemOverride(1200, 1600, () => worker.drainOneMediaTask({ workerName: 'scenario-passive-cache' }))
+      t.check('scenario passive image worker consumption keeps actual model requests at zero', mocked.calls.length === 0, JSON.stringify(mocked.calls))
+    })
   })
 
   await withScenario({}, async ({ makeSession, run }) => {

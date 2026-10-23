@@ -2,10 +2,14 @@ interface AnalyzeImageParams {
     url?: unknown;
     messageId?: unknown;
     question?: unknown;
+    force?: unknown;
 }
 interface AnalyzeImageContext {
     channelKey?: string;
     userId?: string;
+    source?: 'history-tool' | 'explicit-image' | 'random-image';
+    entry?: string;
+    randomAuthorization?: unknown;
 }
 declare const _default: {
     definition: {
@@ -23,6 +27,10 @@ declare const _default: {
                     description: string;
                 };
                 question: {
+                    type: string;
+                    description: string;
+                };
+                force: {
                     type: string;
                     description: string;
                 };

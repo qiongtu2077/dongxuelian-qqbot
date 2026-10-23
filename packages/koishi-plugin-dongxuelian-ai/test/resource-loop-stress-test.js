@@ -142,6 +142,7 @@ async function main() {
     channelKey: 'loop-stress-media',
     messageId: 'loop-stress-media-msg',
     url: 'https://example.test/loop-stress-media.png',
+    payload: mediaQueue.buildImageAnalysisPayload({ source: 'history-tool' }),
   })
 
   // 只统计正式压力循环期间的递归扫盘，避免把建夹具阶段的队列探测计进来。

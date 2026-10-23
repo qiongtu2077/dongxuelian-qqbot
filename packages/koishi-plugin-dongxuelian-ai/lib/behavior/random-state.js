@@ -6,6 +6,7 @@
  * 状态: channelMissCount / mute / cooldown / pending / message-version Maps。
  */
 const { RANDOM_TRIGGER_WARMUP, RANDOM_TRIGGER_RAMP, } = require('../core/constants');
+const { revokeRandomImageDemand, clearRandomImageDemands } = require('../media/image/image-random-demand');
 const channelMissCount = new Map();
 const channelMutedUntil = new Map();
 const lastRandomReplyTs = new Map();
@@ -64,6 +65,7 @@ function muteRandomChannel(channelKey, durationMs = 600000, now = Date.now()) {
     if (getRandomMuteRemaining(key, now) >= durationMs)
         return false;
     channelMutedUntil.set(key, now + durationMs);
+    revokeRandomImageDemand(key);
     return true;
 }
 function isRandomMuted(channelKey, now = Date.now()) {
@@ -77,6 +79,7 @@ function bumpChannelMessageVersion(channelKey) {
     if (!key)
         return getChannelMessageVersion(key);
     const next = getChannelMessageVersion(key) + 1;
+    revokeRandomImageDemand(key);
     channelMessageVersions.set(key, next);
     trimRandomChannelState();
     return next;
@@ -89,6 +92,7 @@ function bumpExplicitInteractionVersion(channelKey) {
     if (!key)
         return getExplicitInteractionVersion(key);
     const next = getExplicitInteractionVersion(key) + 1;
+    revokeRandomImageDemand(key);
     channelExplicitVersions.set(key, next);
     trimRandomChannelState();
     return next;
@@ -123,6 +127,7 @@ function takePendingRandom(channelKey) {
 }
 function cancelPendingRandom(channelKey, reason = '') {
     const key = normalizeChannelKey(channelKey);
+    revokeRandomImageDemand(key);
     const pending = channelPendingRandom.get(key);
     if (!pending)
         return false;
@@ -132,6 +137,7 @@ function cancelPendingRandom(channelKey, reason = '') {
     return true;
 }
 function clearRandomPendingState() {
+    clearRandomImageDemands();
     for (const [, entry] of channelPendingRandom) {
         if (entry && entry.timer)
             clearTimeout(entry.timer);

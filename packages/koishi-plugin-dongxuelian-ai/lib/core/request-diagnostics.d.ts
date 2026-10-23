@@ -31,6 +31,17 @@ interface DiagnosticEvent {
     usageReadable?: boolean;
     inputTokens?: number;
     outputTokens?: number;
+    imageSource?: string;
+    imageTarget?: string;
+    imageDemandId?: string;
+}
+interface ImageRequestEvent {
+    source: 'explicit-image' | 'random-image' | 'history-tool';
+    target: string;
+    demandId: string;
+    event: 'requested' | 'owned' | 'reused' | 'pending' | 'unavailable' | 'completed' | 'failed';
+    force?: boolean;
+    cache?: 'detail' | 'summary';
 }
 declare class ModelRequestError extends Error {
     code: string;
@@ -50,6 +61,12 @@ declare function getFailedModelUsage(error: unknown): {
     outputTokens: number;
     total: number;
 };
+declare function readImageRequestDiagnostic(value: unknown): {
+    source: ImageRequestEvent['source'];
+    target: string;
+    demandId: string;
+} | null;
+declare function recordImageRequestEvent(event: ImageRequestEvent): void;
 declare function createDiagnosticRequestId(): string;
 declare function buildModelFailureNotice(error: unknown, timedOut: boolean, requestId: string, purpose: string): {
     requestId: string;
@@ -74,5 +91,7 @@ declare const _default: {
     buildModelFailureNotice: typeof buildModelFailureNotice;
     recordModelDiagnostic: typeof recordModelDiagnostic;
     formatRecentModelDiagnostic: typeof formatRecentModelDiagnostic;
+    readImageRequestDiagnostic: typeof readImageRequestDiagnostic;
+    recordImageRequestEvent: typeof recordImageRequestEvent;
 };
 export = _default;

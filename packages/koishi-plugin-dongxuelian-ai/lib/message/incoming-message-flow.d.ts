@@ -42,11 +42,12 @@ interface ImageArtifactOptions {
     content: string;
     channelKey: string;
     queueMedia?: boolean;
+    cacheImages?: boolean;
 }
 interface IncomingMessageArtifactOptions extends ImageArtifactOptions {
     directAt?: boolean;
 }
-declare function handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt, queueMedia }: IncomingMessageArtifactOptions): Promise<string>;
+declare function handleIncomingMessageArtifacts({ ctx, session, analyzed, plain, content, channelKey, directAt, queueMedia, cacheImages }: IncomingMessageArtifactOptions): Promise<string>;
 declare const _default: {
     handleIncomingMessageArtifacts: typeof handleIncomingMessageArtifacts;
 };

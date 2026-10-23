@@ -7,6 +7,7 @@ interface MediaWorkerOptions {
     } | null) => void;
 }
 interface MediaTaskPayloadLike {
+    imageDemand?: unknown;
     userId?: unknown;
     url?: unknown;
     file?: unknown;

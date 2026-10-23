@@ -12,6 +12,12 @@ interface ChatToolOptions {
     randomTriggered?: boolean;
     userText?: string;
     currentText?: string;
+    selectedImageMessageId?: string;
+    quotedImageMessageId?: string;
+    imageTargetSelection?: {
+        candidateMessageIds: string[];
+        selectedMessageId: string;
+    };
 }
 interface ChatToolCall {
     id?: string;
@@ -25,6 +31,8 @@ interface ChatToolContext extends ChatToolOptions {
     channelKey?: string;
     allowParsedReminderAction?: boolean;
     maxToolCalls?: number | string;
+    isImageReplyFresh?: () => boolean;
+    randomImageExpiresAt?: number;
     [key: string]: unknown;
 }
 interface ChatToolResultMessage {

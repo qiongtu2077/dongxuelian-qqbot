@@ -8,7 +8,7 @@ const { REQUEST_TIMEOUT, DATA_DIR } = require('./constants');
 const { isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('./utils');
 const { AI_CAPABILITIES, isAiCapability, getProviderCatalogEntry, getVerifiedModelCapabilities, loadCapabilityConfigSync, resolveCapabilityRuntimeSteps, } = require('./ai-capability-config');
 const { notifyCapabilityStepFailure } = require('./capability-failure-notifier');
-const { ModelRequestError: CapabilityUpstreamError, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic } = require('./request-diagnostics');
+const { ModelRequestError: CapabilityUpstreamError, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics');
 const { resolveOneBotWsUrl } = require('./onebot-endpoint');
 const WebSocket = require('ws');
 const path = require('path');
@@ -657,6 +657,8 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
     const externalSignal = extraBody.signal && typeof extraBody.signal === 'object' ? extraBody.signal : null;
     const requestedTimeout = Number(extraBody._timeoutMs);
     const purpose = extraBody._purpose || (capability === 'vision' ? 'vision' : 'chat');
+    const imageRequest = readImageRequestDiagnostic(extraBody._imageRequest);
+    const imageDiagnostic = imageRequest ? { imageSource: imageRequest.source, imageTarget: imageRequest.target, imageDemandId: imageRequest.demandId } : {};
     const judgment = purpose === 'topic_switch' || purpose === 'identity_judge';
     const deadline = judgment ? Date.now() + 8000 : Infinity;
     const requestId = createDiagnosticRequestId();
@@ -708,6 +710,7 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
             });
             const usage = readUsageDetails(response.usage);
             recordModelDiagnostic({ requestId, capability, purpose, provider: attempt.provider || 'unknown', model: attempt.model,
+                ...imageDiagnostic,
                 status: 'success', elapsedMs: Date.now() - attemptStartedAt, attempt: attemptNumber, fallback: index > 0,
                 finishReason: response.finishReason, contentLength: response.result.type === 'text' ? response.result.content.length : 0,
                 reasoningLength: response.result.reasoning.length, maxTokens: diagnosticMaxTokens, usageReadable: response.usageReadable,
@@ -731,6 +734,7 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
             recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(failure.details.usage), { capability, model: attempt.model, usage: failure.details.usage, readable });
             const reason = getModelFailureReason(failure);
             recordModelDiagnostic({ requestId, capability, purpose, provider: attempt.provider || 'unknown', model: attempt.model,
+                ...imageDiagnostic,
                 status: 'failure', elapsedMs: Date.now() - attemptStartedAt, attempt: attemptNumber, fallback: index > 0,
                 code: failure.code, httpStatus: failure.status, reason, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode,
                 upstreamRequestId: failure.details.requestId, finishReason: failure.details.finishReason,

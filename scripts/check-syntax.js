@@ -12,6 +12,7 @@ const CHECK_DIRS = [
 ]
 
 const CHECK_FILES = [
+  ...['image-source', 'image-request', 'image-turn', 'image-random-demand'].map(name => 'packages/koishi-plugin-dongxuelian-ai/lib/media/image/' + name + '.js'),
   ...['models', 'input', 'settings', 'repositories', 'client', 'page-screenshot', 'renderer', 'body-content', 'issue-renderer', 'pull-card', 'themes', 'runtime'].map(name => 'packages/koishi-plugin-dongxuelian-ai/lib/github-preview/' + name + '.js'),
   'packages/koishi-plugin-dongxuelian-ai/lib/diagnostics/model-connectivity.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/request-diagnostics.js',
