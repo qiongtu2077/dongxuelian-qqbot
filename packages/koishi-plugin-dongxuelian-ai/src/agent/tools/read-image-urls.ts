@@ -23,6 +23,7 @@ export = {
       required: [] as string[],
     },
   },
+  // 返回有限的有效图片及本次识图状态，已有摘要与本次失败分别呈现。
   async execute(params: ReadImageHistoryParams = {}, context: ReadImageHistoryContext = {}): Promise<string> {
     const channelKey = context.channelKey || ''
     if (!channelKey) return '无法获取频道信息'
@@ -31,7 +32,8 @@ export = {
     if (!images.length) return '最近没有图片记录。'
     return images.map((img, i) => {
       const time = new Date(img.ts).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })
-      const status = img.analyzed ? `已分析: ${img.analysis?.slice(0, 80) || '(无描述)'}` : '未分析'
+      const state = ({ pending: '识图排队中', failed: '本次识图失败', cancelled: '本次识图已取消', completed: '本次识图已完成' } as Record<string, string>)[img.analysisStatus] || ''
+      const status = [img.analyzed ? `已有摘要: ${img.analysis?.slice(0, 80) || '(无描述)'}` : '没有客观摘要', state].filter(Boolean).join('；')
       return `${i + 1}. [${time}] ${status}\n   URL: ${img.url}\n   ID: ${img.messageId}`
     }).join('\n')
   },

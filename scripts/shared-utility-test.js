@@ -55,7 +55,7 @@ function testObservabilityMarkers() {
     ['packages/koishi-plugin-dongxuelian-ai/src/agent/push.ts', ['push_log_compaction_failed']],
     ['packages/koishi-plugin-dongxuelian-ai/src/agent/cron.ts', ['run_result_persistence_failed']],
     ['packages/koishi-plugin-dongxuelian-ai/src/media/voice/voice.ts', ['download_url_rejected', 'temp_voice_write_failed', 'network_setup_failed', 'conversion_fallback_failed', 'onebot_get_record_failed']],
-    ['packages/koishi-plugin-dongxuelian-ai/src/media/image/image-analyzer.ts', ['onebot_get_image_failed']],
+    ['packages/koishi-plugin-dongxuelian-ai/src/media/image/image-source.ts', ['onebot_get_image_failed']],
     ['packages/koishi-plugin-dongxuelian-ai/src/media/file/file-analyzer.ts', ['direct_download_failed', 'onebot_get_file_failed']],
   ])
   for (const [file, markers] of expectedMarkers) {

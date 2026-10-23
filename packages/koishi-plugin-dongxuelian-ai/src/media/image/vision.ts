@@ -4,17 +4,14 @@
  * 边界: 只操作 session 标记和 messages 数组尾部，不调 AI API，不改 conversation 持久层。
  */
 const {
-  callGetImage,
-  readImageAsBase64,
-  downloadImageAsBase64,
-  extractImageFileFromElements,
   isVisionModel,
 } = require('../../core/api') as typeof import('../../core/api')
 const { extractImageUrls } = require('../../core/utils') as typeof import('../../core/utils')
 const { getChannelKey } = require('../../conversation') as typeof import('../../conversation')
-const { readCachedImage } = require('./image-store') as typeof import('./image-store')
+const { readImageSource } = require('./image-source') as typeof import('./image-source')
+const { getCurrentImageSegments, hasAmbiguousImageMessage, normalizeSegmentData } = require('../../message/message-segment') as typeof import('../../message/message-segment')
 
-const VISION_SESSION_KEYS: string[] = ['_visionUrls', '_visionFile', '_isVisionRequest']
+const VISION_SESSION_KEYS: string[] = ['_visionUrls', '_visionFile', '_isVisionRequest', '_visionTargetMessageId', '_visionTargetChannelKey']
 
 interface SegmentLike {
   type?: string
@@ -27,6 +24,7 @@ interface SegmentLike {
 interface VisionSessionLike {
   content?: string
   quote?: {
+    messageId?: string
     content?: unknown
     message?: SegmentLike[]
   }
@@ -36,12 +34,16 @@ interface VisionSessionLike {
   _visionUrls?: unknown
   _visionFile?: unknown
   _isVisionRequest?: unknown
+  _visionTargetMessageId?: unknown
+  _visionTargetChannelKey?: unknown
   [key: string]: unknown
 }
 
 interface VisionPayload {
   urls: string[]
   file: string | null
+  targetMessageId?: string
+  targetChannelKey?: string
 }
 
 interface AnalyzedMessageFlags {
@@ -86,48 +88,59 @@ interface AppendVisionResult {
   visionContext?: VisionContext
 }
 
+// 统一视觉读取失败的日志文本。
 function getVisionErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function markSessionForVision(session: VisionSessionLike | null | undefined, urls: unknown[] = [], file: unknown = null): boolean {
+// 标记单个图片目标；调用方必须先完成回复准入。
+function markSessionForVision(session: VisionSessionLike | null | undefined, urls: unknown[] = [], file: unknown = null, targetMessageId = ''): boolean {
   const normalizedUrls = Array.isArray(urls) ? urls.map(String).filter(Boolean) : []
   const normalizedFile = file ? String(file) : null
   if (!session || (!normalizedUrls.length && !normalizedFile)) return false
   session._visionUrls = normalizedUrls
   session._visionFile = normalizedFile
   session._isVisionRequest = true
+  session._visionTargetMessageId = targetMessageId || String(session.messageId || '')
+  session._visionTargetChannelKey = getChannelKey(session as unknown as Parameters<typeof getChannelKey>[0])
   return true
 }
 
+// 返回图片来源及原图片身份，避免追问编号覆盖原图。
 function getVisionPayload(session: VisionSessionLike | null | undefined): VisionPayload {
   if (!session) return { urls: [], file: null }
   return {
     urls: Array.isArray(session._visionUrls) ? session._visionUrls.filter(Boolean).map(String) : [],
     file: session._visionFile ? String(session._visionFile) : null,
+    targetMessageId: String(session._visionTargetMessageId || session.messageId || ''),
+    targetChannelKey: String(session._visionTargetChannelKey || getChannelKey(session as unknown as Parameters<typeof getChannelKey>[0])),
   }
 }
 
+// 读取已核实的 OneBot 原始图片段及 Koishi img 元素来源。
 function getCurrentImageUrlsFromSegments(session: VisionSessionLike | null | undefined): string[] {
-  const segments = Array.isArray(session?.event?.message) ? session.event.message : []
+  const segments = getCurrentImageSegments(session as Parameters<typeof getCurrentImageSegments>[0]) as SegmentLike[]
   return segments
-    .filter(segment => segment && segment.type === 'image')
-    .map(segment => segment.data && segment.data.url || '')
+    .filter(segment => segment && ['image', 'img'].includes(String(segment.type)))
+    .map(segment => { const data = normalizeSegmentData(segment); return data.url || data.src || '' })
     .map(String)
     .filter(Boolean)
 }
 
+// 判断会话是否已绑定允许识图的目标。
 function isVisionSession(session: VisionSessionLike | null | undefined): boolean {
   if (!session || !session._isVisionRequest) return false
   const payload = getVisionPayload(session)
   return !!(payload.file || payload.urls.length > 0)
 }
 
+// 清除本轮视觉标记。
 function clearVisionSession(session: VisionSessionLike | null | undefined): void {
   if (!session) return
   for (const key of VISION_SESSION_KEYS) delete session[key]
 }
 
+// 仅供明确选择引用图的调用者提取来源，普通聊天不能自动使用。
 function getQuotedVisionPayload(session: VisionSessionLike): VisionPayload {
   let qc = ''
   let quotedFile: string | null = null
@@ -144,76 +157,46 @@ function getQuotedVisionPayload(session: VisionSessionLike): VisionPayload {
   return { urls: extractImageUrls(qc), file: quotedFile }
 }
 
+// 为已经获准的当前图邀请绑定图片；引用图必须显式选择。
 function prepareVisionRequest(session: VisionSessionLike, analyzed: AnalyzedMessageFlags = {}, context: PrepareVisionContext = {}): boolean {
   const content = context.content === undefined ? session?.content || '' : context.content
   if (context.allowCurrentMessage) {
+    const imageSegments = getCurrentImageSegments(session as Parameters<typeof getCurrentImageSegments>[0])
+    // 适配器同消息的多个 img 共用 messageId，当前存储无法唯一绑定其中一张。
+    if (hasAmbiguousImageMessage(session as Parameters<typeof hasAmbiguousImageMessage>[0], String(content || ''))) { session._visionAmbiguous = true; return false }
     const urls = [...new Set(extractImageUrls(String(content || '')).concat(getCurrentImageUrlsFromSegments(session)))]
-    const file = extractImageFileFromElements(session as unknown as Parameters<typeof extractImageFileFromElements>[0])
+    const file = imageSegments.length ? normalizeSegmentData(imageSegments[0]).file : null
     if (markSessionForVision(session, urls, file)) return true
   }
 
-  if (context.includeQuote !== false && !analyzed.hasVisual && !analyzed.hasFile && !analyzed.hasEmbed && session?.quote) {
+  if (context.includeQuote === true && !analyzed.hasVisual && !analyzed.hasFile && !analyzed.hasEmbed && session?.quote) {
     const quoted = getQuotedVisionPayload(session)
-    if (markSessionForVision(session, quoted.urls, quoted.file)) return true
+    if (markSessionForVision(session, quoted.urls, quoted.file, String(session.quote.messageId || ''))) return true
   }
 
   return isVisionSession(session)
 }
 
+// 通过共享读取层取得已绑定原图；读取成功才追加多模态消息。
 async function appendVisionMessage(messages: VisionMessage[], session: VisionSessionLike, config: VisionConfig, ctx: { logger: (name: string) => { warn: (message: string) => void } }, options: AppendVisionOptions = {}): Promise<AppendVisionResult> {
   const payload = getVisionPayload(session)
   const promptText = options.promptText || ''
-  const readFailReply = options.readFailReply || '图片读取失败。'
   const inaccessibleReply = options.inaccessibleReply || '图片无法访问。'
   const identifyFailReply = options.identifyFailReply || '图片识别失败。'
   const visionContext: VisionContext = { provider: config && config.provider, model: config && config.model, promptText, injectedIndex: -1 }
 
   try {
-    const vc2 = config
-    const visionModelEnabled = isVisionModel(String(vc2.provider || ''), String(vc2.model || ''))
-    const channelKey = getChannelKey(session as unknown as Parameters<typeof getChannelKey>[0])
-    const messageId = session?.messageId ? String(session.messageId) : ''
-    let localPath: string | null = null
-    let cachedImageTried = false
-    let localReadFailed = false
-    const pushVisionImage = (imgBase64: string): AppendVisionResult => {
-      visionContext.injectedIndex = messages.push({
-        role: 'user',
-        content: [
-          { type: 'text', text: promptText },
-          { type: 'image_url', image_url: { url: imgBase64 } },
-        ],
-      }) - 1
-      return { ok: true, visionContext }
-    }
-    const tryReadCachedCurrentImage = async (): Promise<string | null> => {
-      if (cachedImageTried || !visionModelEnabled || !channelKey || !messageId) return null
-      cachedImageTried = true
-      return readCachedImage(channelKey, messageId)
-    }
-    if (payload.file) {
-      const imgInfo = await callGetImage(payload.file)
-      if (imgInfo && imgInfo.file) localPath = String(imgInfo.file)
-    }
-    if (visionModelEnabled && localPath) {
-      const imgBase64 = await readImageAsBase64(localPath)
-      if (imgBase64) return pushVisionImage(imgBase64)
-      localReadFailed = true
-    }
-    if (payload.file) {
-      const cachedBase64 = await tryReadCachedCurrentImage()
-      if (cachedBase64) return pushVisionImage(cachedBase64)
-    }
-    const visionUrl = payload.urls && payload.urls[0]
-    if (visionUrl) {
-      const imgBase64 = await downloadImageAsBase64(visionUrl, 10000)
-      if (imgBase64 && visionModelEnabled) return pushVisionImage(imgBase64)
-      const cachedBase64 = await tryReadCachedCurrentImage()
-      if (cachedBase64) return pushVisionImage(cachedBase64)
-      return { ok: false, reply: inaccessibleReply }
-    }
-    if (localReadFailed) return { ok: false, reply: readFailReply }
-    return { ok: false, reply: inaccessibleReply }
+    if (!isVisionModel(String(config.provider || ''), String(config.model || ''))) return { ok: false, reply: identifyFailReply }
+    const imgBase64 = await readImageSource(payload.targetChannelKey || '', payload.targetMessageId || '')
+    if (!imgBase64) return { ok: false, reply: inaccessibleReply }
+    visionContext.injectedIndex = messages.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: promptText },
+        { type: 'image_url', image_url: { url: imgBase64 } },
+      ],
+    }) - 1
+    return { ok: true, visionContext }
   } catch (error) {
     ctx.logger('dongxuelian-ai').warn('Vision: ' + getVisionErrorMessage(error))
     return { ok: false, reply: identifyFailReply }
@@ -227,6 +210,7 @@ async function appendVisionMessage(messages: VisionMessage[], session: VisionSes
 const VISION_BLINDNESS_NEGATIVE_RE: RegExp = /(?:看不(?:到|见)|没法看(?:到|见)?|没看(?:到|见)|无法(?:看|查看|识别)|看不出来是什么图|没收到图|没有图)/
 const VISION_BLINDNESS_RESEND_RE: RegExp = /(?:再发一(?:次|遍|张)|重新发|换个图|发(?:一)?张图|发清楚点|描述一下)/
 
+// 检测上游未能消费图片时的短拒识回复。
 function isVisionBlindnessReply(reply: string = ''): boolean {
   const text = String(reply || '').trim()
   if (!text) return false

@@ -290,6 +290,7 @@ mediaQueue.enqueueMediaTask({
   channelKey: 'group-regress-media',
   messageId: 'media-msg-1',
   url: 'http://example.invalid/regress-image-1.png',
+  payload: mediaQueue.buildImageAnalysisPayload({ source: 'history-tool' }),
 })
 
 // red 内存下，admission 应拒绝；drainOneMediaTask 必须返回 false（退避），不返回 true（忙等）。
@@ -941,6 +942,7 @@ async function run() {
     channelKey: 'group-background-directive',
     messageId: 'media-background-1',
     url: 'http://example.invalid/background-1.png',
+    payload: mediaQueue.buildImageAnalysisPayload({ source: 'history-tool' }),
   })
 
   const planning = await startupSchedulers.runDailyPrecomputePlanningTick(loggerStore.ctx)

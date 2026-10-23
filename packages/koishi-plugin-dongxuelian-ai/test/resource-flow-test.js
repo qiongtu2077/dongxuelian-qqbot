@@ -802,6 +802,7 @@ function tasksFor(mediaQueue, messageId) {
 
 async function main() {
   const analyzeImage = require('./packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/analyze-image')
+  const imageStore = require('./packages/koishi-plugin-dongxuelian-ai/lib/media/image/image-store')
   const mediaQueue = require('./packages/koishi-plugin-dongxuelian-ai/lib/media/backpressure/media-queue')
   const constants = require('./packages/koishi-plugin-dongxuelian-ai/lib/core/constants')
   const scenarios = [
@@ -825,6 +826,8 @@ async function main() {
     const userId = 'image-user-' + scenario.name
     const messageId = 'image-msg-' + scenario.name
     const url = 'https://example.test/image-admission-' + scenario.name + '.png'
+    // 历史编号须先对应有效原图记录；本组只验证准入，不能靠 URL 复活缺失目标。
+    await imageStore.storeImageUrl(channelKey, messageId, url, '', { conversationKey: channelKey, userId })
     const before = tasksFor(mediaQueue, messageId).length
     const response = await analyzeImage.execute({ url, messageId }, { channelKey, userId })
     const afterTasks = tasksFor(mediaQueue, messageId)

@@ -25,6 +25,7 @@ const {
 } = require('./core/api') as typeof import('./core/api')
 const { isVisionSession, clearVisionSession, appendVisionMessage, isVisionBlindnessReply, downgradeVisionMessageToText } = require('./media/image/vision') as typeof import('./media/image/vision') // 多模态图片会话管理
 const { markAnalyzed, replaceImagePlaceholder } = require('./media/image/image-store') as typeof import('./media/image/image-store')
+const { prepareImageTurn, messagesContainImage } = require('./media/image/image-turn') as typeof import('./media/image/image-turn')
 const { sanitizeImageAnalysis } = require('./media/image/image-analysis-sanitizer') as typeof import('./media/image/image-analysis-sanitizer')
 const {
   getConversationKey, getChannelKey, // 会话/频道唯一标识生成
@@ -220,6 +221,8 @@ interface ChatRunOptions {
   nameMentioned?: boolean
   mentionUserIds?: unknown[]
   meta?: Record<string, unknown>
+  isImageReplyFresh?: () => boolean
+  randomImageExpiresAt?: number
   [key: string]: unknown
 }
 
@@ -473,7 +476,8 @@ function trimRuntimeCaches(now: number = Date.now()): void {
 
 // 按当前接口能力选择普通对话或联网检索调用方式。
 async function callOpenAI(messages: ChatMessageLike[], isRandom: boolean, extraBody: Record<string, unknown> = {}, tools: unknown = null): Promise<ChatModelReply> {
-  const config = await loadConfig()
+  const hasImage = messagesContainImage(messages)
+  const config = hasImage ? await loadCapabilityConfig('vision') : await loadConfig()
   if (!config.apiKey) throw new Error('AI key file is empty.')
   const thinkingEnabled = getThinkingEnabled()
   const managedThinkingMeta = {
@@ -483,7 +487,7 @@ async function callOpenAI(messages: ChatMessageLike[], isRandom: boolean, extraB
   }
 
   const capability = getSearchCapability(config)
-  if (isRandom || !config.searchEnabled || !capability.supported) {
+  if (hasImage || isRandom || !config.searchEnabled || !capability.supported) {
     const result = await requestChatCompletions(asChatApiMessages(messages), config, { ...getThinkingArgs(config), ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta }, asChatTools(tools))
     if (result && result.type === 'tool_calls') return result
     return getChatCompletionText(result)
@@ -635,8 +639,22 @@ async function prepareChatIdentityStage(session: ChatSessionLike, userText: stri
   }
 }
 
-// Executes vision preparation, tool/model calls, output guards and durable result commit for one chat turn.
+// 为当前聊天轮次取得图片所有权，并在任何成功、失败或提前返回路径释放。
 async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promise<ChatResult> {
+  if (input.options.isImageReplyFresh && !input.options.isImageReplyFresh()) return ''
+  const imageTurn = await prepareImageTurn(input.session, { question: input.cleanInput, randomTriggered: input.isRandomTriggered })
+  if (imageTurn.status === 'pending') return '这张图片正在处理中，请稍后再问。'
+  if (imageTurn.status === 'unavailable') return '这张图片已过期或无法定位，请重新发送需要查看的图片。'
+  if (imageTurn.status === 'reused') input.messages.push({ role: 'system', content: `[选定图片已有客观摘要] ${imageTurn.analysis}。仅依据已知事实回答；需要摘要之外的小字、完整文字或细节时使用 analyze_historical_image 并设置 force=true。` })
+  try {
+    return await executeOwnedChatModelStage(input, imageTurn)
+  } finally {
+    if (imageTurn.status === 'owned') await imageTurn.release()
+  }
+}
+
+// 执行同一获准轮次的视觉注入、工具调用、输出检查和原图事实回写。
+async function executeOwnedChatModelStage(input: ExecuteChatModelStageOptions, imageTurn: Awaited<ReturnType<typeof prepareImageTurn>>): Promise<ChatResult> {
   const {
     session,
     ctx,
@@ -655,14 +673,29 @@ async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promi
     rareConfirmed,
   } = input
 
+  // 元数据只随实际含原图的调用传递，避免文字降级被误记为视觉尝试。
+  const callTurnModel: ChatToolFlowCallModel = async (turnMessages, randomTriggered, extra = {}, tools = null) => {
+    if (messagesContainImage(turnMessages) && options.isImageReplyFresh && !options.isImageReplyFresh()) return ''
+    const metadata = imageTurn.status === 'owned' && messagesContainImage(turnMessages) ? { _imageRequest: imageTurn.diagnostic } : {}
+    const attemptGuard = randomTriggered && messagesContainImage(turnMessages) && options.isImageReplyFresh ? {
+      _onRequestAttempt: (step: unknown) => {
+        if (!options.isImageReplyFresh!()) throw new Error('随机图片话题已过时，已取消后续视觉请求')
+        if (typeof extra._onRequestAttempt === 'function') extra._onRequestAttempt(step)
+      },
+    } : {}
+    return await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard }, tools) as ChatToolFlowReply
+  }
+  const callTurnText = async (turnMessages: ChatMessageLike[], randomTriggered = false, extra: Record<string, unknown> = {}): Promise<string> => toChatText(await callTurnModel(asChatToolFlowMessages(turnMessages), randomTriggered, extra))
+
   let wasVisionRequest = false
   let visionContext = null
   if (isVisionSession(session)) {
     const vc = await loadCapabilityConfig('vision', true)
     if (!isVisionModel(vc.provider, vc.model)) throw new Error('该能力未配置模型')
-    const visionPromptText = options.randomTriggered
+    const visionInstruction = options.randomTriggered
       ? '[群里刷到一张图。如果你看清了图，先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应；不要假设这是有人专程拿给你看的。]'
       : '[用户发来一张图。先输出 <image_fact>标签包住的一句客观图片事实（只描述图片里客观看到的内容，60字内，不要称呼用户，不要续聊），再输出按你人设风格的一句可见回应。]'
+    const visionPromptText = `${isolatedUserMessage}\n${visionInstruction}`
     const visionResult = await appendVisionMessage(asVisionMessages(messages), session, vc, ctx, {
       promptText: visionPromptText,
       readFailReply: '图片读取失败，换个图试试？',
@@ -679,7 +712,8 @@ async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promi
   const hostileEvaluationMessage = createChatPromptHostileEvaluationMessage(isEvaluationRequest, cleanInput, hostile)
   if (hostileEvaluationMessage) messages.push(hostileEvaluationMessage)
 
-  const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered })
+  const imageToolContext = { selectedImageMessageId: imageTurn.targetMessageId || '', quotedImageMessageId: String(session.quote?.messageId || ''), imageTargetSelection: imageTurn.candidateMessageIds ? { candidateMessageIds: imageTurn.candidateMessageIds, selectedMessageId: '' } : undefined, isImageReplyFresh: options.isImageReplyFresh, randomImageExpiresAt: options.randomImageExpiresAt }
+  const chatTools = getChatToolDefinitions({ channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered, ...imageToolContext })
   const fileFollowupState = await buildFileFollowupState(channelKey, cleanInput, { userId: currentUserId })
   const activeFileContext = fileFollowupState.targetFile
     ? {
@@ -687,9 +721,9 @@ async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promi
         activeFileName: fileFollowupState.targetFile.fileName || '',
       }
     : {}
-  messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered }) })
+  messages.push({ role: 'system', content: getChatToolSystemHint(channelKey, { channel: 'qq', userText: cleanInput, randomTriggered: isRandomTriggered, ...imageToolContext }) })
 
-  const reply = await callOpenAI(messages, isRandomTriggered, {}, chatTools) as ChatToolFlowReply
+  const reply = await callTurnModel(asChatToolFlowMessages(messages), isRandomTriggered, {}, chatTools)
   const toolFlowResult = await handleChatToolFlow({
     reply,
     messages: asChatToolFlowMessages(messages),
@@ -698,10 +732,10 @@ async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promi
     session,
     currentUserId,
     channelKey,
-    activeFileContext,
+    activeFileContext: { ...activeFileContext, ...imageToolContext },
     fileFollowupState: fileFollowupState as unknown as Record<string, unknown>,
     chatTools,
-    callModel: callOpenAIForToolFlow,
+    callModel: callTurnModel,
   })
   if (toolFlowResult.heavyToolsRequested) {
     return {
@@ -722,7 +756,7 @@ async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promi
     } else {
       messages.push({ role: 'assistant', content: replyText })
       messages.push({ role: 'user', content: '【系统提示：不要输出工具调用格式，直接用自然语言回答。】' })
-      replyText = await callOpenAIForText(messages, !!options.randomTriggered)
+      replyText = await callTurnText(messages, !!options.randomTriggered)
     }
   }
 
@@ -736,15 +770,23 @@ async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promi
   if (wasVisionRequest && visionContext && isVisionBlindnessReply(replyText)) {
     if (downgradeVisionMessageToText(asVisionMessages(messages), visionContext, '[图片暂时取不到，请按当前文字上下文回复，不要假设你看到了什么图]')) {
       try { ctx.logger('dongxuelian-ai').warn(`vision blindness detected, downgrading. provider=${visionContext.provider} model=${visionContext.model} reply=${replyText.slice(0, 60)}`) } catch { /* non-critical: logger may be unavailable in tests */ }
-      replyText = await callOpenAIForText(messages, !!options.randomTriggered)
+      replyText = await callTurnText(messages, !!options.randomTriggered)
       visionContext = null
     }
+  }
+
+  // 识图证据独立于最终发送决策保存，随机 no_send 或输出门控不能丢掉已付费取得的事实。
+  if (wasVisionRequest && imageTurn.status === 'owned' && visionObjectiveFact) {
+    await syncVisionAnalysisArtifacts(imageTurn.targetChannelKey, imageTurn.targetMessageId, visionObjectiveFact)
+    await imageTurn.complete(visionObjectiveFact)
   }
 
   if (JAILBREAK_OUTPUT_RE.test(replyText)) {
     ctx.logger('dongxuelian-ai').warn(`jailbreak output detected, forcing fallback. reply: ${replyText.slice(0, 80)}`)
     const jailbreakReply = await chatJailbreak(session, cleanInput, ctx, { systemPrompt })
     await saveConversationTurn(session, currentUserMessage, jailbreakReply)
+    // 首次会话的图片占位刚随本轮落盘，补写原目标即可，事实缓存仍只保存一次。
+    if (wasVisionRequest && imageTurn.status === 'owned' && visionObjectiveFact) await replaceImagePlaceholder(imageTurn.targetChannelKey, imageTurn.targetMessageId, visionObjectiveFact).catch(() => false)
     return jailbreakReply
   }
 
@@ -764,15 +806,14 @@ async function executeChatModelStage(input: ExecuteChatModelStageOptions): Promi
     rareConfirmed,
     usedReminderActionTool,
     usedUploadedFileVariantTool,
-    callModel: callOpenAIForText,
+    callModel: callTurnText,
   })
   if (!finalResult.shouldSend) return ''
   const finalReply = finalResult.finalReply
 
   await saveConversationTurn(session, currentUserMessage, finalReply)
-  if (wasVisionRequest && session.messageId && visionObjectiveFact) {
-    await syncVisionAnalysisArtifacts(channelKey, String(session.messageId || ''), visionObjectiveFact)
-  }
+  // no_send 已在前面复用事实；发送轮次保存后只补齐可能新建的原图会话占位。
+  if (wasVisionRequest && imageTurn.status === 'owned' && visionObjectiveFact) await replaceImagePlaceholder(imageTurn.targetChannelKey, imageTurn.targetMessageId, visionObjectiveFact).catch(() => false)
   return finalReply
 }
 

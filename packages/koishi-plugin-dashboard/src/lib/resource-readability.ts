@@ -101,12 +101,12 @@ function countResourceWorkerTasks(workerType: 'agent' | 'daily', tasks: Readable
   }
 }
 
-// 统计媒体处理器三类队列的当前数量。
+// 统计媒体分析与独立原图缓存队列的当前数量。
 function countMediaWorkerTasks(media: ReadableRecord): WorkerCounts {
   const queues = media.queues && typeof media.queues === 'object' && !Array.isArray(media.queues)
     ? media.queues as ReadableRecord
     : {}
-  const kinds = ['image', 'file', 'voice']
+  const kinds = ['image', 'imageCache', 'file', 'voice']
   return kinds.reduce<WorkerCounts>((result, kind) => {
     const queue = queues[kind] && typeof queues[kind] === 'object' && !Array.isArray(queues[kind])
       ? queues[kind] as ReadableRecord
@@ -232,13 +232,13 @@ export function resolveMediaRisk(queueTotal: unknown, queueLimit: unknown): Medi
   return 'queued'
 }
 
-// 为三类媒体队列生成各自风险与整体最严重状态。
+// 为模型分析及原图缓存队列生成各自风险与整体最严重状态。
 export function buildMediaRisk(media: ReadableRecord): ReadableRecord {
   const queues = media.queues && typeof media.queues === 'object' && !Array.isArray(media.queues)
     ? media.queues as ReadableRecord
     : {}
   const mediaRiskByKind: Record<string, MediaRiskCode> = {}
-  for (const kind of ['image', 'file', 'voice']) {
+  for (const kind of ['image', 'imageCache', 'file', 'voice']) {
     const queue = queues[kind] && typeof queues[kind] === 'object' && !Array.isArray(queues[kind])
       ? queues[kind] as ReadableRecord
       : {}

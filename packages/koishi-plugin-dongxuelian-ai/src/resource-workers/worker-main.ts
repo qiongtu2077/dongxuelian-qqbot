@@ -250,7 +250,7 @@ function getWorkerName(type: string, explicit = ''): string {
 function getWorkerBackgroundDirectiveProbe(type: string, workerName: string): BackgroundDirectiveProbe | null {
   if (type === 'media') {
     return {
-      kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS,
+      kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE,
       source: workerName,
       channelKey: 'media',
       userId: '',

@@ -1540,7 +1540,9 @@ async function run(t) {
   ], async (result, mocked, session, calls) => {
     checkSentIncludes(t, 'scenario image follow-up sends evidence based reply', result, '期末复习资料')
     const firstPrompt = JSON.stringify(calls[0]?.requestBody?.messages || [])
-    t.check('scenario short image follow-up prompt exposes recent media anchor', firstPrompt.includes('当前消息很短') && firstPrompt.includes('read_image_history') && firstPrompt.includes('不能编造图片内容'), firstPrompt)
+    // 短句仅提供媒体候选；是否查图由获准回复的模型按语义选择，不能被长度强制触发。
+    t.check('scenario short image follow-up prompt exposes optional image context', firstPrompt.includes('[图片上下文]') && firstPrompt.includes('1张图片记录') && firstPrompt.includes('由当前问题的语义') && firstPrompt.includes('不能仅因附近出现图片或消息较短就读图'), firstPrompt)
+    t.check('scenario short image follow-up forbids claiming unseen image evidence', firstPrompt.includes('没有结果不能声称已看过图片'), firstPrompt)
     t.check('scenario short image follow-up exposes image tools', calls[0]?.requestBody?.tools?.some(item => item.function?.name === 'read_image_history') && calls[0]?.requestBody?.tools?.some(item => item.function?.name === 'analyze_historical_image'), JSON.stringify(calls[0]?.requestBody?.tools || []))
     const toolMessages = calls[1]?.requestBody?.messages?.filter(item => item.role === 'tool') || []
     t.check('scenario short image follow-up reads image history before answering', toolMessages.some(item => String(item.content || '').includes('期末复习资料截图')), JSON.stringify(toolMessages))

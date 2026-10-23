@@ -1725,6 +1725,8 @@ async function runVoice(label, decision, resourceState, botMode, reason) {
 
 async function runChatImage(label, decision, resourceState, botMode, reason) {
   installAdmission(decision, resourceState, botMode, reason)
+  // 聊天现委托共用识图工具；每次重载真实边界，避免沿用上一场景的准入替身。
+  reload('koishi-plugin-dongxuelian-ai/lib/agent/tools/analyze-image')
   const chatTools = reload('koishi-plugin-dongxuelian-ai/lib/chat/chat-tools')
   const channelKey = 'explicit-chat-image-frontdoor'
   const messageId = 'explicit-chat-image-' + label

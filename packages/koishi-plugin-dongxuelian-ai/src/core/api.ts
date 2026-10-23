@@ -14,7 +14,7 @@ const {
   resolveCapabilityRuntimeSteps,
 } = require('./ai-capability-config') as typeof import('./ai-capability-config')
 const { notifyCapabilityStepFailure } = require('./capability-failure-notifier') as typeof import('./capability-failure-notifier')
-const { ModelRequestError: CapabilityUpstreamError, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic } = require('./request-diagnostics') as typeof import('./request-diagnostics')
+const { ModelRequestError: CapabilityUpstreamError, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics') as typeof import('./request-diagnostics')
 const { resolveOneBotWsUrl } = require('./onebot-endpoint') as typeof import('./onebot-endpoint')
 const WebSocket = require('ws') as typeof import('ws')
 const path = require('path')
@@ -47,6 +47,7 @@ interface ApiConfig {
 
 interface RequestExtraBody {
   _purpose?: 'chat' | 'topic_switch' | 'identity_judge'
+  _imageRequest?: { source: 'explicit-image' | 'random-image' | 'history-tool'; target: string; demandId: string }
   reasoning_effort?: 'low' | 'high' | 'max'
   _timeoutMs?: number | string
   _thinkingEnabled?: boolean
@@ -775,6 +776,8 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
   const externalSignal = extraBody.signal && typeof extraBody.signal === 'object' ? extraBody.signal : null
   const requestedTimeout = Number(extraBody._timeoutMs)
   const purpose = extraBody._purpose || (capability === 'vision' ? 'vision' : 'chat')
+  const imageRequest = readImageRequestDiagnostic(extraBody._imageRequest)
+  const imageDiagnostic = imageRequest ? { imageSource: imageRequest.source, imageTarget: imageRequest.target, imageDemandId: imageRequest.demandId } : {}
   const judgment = purpose === 'topic_switch' || purpose === 'identity_judge'
   const deadline = judgment ? Date.now() + 8000 : Infinity
   const requestId = createDiagnosticRequestId()
@@ -823,6 +826,7 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
       })
       const usage = readUsageDetails(response.usage)
       recordModelDiagnostic({ requestId, capability, purpose, provider: attempt.provider || 'unknown', model: attempt.model,
+        ...imageDiagnostic,
         status: 'success', elapsedMs: Date.now() - attemptStartedAt, attempt: attemptNumber, fallback: index > 0,
         finishReason: response.finishReason, contentLength: response.result.type === 'text' ? response.result.content.length : 0,
         reasoningLength: response.result.reasoning.length, maxTokens: diagnosticMaxTokens, usageReadable: response.usageReadable,
@@ -844,6 +848,7 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(failure.details.usage), { capability, model: attempt.model, usage: failure.details.usage, readable })
       const reason = getModelFailureReason(failure)
       recordModelDiagnostic({ requestId, capability, purpose, provider: attempt.provider || 'unknown', model: attempt.model,
+        ...imageDiagnostic,
         status: 'failure', elapsedMs: Date.now() - attemptStartedAt, attempt: attemptNumber, fallback: index > 0,
         code: failure.code, httpStatus: failure.status, reason, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode,
         upstreamRequestId: failure.details.requestId, finishReason: failure.details.finishReason,

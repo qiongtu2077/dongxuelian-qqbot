@@ -21,6 +21,7 @@ declare const RESOURCE_TASK_KIND: {
     readonly MCP_LOCAL_CHECK: "mcp_local_check";
     readonly EXTERNAL_VIDEO_DOWNLOAD: "external_video_download";
     readonly PET_BRIDGE_CHAT: "pet_bridge_chat";
+    readonly MEDIA_IMAGE_CACHE: "media_image_cache";
     readonly MEDIA_IMAGE_ANALYSIS: "media_image_analysis";
     readonly MEDIA_FILE_ANALYSIS: "media_file_analysis";
     readonly MEDIA_VOICE_TRANSCRIPTION: "media_voice_transcription";

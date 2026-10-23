@@ -22,6 +22,7 @@ const RESOURCE_TASK_KIND = {
     MCP_LOCAL_CHECK: 'mcp_local_check',
     EXTERNAL_VIDEO_DOWNLOAD: 'external_video_download',
     PET_BRIDGE_CHAT: 'pet_bridge_chat',
+    MEDIA_IMAGE_CACHE: 'media_image_cache',
     MEDIA_IMAGE_ANALYSIS: 'media_image_analysis',
     MEDIA_FILE_ANALYSIS: 'media_file_analysis',
     MEDIA_VOICE_TRANSCRIPTION: 'media_voice_transcription',
@@ -29,6 +30,7 @@ const RESOURCE_TASK_KIND = {
     NORMAL_CHAT: 'normal_chat',
 };
 const MEDIA_TASK_KINDS = new Set([
+    RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE,
     RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS,
     RESOURCE_TASK_KIND.MEDIA_FILE_ANALYSIS,
     RESOURCE_TASK_KIND.MEDIA_VOICE_TRANSCRIPTION,
@@ -46,33 +48,47 @@ const BACKGROUND_LLM_TASK_KINDS = new Set([
     RESOURCE_TASK_KIND.CONVERSATION_SUMMARY,
     RESOURCE_TASK_KIND.SENSITIVE_CACHE_ANALYSIS,
 ]);
+// 将外部 kind 收敛为共享分类使用的字符串。
 function normalizeResourceTaskKind(kind) {
     return String(kind || '');
 }
+// 状态查询属于低成本资源入口。
 function isStatusQueryKind(kind) {
     return normalizeResourceTaskKind(kind) === RESOURCE_TASK_KIND.STATUS_QUERY;
 }
+// 识别前台普通聊天任务。
 function isNormalChatKind(kind) {
     return normalizeResourceTaskKind(kind) === RESOURCE_TASK_KIND.NORMAL_CHAT;
 }
+// 仅识别需要模型的图片分析，不包含原图缓存。
 function isImageMediaTaskKind(kind) {
     return normalizeResourceTaskKind(kind) === RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS;
 }
+// 识别仅下载原图的任务，与需要模型的图片分析分开。
+function isImageCacheTaskKind(kind) {
+    return normalizeResourceTaskKind(kind) === RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE;
+}
+// 识别文件分析任务。
 function isFileMediaTaskKind(kind) {
     return normalizeResourceTaskKind(kind) === RESOURCE_TASK_KIND.MEDIA_FILE_ANALYSIS;
 }
+// 识别语音转写任务。
 function isVoiceMediaTaskKind(kind) {
     return normalizeResourceTaskKind(kind) === RESOURCE_TASK_KIND.MEDIA_VOICE_TRANSCRIPTION;
 }
+// 识别共享媒体队列任务，供资源保护统一准入。
 function isMediaTaskKind(kind) {
     return MEDIA_TASK_KINDS.has(normalizeResourceTaskKind(kind));
 }
+// 识别需要浏览器进程的资源任务。
 function isChromiumTaskKind(kind) {
     return CHROMIUM_TASK_KINDS.has(normalizeResourceTaskKind(kind));
 }
+// 识别日报及其渲染任务。
 function isDailyReportKind(kind) {
     return DAILY_REPORT_KINDS.has(normalizeResourceTaskKind(kind));
 }
+// 识别常规后台模型任务。
 function isBackgroundLlmTaskKind(kind) {
     return BACKGROUND_LLM_TASK_KINDS.has(normalizeResourceTaskKind(kind));
 }
@@ -80,6 +96,7 @@ function isBackgroundLlmTaskKind(kind) {
 function isFixedReportExecutionKind(kind) {
     return kind === RESOURCE_TASK_KIND.DAILY_REPORT || kind === RESOURCE_TASK_KIND.DAILY_REPORT_PREANALYSIS;
 }
+// 后台媒体与模型工作需让出前台工具活动窗口。
 function shouldYieldToToolActiveKind(kind) {
     const normalized = normalizeResourceTaskKind(kind);
     return normalized === RESOURCE_TASK_KIND.DAILY_SUMMARY
@@ -92,6 +109,7 @@ module.exports = {
     isStatusQueryKind,
     isNormalChatKind,
     isImageMediaTaskKind,
+    isImageCacheTaskKind,
     isFileMediaTaskKind,
     isVoiceMediaTaskKind,
     isMediaTaskKind,

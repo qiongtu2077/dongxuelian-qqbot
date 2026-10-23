@@ -67,12 +67,12 @@ function countResourceWorkerTasks(workerType, tasks) {
         runningCount: owned.filter(task => String(task.status || '') === 'running').length,
     };
 }
-// 统计媒体处理器三类队列的当前数量。
+// 统计媒体分析与独立原图缓存队列的当前数量。
 function countMediaWorkerTasks(media) {
     const queues = media.queues && typeof media.queues === 'object' && !Array.isArray(media.queues)
         ? media.queues
         : {};
-    const kinds = ['image', 'file', 'voice'];
+    const kinds = ['image', 'imageCache', 'file', 'voice'];
     return kinds.reduce((result, kind) => {
         const queue = queues[kind] && typeof queues[kind] === 'object' && !Array.isArray(queues[kind])
             ? queues[kind]
@@ -181,13 +181,13 @@ function resolveMediaRisk(queueTotal, queueLimit) {
         return 'near_limit';
     return 'queued';
 }
-// 为三类媒体队列生成各自风险与整体最严重状态。
+// 为模型分析及原图缓存队列生成各自风险与整体最严重状态。
 function buildMediaRisk(media) {
     const queues = media.queues && typeof media.queues === 'object' && !Array.isArray(media.queues)
         ? media.queues
         : {};
     const mediaRiskByKind = {};
-    for (const kind of ['image', 'file', 'voice']) {
+    for (const kind of ['image', 'imageCache', 'file', 'voice']) {
         const queue = queues[kind] && typeof queues[kind] === 'object' && !Array.isArray(queues[kind])
             ? queues[kind]
             : {};

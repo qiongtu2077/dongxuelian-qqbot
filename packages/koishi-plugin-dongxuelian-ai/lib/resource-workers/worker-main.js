@@ -171,7 +171,7 @@ function getWorkerName(type, explicit = '') {
 function getWorkerBackgroundDirectiveProbe(type, workerName) {
     if (type === 'media') {
         return {
-            kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_ANALYSIS,
+            kind: RESOURCE_TASK_KIND.MEDIA_IMAGE_CACHE,
             source: workerName,
             channelKey: 'media',
             userId: '',

@@ -38,7 +38,7 @@ const WORKER_ZOMBIE_STAGNATION_MS = 15 * 60 * 1000
 const WORKER_HEARTBEAT_FRESH_MS = 10000
 const DAILY_WORKER_KINDS = ['daily_report', 'daily_summary', 'emotion_render']
 const AGENT_WORKER_KINDS = ['agent_task', 'dashboard_agent', 'agent_memory', 'agent_memory_compaction', 'conversation_summary', 'sensitive_cache_analysis']
-const MEDIA_WORKER_KINDS = ['media_image_analysis', 'media_file_analysis', 'media_voice_transcription']
+const MEDIA_WORKER_KINDS = ['media_image_analysis', 'media_image_cache', 'media_file_analysis', 'media_voice_transcription']
 
 const BOT_MODE_DISPLAY: Record<string, ReadableStatusDisplay> = {
   normal: { label: '正常', detail: '可正常响应消息。', level: 'ok' },
@@ -66,6 +66,7 @@ const TASK_KIND_LABELS: Record<string, string> = {
   daily_summary: '日报预计算任务',
   emotion_render: '情绪图片生成任务',
   media_image_analysis: '图片分析任务',
+  media_image_cache: '原图缓存任务',
   media_file_analysis: '文件分析任务',
   media_voice_transcription: '语音转写任务',
   external_video_download: '视频下载任务',
@@ -92,6 +93,7 @@ const TASK_CONTENT_LABELS: Record<string, string> = {
   daily_summary: '预计算日报摘要',
   emotion_render: '生成情绪图片',
   media_image_analysis: '分析图片内容',
+  media_image_cache: '下载并缓存原图',
   media_file_analysis: '分析文件内容',
   media_voice_transcription: '将语音转为文字',
   external_video_download: '下载 B 站视频',
@@ -107,6 +109,7 @@ const TASK_STEP_LABELS: Record<string, string> = {
   video_download: '下载视频',
   video_send: '发送视频',
   analyzing_media: '分析媒体内容',
+  caching_image: '缓存图片原图',
 }
 
 const TASK_REASON_LABELS: Record<string, string> = {
@@ -141,12 +144,13 @@ const RESOURCE_EVENT_LABELS: Record<string, string> = {
   daily_final_input_written: '日报汇总输入已保存', daily_slot_retry_restored: '日报分段重试已恢复',
   daily_slot_tasks_planned: '日报预计算任务已安排', daily_slot_written: '日报预计算分段已保存',
   deferred_tasks_audited: '暂缓任务检查完成',
-  media_task_created: '媒体分析任务已创建', media_task_claimed: '媒体分析任务已领取',
-  media_task_requeued: '媒体分析任务重新排队', media_task_done: '媒体分析任务已完成',
-  media_task_failed: '媒体分析任务失败', media_task_expired: '媒体分析任务已过期',
-  media_task_dropped: '媒体分析任务已舍弃', media_task_deduped: '重复媒体任务已合并',
-  media_task_discarded_on_startup: '重启时已结束旧媒体任务', media_task_timed_out: '媒体分析任务运行超时',
-  media_cache_reused: '已复用媒体分析缓存', media_retention_completed: '媒体历史记录整理完成',
+  media_task_created: '媒体处理任务已创建', media_task_claimed: '媒体处理任务已领取',
+  media_task_requeued: '媒体处理任务重新排队', media_task_done: '媒体处理任务已完成',
+  media_task_failed: '媒体处理任务失败', media_task_expired: '媒体处理任务已过期',
+  media_task_dropped: '媒体处理任务已舍弃', media_task_deduped: '重复媒体任务已合并',
+  media_task_discarded_on_startup: '重启时已结束旧媒体任务', media_task_timed_out: '媒体处理任务运行超时',
+  media_cache_reused: '已复用媒体缓存', media_retention_completed: '媒体历史记录整理完成',
+  image_cache_completed: '原图缓存任务已结束', image_ingest_ambiguous: '多图目标待明确',
   process_tree_terminated: '任务进程已清理', process_metrics: '进程资源用量已采样',
   process_cleanup: '任务进程清理完成', process_tree_not_running: '任务进程已经退出',
   process_tree_terminate_skipped: '任务进程清理已跳过', recorded_process_cleanup_skipped: '记录的子进程清理已跳过',
@@ -162,12 +166,13 @@ const RESOURCE_SOURCE_LABELS: Record<string, string> = {
 
 const WORKER_NAMES: Record<string, string> = {
   agent: '智能助手后台处理器',
-  media: '媒体分析处理器',
+  media: '媒体处理器',
   daily: '日报处理器',
 }
 
 const MEDIA_KIND_NAMES: Record<string, string> = {
   image: '图片',
+  imageCache: '原图缓存',
   file: '文件',
   voice: '语音',
 }
@@ -502,7 +507,7 @@ export function workerTaskKinds(worker: JsonRecord): string[] {
 // Counts pending work attributable to one worker.
 export function workerBacklogCount(worker: JsonRecord, state: ResourceWorkerState): number {
   if (workerKind(worker) === 'media') {
-    return numberValue(state.media.imagePending) + numberValue(state.media.filePending) + numberValue(state.media.voicePending)
+    return numberValue(state.media.imagePending) + numberValue(state.media.imageCachePending) + numberValue(state.media.filePending) + numberValue(state.media.voicePending)
   }
   const kinds = new Set(workerTaskKinds(worker))
   if (!kinds.size) return numberValue(state.status.queueLength)

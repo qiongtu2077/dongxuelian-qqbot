@@ -182,7 +182,7 @@ function getWorkerBacklogCount(type) {
     if (normalized === 'media') {
         const media = require('../media/backpressure/media-queue');
         const status = media.getMediaBackpressureStatus();
-        return Number(status.imagePending || 0) + Number(status.filePending || 0) + Number(status.voicePending || 0);
+        return Number(status.imagePending || 0) + Number(status.imageCachePending || 0) + Number(status.filePending || 0) + Number(status.voicePending || 0);
     }
     return countPendingTasksForKinds(getWorkerKinds(normalized));
 }

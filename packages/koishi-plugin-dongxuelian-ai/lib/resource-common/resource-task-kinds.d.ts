@@ -7,6 +7,7 @@ declare function normalizeResourceTaskKind(kind: unknown): string;
 declare function isStatusQueryKind(kind: unknown): boolean;
 declare function isNormalChatKind(kind: unknown): boolean;
 declare function isImageMediaTaskKind(kind: unknown): boolean;
+declare function isImageCacheTaskKind(kind: unknown): boolean;
 declare function isFileMediaTaskKind(kind: unknown): boolean;
 declare function isVoiceMediaTaskKind(kind: unknown): boolean;
 declare function isMediaTaskKind(kind: unknown): boolean;
@@ -34,6 +35,7 @@ declare const _default: {
         readonly MCP_LOCAL_CHECK: "mcp_local_check";
         readonly EXTERNAL_VIDEO_DOWNLOAD: "external_video_download";
         readonly PET_BRIDGE_CHAT: "pet_bridge_chat";
+        readonly MEDIA_IMAGE_CACHE: "media_image_cache";
         readonly MEDIA_IMAGE_ANALYSIS: "media_image_analysis";
         readonly MEDIA_FILE_ANALYSIS: "media_file_analysis";
         readonly MEDIA_VOICE_TRANSCRIPTION: "media_voice_transcription";
@@ -44,6 +46,7 @@ declare const _default: {
     isStatusQueryKind: typeof isStatusQueryKind;
     isNormalChatKind: typeof isNormalChatKind;
     isImageMediaTaskKind: typeof isImageMediaTaskKind;
+    isImageCacheTaskKind: typeof isImageCacheTaskKind;
     isFileMediaTaskKind: typeof isFileMediaTaskKind;
     isVoiceMediaTaskKind: typeof isVoiceMediaTaskKind;
     isMediaTaskKind: typeof isMediaTaskKind;

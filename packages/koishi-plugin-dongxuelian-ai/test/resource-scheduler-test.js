@@ -228,6 +228,7 @@ function testRegisteredBudgetsAndDirectOverrides() {
     mcp_local_check: 600,
     external_video_download: 300,
     pet_bridge_chat: 600,
+    media_image_cache: 300,
     media_image_analysis: 400,
     media_file_analysis: 400,
     media_voice_transcription: 400,

@@ -11,6 +11,7 @@ interface StartupSchedulerContext {
 declare function getNextShanghaiMidnightDelayMs(now?: number): number;
 declare function scheduleDailyStatsCleanup(ctx: StartupSchedulerContext): void;
 declare function getNextShanghaiNoonDelayMs(now?: number): number;
+declare function scheduleImageStorageCleanup(ctx: StartupSchedulerContext): void;
 declare function scheduleReportSourceCleanup(ctx: StartupSchedulerContext): void;
 declare function runDailyPrecomputePlanningTick(ctx: StartupSchedulerContext): Promise<{
     parked: boolean;
@@ -25,6 +26,7 @@ declare const _default: {
     scheduleDailyStatsCleanup: typeof scheduleDailyStatsCleanup;
     getNextShanghaiNoonDelayMs: typeof getNextShanghaiNoonDelayMs;
     scheduleReportSourceCleanup: typeof scheduleReportSourceCleanup;
+    scheduleImageStorageCleanup: typeof scheduleImageStorageCleanup;
     runDailyPrecomputePlanningTick: typeof runDailyPrecomputePlanningTick;
     scheduleDailyPrecomputePlanning: typeof scheduleDailyPrecomputePlanning;
     clearStartupSchedulers: typeof clearStartupSchedulers;
