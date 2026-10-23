@@ -206,7 +206,9 @@ function checkTopicCardInputProjection() {
     evidence: [after.candidates[0].contextRefs[0]] }] } }), context), /REF_UNKNOWN/)
 }
 
-// 容器错层仅恢复真实且不重名的父，精确空的额外数字父只留告警。
+// ---------------- 容器与父候选恢复 ---------------- //
+
+// 真实父错层和来源唯一的别名带告警恢复，重名及未知非空内容不能丢弃。
 function checkCardContainerTolerance() {
   const { snapshot, candidates } = topicFixture(), context = topics.createTopicCardContext(snapshot, candidates)
   const values = Object.fromEntries([...context.candidates].map(([ref, candidate]) => {
@@ -230,7 +232,11 @@ function checkCardContainerTolerance() {
   assert.deepEqual(moved.slice(1).map(card => card.formatWarnings), [[{ code: 'misplaced_parent_container', parentRef: 'c2' }],
     [{ code: 'misplaced_parent_container', parentRef: 'c3' }]])
   assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: values, c2: values.c2 }), context), /FIELD_DUPLICATE/)
-  for (const value of [values.c1, [{ refs: [], status: 'insufficient', scope: '', evidence: [] }], {}, null]) {
+  const aliased = topics.readTopicCards(JSON.stringify({ cards: { ...values, c13: values.c1 } }), context)
+  assert.deepEqual(aliased.map(card => card.parentId), [candidates[0].id, ...candidates.map(candidate => candidate.id)])
+  assert.deepEqual(aliased[0].formatWarnings, [{ code: 'restored_parent_alias', parentRef: 'c1', aliasRef: 'c13' }])
+  assert.deepEqual(aliased[1].candidate.fragments, candidates[0].fragments)
+  for (const value of [[{ refs: [], status: 'insufficient', scope: '', evidence: [] }], {}, null]) {
     assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: { ...values, c13: value } }), context), /REF_UNKNOWN/)
   }
   for (const value of [{ cards: { ...values, c0: [] } }, { cards: values, c13: [] }, { c1: values.c1, c2: values.c2, c3: values.c3 },
@@ -239,6 +245,93 @@ function checkCardContainerTolerance() {
   assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: { c13: [] } }), context), error => error instanceof topics.TopicCardCoverageError && error.missing.length === 3)
   assert.throws(() => topics.readTopicCards('{"cards":{},"c1":[],"c1":[]}', context), /FIELD_DUPLICATE/)
 }
+
+// 真实故障中的标点空根字段只允许精确空数组，非空内容及重复键不能静默舍弃。
+function checkEmptyCardRootFields() {
+  const { snapshot, candidates } = topicFixture(), context = topics.createTopicCardContext(snapshot, candidates)
+  const values = { c1: [{ refs: ['r1', 'r2'], status: 'ok', scope: '安装讨论', evidence: ['r1'] }],
+    c2: [{ refs: ['r3'], status: 'ok', scope: '出行讨论', evidence: ['r3'] }],
+    c3: [{ refs: ['r4'], status: 'insufficient', scope: '', evidence: [] }] }
+  const plain = topics.readTopicCards(JSON.stringify({ cards: values }), context)
+  for (const field of [':,', ':,,']) {
+    const result = topics.readTopicCards(JSON.stringify({ cards: values, [field]: [] }), context)
+    assert.deepEqual(result[0].formatWarnings, [{ code: 'ignored_empty_root_field', field }])
+    assert.deepEqual(result.map(card => card.candidate), plain.map(card => card.candidate))
+    for (const value of [null, {}, '', 0, false, [values.c1[0]], ['未识别的非空内容']]) {
+      assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: values, [field]: value }), context), /FIELD_TYPE/)
+    }
+  }
+  const moved = topics.readTopicCards(JSON.stringify({ cards: { c1: values.c1 }, c2: values.c2, c3: values.c3, ':,': [], ':,,': [] }), context)
+  assert.deepEqual(moved[0].formatWarnings, [{ code: 'ignored_empty_root_field', field: ':,' }, { code: 'ignored_empty_root_field', field: ':,,' }])
+  assert.deepEqual(moved.slice(1).map(card => card.formatWarnings), [[{ code: 'misplaced_parent_container', parentRef: 'c2' }],
+    [{ code: 'misplaced_parent_container', parentRef: 'c3' }]])
+  assert.deepEqual(moved.map(card => card.candidate), plain.map(card => card.candidate))
+  assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: values, unknown: [] }), context), /FIELD_TYPE/)
+  assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: values, ':,': [] }).replace('":,":[]', '":,":[],":,":[]'), context), /FIELD_DUPLICATE/)
+}
+
+// 别名父只依据每张子卡的唯一来源归属追加，编号文本不赋予身份且所有子卡须归于同一父。
+function checkCardParentAliasRestoration() {
+  const { snapshot, candidates } = topicFixture(), context = topics.createTopicCardContext(snapshot, candidates)
+  const child = refs => ({ refs, status: 'ok', scope: '具体问题', evidence: [refs[0]] })
+  const values = { c1: [child(['r1'])], c2: [child(['r3'])], c3: [child(['r4'])] }
+  const read = (cards, current = context) => topics.readTopicCards(JSON.stringify({ cards }), current)
+  for (const aliasRef of ['c6b', 'c13', 'c9_shared', 'c2b']) {
+    const result = read({ ...values, [aliasRef]: [child(['r2'])] })
+    assert.deepEqual(result.map(card => card.parentId), [candidates[0].id, ...candidates.map(candidate => candidate.id)])
+    assert.deepEqual(result.map(card => card.candidate.fragments), snapshot.fragments.map(fragment => [fragment]))
+    assert.deepEqual(result[0].formatWarnings, [{ code: 'restored_parent_alias', parentRef: 'c1', aliasRef }])
+    assert.equal(result[1].formatWarnings, undefined)
+  }
+  const full = { ...values, c1: [child(['r1', 'r2'])] }
+  const emptyAliases = ['c6b', 'c13', 'c9_shared'], empty = read({ ...full, ...Object.fromEntries(emptyAliases.map(ref => [ref, []])) })
+  assert.deepEqual(empty[0].formatWarnings, emptyAliases.map(parentRef => ({ code: 'ignored_empty_unknown_parent', parentRef })))
+  assert.deepEqual(empty.map(card => card.candidate.fragments), candidates.map(candidate => candidate.fragments))
+  const multiple = read({ ...values, c13: [child(['r1']), child(['r2'])] })
+  assert.equal(multiple.length, 5); assert(multiple.slice(0, 3).every(card => card.parentId === candidates[0].id))
+  assert.deepEqual(multiple[0].formatWarnings, [{ code: 'restored_parent_alias', parentRef: 'c1', aliasRef: 'c13' }])
+  for (const aliasRef of ['c0', 'c01', 'c1000000', 'c1bb', 'c1_Shared', 'unrecognized']) {
+    assert.throws(() => read({ ...full, [aliasRef]: [] }), /REF_UNKNOWN/)
+    assert.throws(() => read({ ...values, [aliasRef]: [child(['r2'])] }), /REF_UNKNOWN/)
+  }
+  // 每项都必须保留原来的字段、引用、证据和容量校验，不能借别名恢复跳过。
+  for (const alias of [[child(['r1']), child(['r3'])], [child(['r1', 'r3'])], [child(['r999'])],
+    [child(['r2', 'r2'])], [{ refs: [], status: 'insufficient', scope: '', evidence: [] }]]) {
+    assert.throws(() => read({ ...values, c13: alias }), error => !(error instanceof topics.TopicCardCoverageError))
+  }
+  assert.throws(() => read({ ...values, c13: [{ ...child(['r2']), summary: '未经约定的字段' }] }), /FIELD_TYPE/)
+  assert.throws(() => read({ ...values, c13: [{ ...child(['r2']), evidence: ['r3'] }] }), /不属于该候选/)
+  assert.throws(() => read({ ...values, c13: [child(['r2'])] }, { ...context, cardLimit: 3 }), /容量/)
+  for (const c1 of [undefined, [], {}]) {
+    const cards = { ...values, c13: [child(['r1', 'r2'])] }
+    if (c1 === undefined) delete cards.c1
+    else cards.c1 = c1
+    assert.throws(() => read(cards), error => !(error instanceof topics.TopicCardCoverageError))
+  }
+  assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: full, c13: [child(['r2'])] }), context), /FIELD_TYPE/)
+  assert.throws(() => topics.readTopicCards(JSON.stringify({ cards: { ...values, c13: [child(['r2'])] } })
+    .replace('"c13":', '"c13":[],"c13":'), context), /FIELD_DUPLICATE/)
+}
+
+// 共享原文不能单独证明归属；逐卡消歧不能被其他子卡或整个别名并集掩盖。
+function checkCardParentAliasAmbiguity() {
+  const snapshot = evidence.createReportEvidence([{ userId: 'a', content: '两个范围共用的原文' },
+    { userId: 'b', content: '第一个范围独有的原文' }, { userId: 'c', content: '第二个范围独有的原文' }])
+  const candidates = [{ id: 'first', fragments: snapshot.fragments.slice(0, 2) },
+    { id: 'second', fragments: [snapshot.fragments[0], snapshot.fragments[2]] }]
+  const context = topics.createTopicCardContext(snapshot, candidates)
+  const child = refs => ({ refs, status: 'ok', scope: '具体讨论', evidence: [refs[0]] })
+  const values = { c1: [child(['r1', 'r2'])], c2: [child(['r1', 'r3'])] }
+  const read = alias => topics.readTopicCards(JSON.stringify({ cards: { ...values, c1b: alias } }), context)
+  for (const alias of [[child(['r1'])], [child(['r1']), child(['r2'])], [child(['r2']), child(['r3'])]]) {
+    assert.throws(() => read(alias), /REF_UNKNOWN/)
+  }
+  const unique = read([child(['r1', 'r2'])])
+  assert.deepEqual(unique.map(card => card.parentId), ['first', 'first', 'second'])
+  assert.deepEqual(unique[0].formatWarnings, [{ code: 'restored_parent_alias', parentRef: 'c1', aliasRef: 'c1b' }])
+}
+
+// ---------------- 来源、证据与覆盖校验 ---------------- //
 
 // 新卡片来源必须逐字且属于自身，合法缺失只补原候选，不修改首轮证据。
 function checkTopicCards() {
@@ -419,7 +512,10 @@ function checkSplitTopicCards() {
     assert(!error.message.includes('酒神的强度评价'))
     return /REF_UNCOVERED/.test(error.message)
   })
-  assert.throws(() => topics.readTopicCards(response({ c1: [first], c1b: [second] }), context), /REF_UNKNOWN/)
+  const alias = topics.readTopicCards(response({ c1: [first], c1b: [second], c2: [other] }), context)
+  assert.deepEqual(alias.map(card => card.candidate.fragments), cards.map(card => card.candidate.fragments))
+  assert.deepEqual(alias[0].formatWarnings, [{ code: 'restored_parent_alias', parentRef: 'c1', aliasRef: 'c1b' }])
+  assert.throws(() => topics.readTopicCards(response({ c1: [first], c1b: [segment(['r3'], '共享来源', 'r3')], c2: [other] }), context), /REF_UNKNOWN/)
   assert.throws(() => topics.readTopicCards(response({ c1: [first], c2: [{ ...other, summary: '非法额外字段' }] }), context), /FIELD_TYPE/)
 }
 
@@ -560,7 +656,10 @@ function runReportTopicTests(check) {
     ['概述去作者代号但保留真实本人和原文绑定，按实际提供引用检查', checkOverviewAuthorProjection],
     ['卡片去生成名称而保留原文、作者、永久绑定及恢复作用域', checkTopicCardInputProjection],
     ['全文材料卡原文所有权、合法缺漏及非法优先', checkTopicCards], ['来源子卡并集、共享、父关联及有界补父恢复', checkSplitTopicCards],
-    ['已知父容器错层及空额外父带告警，重名／未知非空／越权仍失败', checkCardContainerTolerance],
+    ['已知父容器错层及来源唯一别名带告警，重名和越权仍失败', checkCardContainerTolerance],
+    ['标点空根字段有界忽略且非空内容和重复键拒绝', checkEmptyCardRootFields],
+    ['别名父逐卡来源唯一且同父时恢复，未知引用和坏字段仍拒绝', checkCardParentAliasRestoration],
+    ['共享来源逐卡消歧，不能用别名并集掩盖归属歧义', checkCardParentAliasAmbiguity],
     ['多证据逐条来源、有界摘录和明确格式告警，越权与改写仍失败', checkMultipleCardEvidence],
     ['精确空不足子卡带告警忽略，原索引与完整父覆盖及恢复保留', checkEmptyInsufficientCards],
     ['漏核心父原子重制、合法父保留、容量及非法整批拒绝', checkIncompleteParentRepair],

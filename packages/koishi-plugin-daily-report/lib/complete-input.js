@@ -181,7 +181,7 @@ function assertExchangeRef(value, allowed, path) {
     if (typeof value !== 'string')
         throw new Error(`[FIELD_TYPE] ${path}必须是字符串引用，实际类型${typeof value}`);
     if (!allowed.has(value)) {
-        const invalid = /^[rqpm]\d{1,6}$/.test(value) ? value : '非引用格式字符串';
+        const invalid = /^[rcqpm]\d{1,6}$/.test(value) ? value : '非引用格式字符串';
         throw new Error(`[REF_UNKNOWN] ${path}未知引用${invalid}；允许${[...allowed.keys()].join(',') || '空集合'}`);
     }
     return value;

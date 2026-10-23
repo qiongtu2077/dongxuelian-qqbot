@@ -236,7 +236,7 @@ async function reportTopics(state: RunState, candidates: readonly ReportCandidat
       error => createTopicCardRepair(error, context), serializeTopicCards,
       { bindings: state.options.stageCache ? bindTopicStageRequest(state.snapshot, context, fragments) : undefined,
         requireNormalFinish: true,
-        recoveryInstructions: '整批重新返回一个完整JSON对象，根字段只能有cards，不返回completed。闭合cards容器后闭合根对象；不使用旧JSONL或end记录。' })
+        recoveryInstructions: '整批重新返回一个完整JSON对象，根字段只能有cards，不返回completed或空标点字段。cards的键必须恰好是requiredCandidateRefs；拆卡只在原父数组内增加对象，不创建新父编号或带后缀编号。闭合cards容器后闭合根对象；不使用旧JSONL或end记录。' })
   })
   const cards = results.flat()
   const unassignedCount = new Set(cards.flatMap(card => (card.unassignedFragments || []).map(fragment => fragment.id))).size

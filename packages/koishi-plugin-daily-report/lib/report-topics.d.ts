@@ -71,6 +71,13 @@ export interface TopicCard {
         code: 'ignored_root_marker';
         marker: 'cards';
     } | {
+        code: 'ignored_empty_root_field';
+        field: string;
+    } | {
+        code: 'restored_parent_alias';
+        parentRef: string;
+        aliasRef: string;
+    } | {
         code: 'ignored_empty_unknown_parent' | 'misplaced_parent_container';
         parentRef: string;
     }>;
