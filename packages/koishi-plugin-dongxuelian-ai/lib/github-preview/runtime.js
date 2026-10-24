@@ -7,6 +7,7 @@ const settings_1 = require("./settings");
 const path = require("path");
 const input_1 = require("./input");
 const repositories_1 = require("./repositories");
+const themes_1 = require("./themes");
 const client_1 = require("./client");
 const issue_renderer_1 = require("./issue-renderer");
 const pull_card_1 = require("./pull-card");
@@ -47,7 +48,8 @@ async function acquireGithubResources(context, group) {
 }
 class GithubPreviewRuntime {
     // Own one bounded preview queue; dependencies are explicit for offline behavior tests.
-    constructor(settings = new settings_1.GithubPreviewSettings(), dependencies = {}, repositories = new repositories_1.GithubGroupRepositories(path.dirname(settings.file))) {
+    constructor(settings = new settings_1.GithubPreviewSettings(), dependencies = {}, repositories = new repositories_1.GithubGroupRepositories(path.dirname(settings.file)), themes = new themes_1.GithubPreviewThemes(path.dirname(settings.file))) {
+        this.themes = themes;
         this.queue = [];
         this.pumping = false;
         this.disposed = false;
@@ -58,7 +60,7 @@ class GithubPreviewRuntime {
         this.settings = settings;
         this.repositories = repositories;
         const client = new client_1.GithubPreviewClient();
-        this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: issue_renderer_1.renderGithubIssue, renderPull: pull_card_1.renderGithubPullCard, render: renderer_1.renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies };
+        this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: issue_renderer_1.renderGithubIssue, renderPull: (metadata, context, theme) => (0, pull_card_1.renderGithubPullCard)(metadata, context, theme), render: renderer_1.renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies };
         this.unsubscribe = settings.onRemoved(group => this.cancelGroup(group));
         this.unsubscribeRepositories = repositories.onChanged(group => this.cancelGroup(group));
     }
@@ -85,6 +87,8 @@ class GithubPreviewRuntime {
             return !session.isDirect && session.guildId ? `本群 GitHub 查询：${this.settings.enabled(session.guildId) ? '开启' : '关闭'}` : '请在群中查看 GitHub 查询状态。';
         if (!hasAdminPermission(session))
             return '只有指定管理员能操作这个命令。';
+        if (/^GitHub群主题/i.test(plain))
+            return (0, themes_1.handleGithubThemeCommand)(session.guildId, session.isDirect, plain, this.themes);
         if (/^GitHub群项目/i.test(plain))
             return (0, repositories_1.handleGithubRepositoryCommand)(session.guildId, session.isDirect, plain, this.repositories, this.deps.lookup, this.lifetime.signal);
         if (/^GitHub查询群查看$/i.test(plain)) {
@@ -239,7 +243,8 @@ class GithubPreviewRuntime {
                     await this.deliver(job, '剩余链接未处理：本次查询已到处理时限。', context);
                     break;
                 }
-                const cacheKey = target.key + (target.kind === 'pull' ? ':pull-compare-v1:' : ['issue'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + models_1.GITHUB_LIMITS.padding;
+                const theme = this.themes.theme(job.group);
+                const cacheKey = target.key + (target.kind === 'pull' ? `:pull-compare-v1:${theme}:` : ['issue'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + models_1.GITHUB_LIMITS.padding;
                 const cached = this.images.get(cacheKey);
                 let metadata, result, note = '', text = '';
                 if (cached && Date.now() - cached.result.capturedAt < models_1.GITHUB_LIMITS.cacheMs) {
@@ -259,7 +264,7 @@ class GithubPreviewRuntime {
                         if (!release)
                             release = await this.deps.acquire(work, job.group);
                         (0, models_1.assertGithubWork)(work);
-                        result = metadata.target.kind === 'pull' ? await this.deps.renderPull(metadata, work) : metadata.target.kind === 'issue' ? await this.deps.screenshot(metadata, work) : await this.deps.render(metadata, work);
+                        result = metadata.target.kind === 'pull' ? await this.deps.renderPull(metadata, work, theme) : metadata.target.kind === 'issue' ? await this.deps.screenshot(metadata, work) : await this.deps.render(metadata, work);
                         (0, models_1.assertGithubWork)(work);
                         this.cacheImage(cacheKey, { result, metadata, bytes: result.images.reduce((sum, image) => sum + image.length, 0) });
                         if (result.incomplete)

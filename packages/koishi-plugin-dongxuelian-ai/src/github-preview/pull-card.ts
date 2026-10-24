@@ -1,9 +1,9 @@
 /**
  * MODULE: GitHub PR 前后风格对比卡片。
- * 职责: 离线渲染「前风格工业风卡片」与「后风格看板详情卡片」，同一条消息按序发出两张图。
+ * 职责: 离线渲染「前风格工业风卡片」与「后风格看板详情卡片」（明暗双主题），同一条消息按序发出两张图。
  * 边界: 不打开官网、不调用模型；调用方拥有全局资源门卫与官方字段合同。
  */
-import type { GithubMetadata, GithubImageResult, GithubWorkContext, GithubCheckRun } from './models'
+import type { GithubMetadata, GithubImageResult, GithubWorkContext, GithubCheckRun, GithubPullTheme } from './models'
 import { GITHUB_LIMITS, assertGithubWork } from './models'
 import { escapeGithubText as esc, loadGithubAvatar, splitGithubImage } from './renderer'
 import { prepareGithubBody } from './body-content'
@@ -13,8 +13,30 @@ const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/h
 }
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
 
-// --- 固定模板（看板详情暗色令牌） --- //
+// --- 固定模板（看板详情两套皮肤令牌） --- //
 const REVIEW_TEXT: Record<string, string> = { APPROVED: '✅ 已批准', CHANGES_REQUESTED: '⛔ 要求修改', COMMENTED: '💬 评论', DISMISSED: '已撤销', PENDING: '待提交' }
+interface GithubPullTokens {
+  page: string; root: string; tile: string; border: string; text: string; muted: string; accent: string; green: string; amber: string; red: string; purple: string
+  code: string; quote: string; quoteText: string; chipText: string
+  openBg: string; openBorder: string; mergedBg: string; mergedBorder: string; closedBg: string; closedBorder: string; draftBg: string; draftBorder: string
+  noteBg: string; noteBorder: string; noteText: string
+}
+const GITHUB_PULL_THEMES: Record<GithubPullTheme, GithubPullTokens> = {
+  dark: {
+    page: '#ffffff', root: '#171a21', tile: '#1e2330', border: '#2a3142', text: '#e8eaed', muted: '#9aa3b2', accent: '#6ea8fe', green: '#3dd68c', amber: '#f5c542', red: '#f07178', purple: '#c792ea',
+    code: '#10131a', quote: '#1e2330', quoteText: '#c3cad6', chipText: '#c9d2e0',
+    openBg: 'rgba(61,214,140,.08)', openBorder: 'rgba(61,214,140,.35)', mergedBg: 'rgba(199,146,234,.12)', mergedBorder: 'rgba(199,146,234,.4)',
+    closedBg: 'rgba(240,113,120,.1)', closedBorder: 'rgba(240,113,120,.4)', draftBg: 'rgba(245,197,66,.08)', draftBorder: 'rgba(245,197,66,.4)',
+    noteBg: '#26200e', noteBorder: '#f5c542', noteText: '#f5c542',
+  },
+  light: {
+    page: '#ffffff', root: '#ffffff', tile: '#e8edf5', border: '#c9d2e0', text: '#1a2030', muted: '#5a6578', accent: '#3b6fd4', green: '#1a9e64', amber: '#b8860b', red: '#d04550', purple: '#8b5cb8',
+    code: '#f3f5f9', quote: '#e8edf5', quoteText: '#3c465c', chipText: '#2c3a55',
+    openBg: 'rgba(26,158,100,.08)', openBorder: 'rgba(26,158,100,.35)', mergedBg: 'rgba(139,92,184,.12)', mergedBorder: 'rgba(139,92,184,.4)',
+    closedBg: 'rgba(208,69,80,.08)', closedBorder: 'rgba(208,69,80,.35)', draftBg: 'rgba(184,134,11,.08)', draftBorder: 'rgba(184,134,11,.4)',
+    noteBg: '#fdf6e3', noteBorder: '#b8860b', noteText: '#7a5a08',
+  },
+}
 
 function githubPullStateHtml(metadata: GithubMetadata): string {
   const cls = metadata.state === '已合并' ? 'is-merged' : metadata.state === '已关闭' ? 'is-closed' : metadata.state === '草稿' ? 'is-draft' : 'is-open'
@@ -54,8 +76,42 @@ function githubPullTime(value: string | undefined): string {
   return Number.isNaN(time.getTime()) ? esc(value) : esc(time.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))
 }
 
+// Interpolate the board detail skin from theme tokens; structure stays identical across skins.
+function githubPullStyles(t: GithubPullTokens): string {
+  return `  *{box-sizing:border-box}body{margin:0;background:${t.page};color:${t.text};font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif}
+  #github-preview{width:880px;background:${t.root};border:1px solid ${t.border};padding:24px 26px}
+  .kicker{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:14px;color:${t.muted}}.kind{font-weight:650;padding:3px 12px;border-radius:999px;border:1px solid ${t.border};background:${t.tile};color:${t.accent};letter-spacing:.5px}.repo{font-family:Consolas,monospace;overflow-wrap:anywhere}.num{color:${t.muted}}
+  h1{font-size:26px;line-height:1.45;margin:12px 0 0;color:${t.text};overflow-wrap:anywhere;letter-spacing:.2px}
+  .states{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}
+  .state{display:inline-flex;align-items:center;gap:7px;padding:4px 12px;border-radius:999px;border:1px solid ${t.border};background:${t.tile};color:${t.muted};font-size:14px}.state i{width:8px;height:8px;border-radius:50%;background:currentColor}
+  .state.is-open{color:${t.green};border-color:${t.openBorder};background:${t.openBg}}.state.is-merged{color:${t.purple};border-color:${t.mergedBorder};background:${t.mergedBg}}.state.is-closed{color:${t.red};border-color:${t.closedBorder};background:${t.closedBg}}.state.is-draft{color:${t.amber};border-color:${t.draftBorder};background:${t.draftBg}}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-top:18px}
+  .stat{border:1px solid ${t.border};border-radius:10px;background:${t.tile};padding:9px 11px;min-width:0}.stat b{display:block;font-size:19px;line-height:1.25;font-variant-numeric:tabular-nums;color:${t.text};overflow-wrap:anywhere}.stat span{color:${t.muted};font-size:12px}.stat .add{color:${t.green}}.stat .del{color:${t.red}}
+  .meta{display:grid;grid-template-columns:104px minmax(0,1fr);gap:8px 14px;margin-top:18px;font-size:15px}
+  .meta dt{color:${t.muted};margin:0}.meta dd{margin:0;min-width:0;word-break:break-word;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
+  .user{display:inline-flex;align-items:center;gap:7px;color:${t.text}}.user img{width:20px;height:20px;border-radius:50%;border:1px solid ${t.border}}.user .login{overflow-wrap:anywhere}
+  .chip{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;border:1px solid ${t.border};background:${t.tile};color:${t.chipText};font-size:13px;overflow-wrap:anywhere;max-width:100%}
+  .tag{display:inline-flex;align-items:center;padding:1px 8px;border-radius:6px;border:1px solid ${t.border};background:${t.root};color:${t.muted};font-size:12.5px}
+  .branch{font-family:Consolas,monospace;font-size:13.5px;color:${t.accent};overflow-wrap:anywhere}.arrow{color:${t.muted};margin:0 2px}
+  .sec{margin-top:20px}.h-label{display:flex;align-items:center;gap:8px;color:${t.muted};font-size:13px;letter-spacing:1px;margin-bottom:9px}
+  .checks{list-style:none;margin:0;padding:0;border:1px solid ${t.border};border-radius:10px;overflow:hidden}
+  .checks li{display:flex;align-items:center;gap:9px;padding:8px 13px;font-size:14px;border-top:1px solid ${t.border};background:${t.tile}}.checks li:first-child{border-top:0}
+  .checks li>i{width:8px;height:8px;border-radius:50%;flex:0 0 8px;background:${t.muted}}.checks li.b-success>i{background:${t.green}}.checks li.b-failure>i{background:${t.red}}.checks li.b-pending>i{background:${t.amber}}
+  .checks .nm{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;color:${t.text}}.checks .cc{color:${t.muted};font-size:12.5px;white-space:nowrap}
+  .body{border-top:1px solid ${t.border};padding-top:10px;font-size:17px;line-height:1.7;overflow-wrap:anywhere}
+  .body h1,.body h2,.body h3{font-size:21px;margin:22px 0 10px;padding-bottom:5px;border-bottom:1px solid ${t.border}}.body h4,.body h5,.body h6{font-size:18px;margin:18px 0 8px}.body p{margin:11px 0}.body a{color:${t.accent};text-decoration:underline;text-underline-offset:3px}
+  .body blockquote{margin:14px 0;border-left:4px solid ${t.accent};background:${t.quote};padding:8px 16px;color:${t.quoteText}}.body ul,.body ol{padding-left:26px}
+  .body pre{padding:14px;background:${t.code};border:1px solid ${t.border};white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.55;font-size:14px;color:${t.text}}.body code,.body kbd{font-family:Consolas,monospace;font-size:.88em;background:${t.code};padding:2px 4px;color:${t.text}}.body pre code{padding:0;background:none}
+  .body table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:14px}.body th,.body td{border:1px solid ${t.border};padding:7px;overflow-wrap:anywhere}.body th{background:${t.tile}}
+  .body img{display:block;max-width:100%;height:auto;border:1px solid ${t.border};border-radius:8px}.body figcaption{font-size:12.5px;color:${t.muted}}.body details{margin:12px 0;padding:8px 12px;border:1px solid ${t.border};border-radius:8px;background:${t.tile}}.body summary{font-weight:700;color:${t.muted}}.task-check{color:${t.green};margin-right:5px}
+  .image-missing,.attachment-note{display:block;padding:10px 14px;background:${t.noteBg};border-left:3px solid ${t.noteBorder};font-size:14px;color:${t.noteText};margin:10px 0}
+  footer{margin-top:20px;padding-top:14px;border-top:1px solid ${t.border};font-size:12.5px;color:${t.muted};line-height:1.8;overflow-wrap:anywhere}
+  .source{font-family:Consolas,monospace;color:${t.accent};font-size:13px}.warn{color:${t.amber};font-weight:700}`
+}
+
 // Build the fixed board-style document from already validated official fields only.
-export function buildGithubPullHtml(metadata: GithubMetadata, body: string, avatar: Buffer | null, note = ''): string {
+export function buildGithubPullHtml(metadata: GithubMetadata, body: string, avatar: Buffer | null, note = '', theme: GithubPullTheme = 'dark'): string {
+  const t = GITHUB_PULL_THEMES[theme]
   const pull = metadata.pull
   const stats = pull?.stats
   const mergeable = stats?.mergeableState && stats.mergeableState !== 'unknown' && metadata.state === '开启中' ? `<span class="chip">${esc(stats.mergeableState)}</span>` : ''
@@ -88,40 +144,12 @@ export function buildGithubPullHtml(metadata: GithubMetadata, body: string, avat
   ].filter(Boolean).join('')
   const partial = pull?.partial?.length ? `<div class="warn">部分数据获取失败：${esc(pull.partial.join('、'))}，请查看原文。</div>` : ''
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>
-  *{box-sizing:border-box}body{margin:0;background:#ffffff;color:#e8eaed;font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif}
-  #github-preview{width:880px;background:#171a21;border:1px solid #2a3142;padding:24px 26px}
-  .kicker{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:14px;color:#9aa3b2}.kind{font-weight:650;padding:3px 12px;border-radius:999px;border:1px solid #2a3142;background:#1e2330;color:#6ea8fe;letter-spacing:.5px}.repo{font-family:Consolas,monospace;overflow-wrap:anywhere}.num{color:#9aa3b2}
-  h1{font-size:26px;line-height:1.45;margin:12px 0 0;color:#e8eaed;overflow-wrap:anywhere;letter-spacing:.2px}
-  .states{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}
-  .state{display:inline-flex;align-items:center;gap:7px;padding:4px 12px;border-radius:999px;border:1px solid #2a3142;background:#1e2330;color:#9aa3b2;font-size:14px}.state i{width:8px;height:8px;border-radius:50%;background:currentColor}
-  .state.is-open{color:#3dd68c;border-color:rgba(61,214,140,.35);background:rgba(61,214,140,.08)}.state.is-merged{color:#c792ea;border-color:rgba(199,146,234,.4);background:rgba(199,146,234,.12)}.state.is-closed{color:#f07178;border-color:rgba(240,113,120,.4);background:rgba(240,113,120,.1)}.state.is-draft{color:#f5c542;border-color:rgba(245,197,66,.4);background:rgba(245,197,66,.08)}
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-top:18px}
-  .stat{border:1px solid #2a3142;border-radius:10px;background:#1e2330;padding:9px 11px;min-width:0}.stat b{display:block;font-size:19px;line-height:1.25;font-variant-numeric:tabular-nums;color:#e8eaed;overflow-wrap:anywhere}.stat span{color:#9aa3b2;font-size:12px}.stat .add{color:#3dd68c}.stat .del{color:#f07178}
-  .meta{display:grid;grid-template-columns:104px minmax(0,1fr);gap:8px 14px;margin-top:18px;font-size:15px}
-  .meta dt{color:#9aa3b2;margin:0}.meta dd{margin:0;min-width:0;word-break:break-word;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
-  .user{display:inline-flex;align-items:center;gap:7px;color:#e8eaed}.user img{width:20px;height:20px;border-radius:50%;border:1px solid #2a3142}.user .login{overflow-wrap:anywhere}
-  .chip{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;border:1px solid #2a3142;background:#1e2330;color:#c9d2e0;font-size:13px;overflow-wrap:anywhere;max-width:100%}
-  .tag{display:inline-flex;align-items:center;padding:1px 8px;border-radius:6px;border:1px solid #2a3142;background:#171a21;color:#9aa3b2;font-size:12.5px}
-  .branch{font-family:Consolas,monospace;font-size:13.5px;color:#6ea8fe;overflow-wrap:anywhere}.arrow{color:#9aa3b2;margin:0 2px}
-  .sec{margin-top:20px}.h-label{display:flex;align-items:center;gap:8px;color:#9aa3b2;font-size:13px;letter-spacing:1px;margin-bottom:9px}
-  .checks{list-style:none;margin:0;padding:0;border:1px solid #2a3142;border-radius:10px;overflow:hidden}
-  .checks li{display:flex;align-items:center;gap:9px;padding:8px 13px;font-size:14px;border-top:1px solid #2a3142;background:#1e2330}.checks li:first-child{border-top:0}
-  .checks li>i{width:8px;height:8px;border-radius:50%;flex:0 0 8px;background:#9aa3b2}.checks li.b-success>i{background:#3dd68c}.checks li.b-failure>i{background:#f07178}.checks li.b-pending>i{background:#f5c542}
-  .checks .nm{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;color:#e8eaed}.checks .cc{color:#9aa3b2;font-size:12.5px;white-space:nowrap}
-  .body{border-top:1px solid #2a3142;padding-top:10px;font-size:17px;line-height:1.7;overflow-wrap:anywhere}
-  .body h1,.body h2,.body h3{font-size:21px;margin:22px 0 10px;padding-bottom:5px;border-bottom:1px solid #2a3142}.body h4,.body h5,.body h6{font-size:18px;margin:18px 0 8px}.body p{margin:11px 0}.body a{color:#6ea8fe;text-decoration:underline;text-underline-offset:3px}
-  .body blockquote{margin:14px 0;border-left:4px solid #6ea8fe;background:#1e2330;padding:8px 16px;color:#c3cad6}.body ul,.body ol{padding-left:26px}
-  .body pre{padding:14px;background:#10131a;border:1px solid #2a3142;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.55;font-size:14px;color:#e8eaed}.body code,.body kbd{font-family:Consolas,monospace;font-size:.88em;background:#10131a;padding:2px 4px;color:#e8eaed}.body pre code{padding:0;background:none}
-  .body table{border-collapse:collapse;width:100%;table-layout:fixed;font-size:14px}.body th,.body td{border:1px solid #2a3142;padding:7px;overflow-wrap:anywhere}.body th{background:#1e2330}
-  .body img{display:block;max-width:100%;height:auto;border:1px solid #2a3142;border-radius:8px}.body figcaption{font-size:12.5px;color:#9aa3b2}.body details{margin:12px 0;padding:8px 12px;border:1px solid #2a3142;border-radius:8px;background:#1e2330}.body summary{font-weight:700;color:#9aa3b2}.task-check{color:#3dd68c;margin-right:5px}
-  .image-missing,.attachment-note{display:block;padding:10px 14px;background:#26200e;border-left:3px solid #f5c542;font-size:14px;color:#f5c542;margin:10px 0}
-  footer{margin-top:20px;padding-top:14px;border-top:1px solid #2a3142;font-size:12.5px;color:#9aa3b2;line-height:1.8;overflow-wrap:anywhere}
-  .source{font-family:Consolas,monospace;color:#6ea8fe;font-size:13px}.warn{color:#f5c542;font-weight:700}
+${githubPullStyles(t)}
   </style></head><body><main id="github-preview"><div class="kicker"><span class="kind">PULL REQUEST</span><span class="repo">${esc(metadata.target.owner + '/' + metadata.target.repo)}</span><span class="num">#${esc(String(metadata.target.number ?? ''))}</span></div><h1>${esc(metadata.title)}</h1><div class="states">${githubPullStateHtml(metadata)}${githubPullChecksPill(metadata)}</div>${statsHtml ? `<section class="stats">${statsHtml}</section>` : ''}${meta ? `<dl class="meta">${meta}</dl>` : ''}${checksList}<section class="sec"><div class="h-label">描述 · 发起者原文</div><article class="body">${body || '<p class="empty">作者未填写正文</p>'}</article></section><footer>${partial}${note ? `<div class="warn">${esc(note)}</div>` : ''}<div class="source">${esc(metadata.url)}</div><div>官方公开数据 · ${esc(new Date(metadata.fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}（北京时间）</div></footer></main></body></html>`
 }
 
 // Render through the existing browser lifecycle while preserving cancellation and memory protection.
-export async function renderGithubPullCard(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult> {
+export async function renderGithubPullCard(metadata: GithubMetadata, context: GithubWorkContext, theme: GithubPullTheme = 'dark'): Promise<GithubImageResult> {
   assertGithubWork(context)
   if (typeof metadata.bodyHtml !== 'string') throw new Error('官方正文数据不可用')
   const available = readLinuxMeminfo().availableMb
@@ -141,7 +169,7 @@ export async function renderGithubPullCard(metadata: GithubMetadata, context: Gi
     const avatarMissing = Boolean(metadata.avatar && !avatar)
     const note = [body.missing ? `正文附件未完整载入：${body.missing} 处图片未载入，请查看原文。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ')
     const classicHtml = buildGithubIssueHtml(metadata, body.html, avatar, note)
-    const boardHtml = buildGithubPullHtml(metadata, body.html, avatar, note)
+    const boardHtml = buildGithubPullHtml(metadata, body.html, avatar, note, theme)
     if ([classicHtml, boardHtml].some(html => Buffer.byteLength(html, 'utf8') > GITHUB_LIMITS.htmlBytes)) throw new Error('正文模板超过大小限制，请查看原文')
     const render = { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline' as const, captureSelector: '#github-preview' }
     // Sequential captures keep at most one owned browser alive at a time; both cards ship as separate images.

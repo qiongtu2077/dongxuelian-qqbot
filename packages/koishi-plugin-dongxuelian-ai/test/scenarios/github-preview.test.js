@@ -115,6 +115,30 @@ async function run(t) {
     assert.deepEqual(anomalousMetadata.pull.partial, ['统计']); assert.equal(anomalousMetadata.pull.stats, undefined)
     assert.deepEqual(anomalousMetadata.pull.reviews.map(review => review.login), ['alice', 'bob'])
   })
+
+  await withScenario({}, async ({ data, makeSession }) => {
+    await githubCase(t, 'per-group board theme persists and threads into pull rendering', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      const { GithubPreviewThemes } = require(path.join(AI_ROOT, 'lib/github-preview/themes'))
+      const settings = new GithubPreviewSettings(data.pathFor('theme')); await settings.update('10001', true)
+      const themes = new GithubPreviewThemes(data.pathFor('theme'))
+      const seen = []
+      const image = () => ({ images: [Buffer.from('theme-image')], capturedAt: Date.now() })
+      const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'title', facts: [], fetchedAt: Date.now() }), renderPull: async (_metadata, _context, theme) => { seen.push(theme || 'dark'); return image() }, screenshot: image, render: image, acquire: async () => () => {}, log: () => {} }, undefined, themes)
+      try {
+        assert.equal(await runtime.handle(makeSession({ content: 'GitHub群主题查看' }), 'GitHub群主题查看'), '本群 GitHub PR 卡片主题：暗色')
+        await runtime.handle(makeSession({ content: 'https://github.com/owner/repo/pull/1', messageId: 'theme-before' }), 'https://github.com/owner/repo/pull/1'); await flushAsync(3)
+        assert.equal(await runtime.handle(makeSession({ content: 'GitHub群主题 明亮' }), 'GitHub群主题 明亮'), '已设置本群 GitHub PR 卡片主题：明亮')
+        await runtime.handle(makeSession({ content: 'https://github.com/owner/repo/pull/2', messageId: 'theme-after' }), 'https://github.com/owner/repo/pull/2'); await flushAsync(3)
+        assert.deepEqual(seen, ['dark', 'light'])
+        assert.equal(new GithubPreviewThemes(data.pathFor('theme')).theme('10001'), 'light')
+        assert.equal(await runtime.handle(makeSession({ content: 'GitHub群主题查看' }), 'GitHub群主题查看'), '本群 GitHub PR 卡片主题：明亮')
+        assert.equal(await runtime.handle(makeSession({ content: 'GitHub群主题 蓝色' }), 'GitHub群主题 蓝色'), '用法：GitHub群主题 明亮|暗色（默认暗色） / GitHub群主题查看')
+        assert.equal(await runtime.handle(makeSession({ isDirect: true, content: 'GitHub群主题 明亮' }), 'GitHub群主题 明亮'), '请在群中设置 GitHub PR 卡片主题。')
+      } finally { runtime.dispose() }
+    })
+  })
   await githubCase(t, 'request coalescing, conditional metadata and original fetch time', async () => {
     const originalNow = Date.now; let offset = 0; Date.now = () => originalNow() + offset
     const calls = []

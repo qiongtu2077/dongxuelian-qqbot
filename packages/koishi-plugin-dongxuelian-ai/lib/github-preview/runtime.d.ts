@@ -3,9 +3,10 @@
  * 职责: 管理群开关、串行任务、共享资源准入、图片缓存及发送前复核。
  * 边界: 不进入聊天模型；实例拥有有界队列、冷却、图片缓存和取消控制器。
  */
-import type { GithubTarget, GithubMetadata, GithubImageResult, GithubWorkContext } from './models';
+import type { GithubTarget, GithubMetadata, GithubImageResult, GithubWorkContext, GithubPullTheme } from './models';
 import { GithubPreviewSettings } from './settings';
 import { GithubGroupRepositories } from './repositories';
+import { GithubPreviewThemes } from './themes';
 export interface GithubSession {
     guildId?: string;
     channelId?: string;
@@ -27,13 +28,14 @@ export interface GithubSession {
 interface GithubRuntimeDependencies {
     lookup(target: GithubTarget, context: GithubWorkContext): Promise<GithubMetadata>;
     screenshot(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>;
-    renderPull(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>;
+    renderPull(metadata: GithubMetadata, context: GithubWorkContext, theme?: GithubPullTheme): Promise<GithubImageResult>;
     render(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>;
     acquire(context: GithubWorkContext, group: string): Promise<() => void>;
     log(message: string): void;
 }
 export declare function acquireGithubResources(context: GithubWorkContext, group: string): Promise<() => void>;
 export declare class GithubPreviewRuntime {
+    readonly themes: GithubPreviewThemes;
     readonly settings: GithubPreviewSettings;
     readonly repositories: GithubGroupRepositories;
     private readonly deps;
@@ -47,7 +49,7 @@ export declare class GithubPreviewRuntime {
     private readonly unsubscribe;
     private readonly unsubscribeRepositories;
     private readonly lifetime;
-    constructor(settings?: GithubPreviewSettings, dependencies?: Partial<GithubRuntimeDependencies>, repositories?: GithubGroupRepositories);
+    constructor(settings?: GithubPreviewSettings, dependencies?: Partial<GithubRuntimeDependencies>, repositories?: GithubGroupRepositories, themes?: GithubPreviewThemes);
     accepts(session: GithubSession, plain: string): boolean;
     private targets;
     private command;

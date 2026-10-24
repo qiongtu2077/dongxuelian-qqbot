@@ -93,7 +93,7 @@ async function verifyRender(kind, options = {}) {
       page.on('request', request => { if (/^https?:/.test(request.url())) requests++ })
       const screenshot = page.screenshot.bind(page)
       page.screenshot = async (...args) => {
-        layouts.push(await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) })))
+        layouts.push(await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', tile: document.querySelector('.stat') ? getComputedStyle(document.querySelector('.stat')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) })))
         return screenshot(...args)
       }
       if (options.stall) page.screenshot = () => { screenshotStarted = true; return new Promise(() => {}) }
@@ -107,7 +107,7 @@ async function verifyRender(kind, options = {}) {
   try {
     const data = metadata(kind)
     data.avatar = 'https://avatars.githubusercontent.com/u/browser-' + kind + (options.avatarFailure ? '-failed' : '-ok')
-    const promise = ['repository', 'user'].includes(kind) ? renderGithubCard(data, work) : kind === 'pull' ? renderGithubPullCard(data, work) : renderGithubIssue(data, work)
+    const promise = ['repository', 'user'].includes(kind) ? renderGithubCard(data, work) : kind === 'pull' ? renderGithubPullCard(data, work, options.light ? 'light' : 'dark') : renderGithubIssue(data, work)
     if (options.stall) {
       await assert.rejects(promise, /超时|总时限已耗尽/)
       assert.equal(screenshotStarted, true, 'timeout case must reach the intentionally stalled screenshot')
@@ -121,7 +121,8 @@ async function verifyRender(kind, options = {}) {
       if (kind === 'pull') {
         assert.equal(layouts.length, 2)
         assert.equal(layouts[0].yellow, 'rgb(245, 213, 49)', 'first image keeps the industrial before-card')
-        assert.equal(layouts[1].dark, 'rgb(23, 26, 33)', 'second image is the board after-card')
+        assert.equal(layouts[1].dark, options.light ? 'rgb(255, 255, 255)' : 'rgb(23, 26, 33)', 'second image is the board after-card')
+        assert.equal(layouts[1].tile, options.light ? 'rgb(232, 237, 245)' : 'rgb(30, 35, 48)', 'board skin follows the group theme')
         assert(layouts[1].pills >= 2, 'board card carries state pills')
         assert(layouts.every(item => !item.placeholder))
         assert(layouts.some(item => item.avatar === (options.avatarFailure ? 0 : 64)))
@@ -147,6 +148,7 @@ async function verifyRender(kind, options = {}) {
 async function main() {
   await verifyBody()
   for (const kind of ['issue', 'pull', 'repository', 'user']) await verifyRender(kind)
+  await verifyRender('pull', { light: true })
   await verifyRender('repository', { avatarFailure: true })
   await verifyRender('issue', { avatarFailure: true })
   const raw = await sharp({ create: { width: 100, height: 4500, channels: 3, background: '#f5d531' } }).png().toBuffer()

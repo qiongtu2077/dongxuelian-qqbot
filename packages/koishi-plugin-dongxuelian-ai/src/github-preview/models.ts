@@ -5,6 +5,8 @@
  * 边界: 不访问网络、不调用模型；无持久状态。
  */
 export type GithubKind = 'issue' | 'pull' | 'repository' | 'user'
+// The board card ships the dashboard's two skins; dark is the default.
+export type GithubPullTheme = 'dark' | 'light'
 export interface GithubTarget { kind: GithubKind; owner: string; repo?: string; number?: number; url: string; key: string }
 // Pull-only extras mirror the progress-board detail view: verified counts, latest review verdicts and CI summary.
 export interface GithubPullStats {

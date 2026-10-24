@@ -21,6 +21,7 @@ async function runModuleContract(context) {
     githubBody: path.join(LIB, 'github-preview', 'body-content'),
     githubIssueRenderer: path.join(LIB, 'github-preview', 'issue-renderer'),
     githubPullCard: path.join(LIB, 'github-preview', 'pull-card'),
+    githubThemes: path.join(LIB, 'github-preview', 'themes'),
     githubRuntime: path.join(LIB, 'github-preview', 'runtime'),
     dailyReportArtifacts: path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'analysis-artifacts'),
     dailyReportStorage: path.join(PKG_ROOT, 'koishi-plugin-daily-report', 'lib', 'report-storage'),
@@ -250,6 +251,7 @@ async function runModuleContract(context) {
     githubBody: ['cleanGithubBody', 'isGithubBodyImageUrl', 'prepareGithubBody'],
     githubIssueRenderer: ['buildGithubIssueHtml', 'renderGithubIssue'],
     githubPullCard: ['buildGithubPullHtml', 'renderGithubPullCard'],
+    githubThemes: ['GithubPreviewThemes', 'handleGithubThemeCommand', 'normalizeGithubTheme'],
     githubRuntime: ['GithubPreviewRuntime', 'acquireGithubResources'],
     nicknameScopeSchema: ['normalizeScopeStore', 'serializeScopeStore', 'setAliasEntry'],
     frontmatter: [

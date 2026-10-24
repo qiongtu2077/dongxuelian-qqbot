@@ -5,6 +5,7 @@
  * 边界: 不访问网络、不调用模型；无持久状态。
  */
 export type GithubKind = 'issue' | 'pull' | 'repository' | 'user';
+export type GithubPullTheme = 'dark' | 'light';
 export interface GithubTarget {
     kind: GithubKind;
     owner: string;
