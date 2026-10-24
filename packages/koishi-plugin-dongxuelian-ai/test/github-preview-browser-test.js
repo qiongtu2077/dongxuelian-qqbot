@@ -6,6 +6,7 @@ process.env.DONGXUELIAN_AI_DATA_DIR = browserData
 const puppeteer = require('puppeteer-core'), sharp = require('sharp')
 const { cleanGithubBody, prepareGithubBody, isGithubBodyImageUrl } = require('../lib/github-preview/body-content')
 const { buildGithubIssueHtml, renderGithubIssue } = require('../lib/github-preview/issue-renderer')
+const { buildGithubPullHtml, renderGithubPullCard } = require('../lib/github-preview/pull-card')
 const { renderGithubCard, splitGithubImage } = require('../lib/github-preview/renderer')
 const { renderHtmlToImage } = require('../../koishi-plugin-daily-report/lib/html-renderer')
 const { readResourceActivityLease } = require('../lib/resource-scheduler/resource-activity-lease')
@@ -21,7 +22,9 @@ function metadata(kind = 'issue', bodyHtml = '<p>发起者原文，保留内容�
     return { target: { kind, owner: 'owner', repo: kind === 'repository' ? 'repo' : undefined, url }, url, title: kind === 'repository' ? 'owner/repo' : '公开用户', author: 'owner', description: '原文简介，保留内容。', fetchedAt: Date.now(), facts: [['Stars', '123'], ['许可证', 'MIT']] }
   }
   const url = `https://github.com/owner/repo/${kind === 'pull' ? 'pull' : 'issues'}/1`
-  return { target: { kind, owner: 'owner', repo: 'repo', number: 1, url }, url, title: '原文标题与黄色编号', state: kind === 'pull' ? '已合并' : '开启中', author: 'author', createdAt: '2026-10-21T00:00:00Z', fetchedAt: Date.now(), labels: [{ name: 'bug', color: 'f5d531' }], facts: [], bodyHtml }
+  const data = { target: { kind, owner: 'owner', repo: 'repo', number: 1, url }, url, title: '原文标题与黄色编号', state: kind === 'pull' ? '已合并' : '开启中', author: 'author', createdAt: '2026-10-21T00:00:00Z', fetchedAt: Date.now(), labels: [{ name: 'bug', color: 'f5d531' }], facts: [], bodyHtml }
+  if (kind === 'pull') data.pull = { stats: { commits: 3, additions: 120, deletions: 40, changedFiles: 6, comments: 5, reviewComments: 8, headRef: 'feature', baseRef: 'main', headSha: 'abc123def4567890', mergeableState: 'clean', updatedAt: '2026-10-22T00:00:00Z', mergedAt: '2026-10-23T00:00:00Z', mergedBy: 'maintainer', assignees: ['dev1'], requestedReviewers: ['reviewer2'], milestone: 'v2' }, reviews: [{ login: 'reviewer1', state: 'APPROVED', submittedAt: '2026-10-21T01:00:00Z' }, { login: 'reviewer2', state: 'CHANGES_REQUESTED', submittedAt: '2026-10-21T03:00:00Z' }], reviewTotal: 2, checks: { overall: 'success', total: 3, counts: { failure: 0, pending: 1, success: 2, neutral: 0, skipped: 0 }, runs: [{ name: 'lint', status: 'completed', conclusion: 'success', bucket: 'success' }, { name: 'build', status: 'in_progress', bucket: 'pending' }, { name: 'audit', status: 'completed', conclusion: 'success', bucket: 'success' }] }, partial: [] }
+  return data
 }
 
 // Verify white outer strips and ensure content pixels survive contiguous splitting unchanged.
@@ -76,7 +79,8 @@ async function verifyRender(kind, options = {}) {
     assert.equal(requestOptions.headers, undefined)
     return options.avatarFailure ? new Response(null, { status: 503 }) : new Response(avatarPng)
   }
-  let owned, closeOwned, cleanupStarted, layout, requests = 0, screenshotStarted = false
+  let owned, closeOwned, cleanupStarted, requests = 0, screenshotStarted = false
+  const layouts = []
   const controller = new AbortController()
   let abortTimer
   puppeteer.launch = async launchOptions => {
@@ -89,7 +93,7 @@ async function verifyRender(kind, options = {}) {
       page.on('request', request => { if (/^https?:/.test(request.url())) requests++ })
       const screenshot = page.screenshot.bind(page)
       page.screenshot = async (...args) => {
-        layout = await page.evaluate(() => ({ yellow: getComputedStyle(document.querySelector('.masthead')).borderBottomColor, avatar: document.querySelector('img.avatar')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) }))
+        layouts.push(await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', tile: document.querySelector('.stat') ? getComputedStyle(document.querySelector('.stat')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) })))
         return screenshot(...args)
       }
       if (options.stall) page.screenshot = () => { screenshotStarted = true; return new Promise(() => {}) }
@@ -103,7 +107,7 @@ async function verifyRender(kind, options = {}) {
   try {
     const data = metadata(kind)
     data.avatar = 'https://avatars.githubusercontent.com/u/browser-' + kind + (options.avatarFailure ? '-failed' : '-ok')
-    const promise = ['repository', 'user'].includes(kind) ? renderGithubCard(data, work) : renderGithubIssue(data, work)
+    const promise = ['repository', 'user'].includes(kind) ? renderGithubCard(data, work) : kind === 'pull' ? renderGithubPullCard(data, work, options.light ? 'light' : 'dark') : renderGithubIssue(data, work)
     if (options.stall) {
       await assert.rejects(promise, /超时|总时限已耗尽/)
       assert.equal(screenshotStarted, true, 'timeout case must reach the intentionally stalled screenshot')
@@ -113,12 +117,23 @@ async function verifyRender(kind, options = {}) {
     else if (options.guardFailure) await assert.rejects(promise, /guard setup failed/)
     else {
       const result = await promise
-      assert.equal(result.incomplete, Boolean(options.avatarFailure)); assert.equal(result.images.length, 1)
-      assert.equal(layout.yellow, 'rgb(245, 213, 49)'); assert.equal(layout.placeholder, Boolean(options.avatarFailure))
-      assert.equal(layout.avatar, options.avatarFailure ? 0 : 64)
+      assert.equal(result.incomplete, Boolean(options.avatarFailure)); assert(result.images.length >= (kind === 'pull' ? 2 : 1) && result.images.length <= 6)
+      if (kind === 'pull') {
+        assert.equal(layouts.length, 2)
+        assert.equal(layouts[0].yellow, 'rgb(245, 213, 49)', 'first image keeps the industrial before-card')
+        assert.equal(layouts[1].dark, options.light ? 'rgb(255, 255, 255)' : 'rgb(23, 26, 33)', 'second image is the board after-card')
+        assert.equal(layouts[1].tile, options.light ? 'rgb(232, 237, 245)' : 'rgb(30, 35, 48)', 'board skin follows the group theme')
+        assert(layouts[1].pills >= 2, 'board card carries state pills')
+        assert(layouts.every(item => !item.placeholder))
+        assert(layouts.some(item => item.avatar === (options.avatarFailure ? 0 : 64)))
+      }
+      else {
+        assert.equal(layouts[0].yellow, 'rgb(245, 213, 49)'); assert.equal(layouts[0].placeholder, Boolean(options.avatarFailure))
+        assert.equal(layouts[0].avatar, options.avatarFailure ? 0 : 64)
+      }
       if (options.avatarFailure) assert.match(result.note, /头像暂未载入/)
       const dimensions = await sharp(result.images[0]).metadata()
-      assert.equal(dimensions.width, 928); assert(dimensions.height < 800)
+      assert.equal(dimensions.width, 928); assert(dimensions.height < (kind === 'pull' ? 2000 : 800))
       await verifyPadding(result.images)
     }
     if (options.stuckClose) await new Promise(resolve => setTimeout(resolve, 150))
@@ -133,6 +148,7 @@ async function verifyRender(kind, options = {}) {
 async function main() {
   await verifyBody()
   for (const kind of ['issue', 'pull', 'repository', 'user']) await verifyRender(kind)
+  await verifyRender('pull', { light: true })
   await verifyRender('repository', { avatarFailure: true })
   await verifyRender('issue', { avatarFailure: true })
   const raw = await sharp({ create: { width: 100, height: 4500, channels: 3, background: '#f5d531' } }).png().toBuffer()
@@ -142,6 +158,10 @@ async function main() {
   await assert.rejects(splitGithubImage(huge, context()), /正文过长/)
   const work = context()
   const html = buildGithubIssueHtml(metadata('pull'), '<pre><code>' + 'very-long-code-'.repeat(80) + '</code></pre><table><tr><td>' + 'long-cell'.repeat(80) + '</td></tr></table>', null)
+  const pullWork = context()
+  const pullHtml = buildGithubPullHtml(metadata('pull'), '<pre><code>' + 'very-long-pull-code-'.repeat(80) + '</code></pre><p>看板风格正文保留</p>', null)
+  const pullImage = await renderHtmlToImage(pullHtml, { signal: pullWork.signal, deadlineMs: pullWork.deadline, networkPolicy: 'offline', captureSelector: '#github-preview' })
+  assert((await sharp(pullImage).metadata()).height > 400)
   const image = await renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, networkPolicy: 'offline', captureSelector: '#github-preview' })
   assert((await sharp(image).metadata()).height > 400)
   const missingRootWork = context()

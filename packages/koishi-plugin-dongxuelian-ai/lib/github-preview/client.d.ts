@@ -20,4 +20,5 @@ export declare class GithubPreviewClient {
     private requestSerial;
     private remember;
     lookup(target: GithubTarget, context: GithubWorkContext): Promise<GithubMetadata>;
+    private lookupPullExtras;
 }

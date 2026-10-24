@@ -48,4 +48,4 @@ export function resolveGithubNumber(text: string, repository: GithubTarget | nul
 }
 
 // Reserve the complete command family for deterministic management routing.
-export function isGithubPreviewCommand(text: string): boolean { return /^GitHub(?:查询(?:群|状态)|群项目)/i.test(text) }
+export function isGithubPreviewCommand(text: string): boolean { return /^GitHub(?:查询(?:群|状态)|群项目|群主题)/i.test(text) }

@@ -3,14 +3,16 @@
  * 职责: 管理群开关、串行任务、共享资源准入、图片缓存及发送前复核。
  * 边界: 不进入聊天模型；实例拥有有界队列、冷却、图片缓存和取消控制器。
  */
-import type { GithubTarget, GithubMetadata, GithubImageResult, GithubWorkContext } from './models'
+import type { GithubTarget, GithubMetadata, GithubImageResult, GithubWorkContext, GithubPullTheme } from './models'
 import { GITHUB_LIMITS, assertGithubWork, waitGithubWork } from './models'
 import { GithubPreviewSettings, normalizeGithubGroup } from './settings'
 import path = require('path')
 import { extractGithubTargets, isGithubPreviewCommand, resolveGithubNumber } from './input'
 import { GithubGroupRepositories, handleGithubRepositoryCommand } from './repositories'
+import { GithubPreviewThemes, handleGithubThemeCommand } from './themes'
 import { GithubPreviewClient, GithubQueryError } from './client'
 import { renderGithubIssue } from './issue-renderer'
+import { renderGithubPullCard } from './pull-card'
 import { renderGithubCard, githubTextFallback } from './renderer'
 const { h } = require('koishi') as typeof import('koishi')
 const { hasAdminPermission } = require('../core/utils') as typeof import('../core/utils')
@@ -24,6 +26,7 @@ export interface GithubSession {
 interface GithubRuntimeDependencies {
   lookup(target: GithubTarget, context: GithubWorkContext): Promise<GithubMetadata>
   screenshot(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>
+  renderPull(metadata: GithubMetadata, context: GithubWorkContext, theme?: GithubPullTheme): Promise<GithubImageResult>
   render(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>
   acquire(context: GithubWorkContext, group: string): Promise<() => void>
   log(message: string): void
@@ -69,11 +72,11 @@ export class GithubPreviewRuntime {
   private readonly lifetime = new AbortController()
 
   // Own one bounded preview queue; dependencies are explicit for offline behavior tests.
-  constructor(settings = new GithubPreviewSettings(), dependencies: Partial<GithubRuntimeDependencies> = {}, repositories = new GithubGroupRepositories(path.dirname(settings.file))) {
+  constructor(settings = new GithubPreviewSettings(), dependencies: Partial<GithubRuntimeDependencies> = {}, repositories = new GithubGroupRepositories(path.dirname(settings.file)), readonly themes: GithubPreviewThemes = new GithubPreviewThemes(path.dirname(settings.file))) {
     this.settings = settings
     this.repositories = repositories
     const client = new GithubPreviewClient()
-    this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: renderGithubIssue, render: renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies }
+    this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: renderGithubIssue, renderPull: (metadata, context, theme) => renderGithubPullCard(metadata, context, theme), render: renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies }
     this.unsubscribe = settings.onRemoved(group => this.cancelGroup(group))
     this.unsubscribeRepositories = repositories.onChanged(group => this.cancelGroup(group))
   }
@@ -98,6 +101,7 @@ export class GithubPreviewRuntime {
   private async command(session: GithubSession, plain: string): Promise<string> {
     if (/^GitHub查询状态$/i.test(plain)) return !session.isDirect && session.guildId ? `本群 GitHub 查询：${this.settings.enabled(session.guildId) ? '开启' : '关闭'}` : '请在群中查看 GitHub 查询状态。'
     if (!hasAdminPermission(session)) return '只有指定管理员能操作这个命令。'
+    if (/^GitHub群主题/i.test(plain)) return handleGithubThemeCommand(session.guildId, session.isDirect, plain, this.themes)
     if (/^GitHub群项目/i.test(plain)) return handleGithubRepositoryCommand(session.guildId, session.isDirect, plain, this.repositories, this.deps.lookup, this.lifetime.signal)
     if (/^GitHub查询群查看$/i.test(plain)) {
       const groups = this.settings.list()
@@ -205,7 +209,8 @@ export class GithubPreviewRuntime {
       for (const target of job.targets) {
         if (!this.valid(job)) break
         if (context.deadline - Date.now() < 1000) { await this.deliver(job, '剩余链接未处理：本次查询已到处理时限。', context); break }
-        const cacheKey = target.key + (['issue', 'pull'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + GITHUB_LIMITS.padding
+        const theme = this.themes.theme(job.group)
+        const cacheKey = target.key + (target.kind === 'pull' ? `:pull-compare-v1:${theme}:` : ['issue'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + GITHUB_LIMITS.padding
         const cached = this.images.get(cacheKey)
         let metadata: GithubMetadata | undefined, result: GithubImageResult | undefined, note = '', text = ''
         if (cached && Date.now() - cached.result.capturedAt < GITHUB_LIMITS.cacheMs) { metadata = cached.metadata; result = cached.result; note = '缓存数据，捕获于 ' + new Date(result.capturedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }
@@ -220,7 +225,7 @@ export class GithubPreviewRuntime {
             assertGithubWork(work)
             if (!release) release = await this.deps.acquire(work, job.group)
             assertGithubWork(work)
-            result = ['issue', 'pull'].includes(metadata.target.kind) ? await this.deps.screenshot(metadata, work) : await this.deps.render(metadata, work)
+            result = metadata.target.kind === 'pull' ? await this.deps.renderPull(metadata, work, theme) : metadata.target.kind === 'issue' ? await this.deps.screenshot(metadata, work) : await this.deps.render(metadata, work)
             assertGithubWork(work)
             this.cacheImage(cacheKey, { result, metadata, bytes: result.images.reduce((sum, image) => sum + image.length, 0) })
             if (result.incomplete) note = result.note || '正文附件未完整载入，请查看原文。'

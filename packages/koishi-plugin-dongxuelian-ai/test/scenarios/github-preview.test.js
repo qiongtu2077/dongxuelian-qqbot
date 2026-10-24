@@ -51,7 +51,7 @@ async function run(t) {
     const metadata = await client.lookup(parseGithubTarget('https://github.com/owner/repo/issues/1'), githubContext())
     assert.equal(metadata.target.kind, 'pull'); assert.equal(metadata.state, '已合并'); assert.equal(metadata.author, 'owner')
     assert.deepEqual(metadata.labels, [{ name: 'bug', color: 'ff0000' }]); assert(!JSON.stringify(metadata).includes('PRIVATE_BODY'))
-    assert.equal(calls.length, 3); assert(calls.every(url => !url.includes('/comments')))
+    assert.equal(calls.length, 4); assert(calls.every(url => !url.includes('/comments'))); assert(calls.some(url => url.includes('/reviews?per_page=100')))
     for (const [fields, expected] of [[{ draft: true }, '草稿'], [{}, '开启中'], [{ state: 'closed', draft: true }, '已关闭']]) {
       const stateClient = new GithubPreviewClient(async url => githubResponse(String(url).endsWith('/repos/owner/repo') ? githubFixture('repository') : githubFixture('pull', fields)))
       assert.equal((await stateClient.lookup(parseGithubTarget('https://github.com/owner/repo/pull/1'), githubContext())).state, expected)
@@ -60,6 +60,84 @@ async function run(t) {
     const privateClient = new GithubPreviewClient(async () => { count++; return githubResponse({ private: true }) })
     await assert.rejects(privateClient.lookup(parseGithubTarget('https://github.com/owner/repo/issues/1'), githubContext()), /仅支持公开仓库/)
     assert.equal(count, 1)
+  })
+
+  await githubCase(t, 'pull detail extras: verified stats, latest review verdicts, check buckets and named degradation', async () => {
+    const pullDetail = githubFixture('pull', { commits: 3, additions: 120, deletions: 40, changed_files: 6, comments: 5, review_comments: 8, updated_at: '2026-10-22T00:00:00Z', mergeable_state: 'clean', head: { ref: 'feature', sha: 'abc123def4567890' }, base: { ref: 'main', sha: '000' }, milestone: { title: 'v2' }, assignees: [{ login: 'dev1', avatar_url: 'https://avatars.githubusercontent.com/u/2' }], requested_reviewers: [] })
+    const reviewsPayload = [
+      { user: { login: 'alice' }, state: 'APPROVED', submitted_at: '2026-10-21T01:00:00Z' },
+      { user: { login: 'alice' }, state: 'COMMENTED', submitted_at: '2026-10-21T02:00:00Z' },
+      { user: { login: 'bob' }, state: 'CHANGES_REQUESTED', submitted_at: '2026-10-21T03:00:00Z' },
+      { user: { login: 'alice' }, state: 'COMMENTED', submitted_at: '2026-10-21T04:00:00Z' },
+    ]
+    const checkRunsPayload = { total_count: 3, check_runs: [
+      { name: 'lint', status: 'completed', conclusion: 'success', html_url: 'https://github.com/owner/repo/actions/runs/1' },
+      { name: 'test', status: 'completed', conclusion: 'failure', html_url: 'https://github.com/owner/repo/actions/runs/2' },
+      { name: 'build', status: 'in_progress', conclusion: null, html_url: '' },
+    ] }
+    const client = new GithubPreviewClient(async url => {
+      const target = String(url)
+      if (target.endsWith('/repos/owner/repo')) return githubResponse(githubFixture('repository'))
+      if (target.includes('/reviews?per_page=100')) return githubResponse(reviewsPayload)
+      if (target.includes('/check-runs?per_page=100')) return githubResponse(checkRunsPayload)
+      return githubResponse(pullDetail)
+    })
+    const metadata = await client.lookup(parseGithubTarget('https://github.com/owner/repo/pull/1'), githubContext())
+    const extras = metadata.pull
+    assert(extras, 'pull extras attached')
+    assert.equal(extras.stats.commits, 3); assert.equal(extras.stats.additions, 120); assert.equal(extras.stats.deletions, 40)
+    assert.equal(extras.stats.changedFiles, 6); assert.equal(extras.stats.comments, 5); assert.equal(extras.stats.reviewComments, 8)
+    assert.equal(extras.stats.headRef, 'feature'); assert.equal(extras.stats.headSha, 'abc123def4567890'); assert.equal(extras.stats.baseRef, 'main')
+    assert.equal(extras.stats.mergeableState, 'clean'); assert.equal(extras.stats.milestone, 'v2'); assert.deepEqual(extras.stats.assignees, ['dev1'])
+    assert.equal(extras.reviewTotal, 4)
+    assert.deepEqual(extras.reviews.map(review => review.login + ':' + review.state), ['alice:APPROVED', 'bob:CHANGES_REQUESTED'])
+    assert.equal(extras.checks.overall, 'failure')
+    assert.deepEqual(extras.checks.runs.map(run => run.name + ':' + run.bucket), ['test:failure', 'build:pending', 'lint:success'])
+    assert.deepEqual(extras.partial, [])
+    await client.lookup(parseGithubTarget('https://github.com/owner/repo/pull/1'), githubContext())
+    const degraded = new GithubPreviewClient(async url => {
+      const target = String(url)
+      if (target.endsWith('/repos/owner/repo')) return githubResponse(githubFixture('repository'))
+      if (target.includes('/reviews?per_page=100')) return githubResponse({ message: 'boom' }, 500)
+      if (target.includes('/check-runs?per_page=100')) return githubResponse([], 404)
+      return githubResponse(pullDetail)
+    })
+    const degradedMetadata = await degraded.lookup(parseGithubTarget('https://github.com/owner/repo/pull/1'), githubContext())
+    assert.deepEqual(degradedMetadata.pull.partial, ['评审', '检查']); assert.deepEqual(degradedMetadata.pull.reviews, []); assert.equal(degradedMetadata.pull.reviewTotal, 0)
+    assert.equal(degradedMetadata.pull.stats.commits, 3); assert.equal(degradedMetadata.pull.checks, undefined)
+    const anomalous = new GithubPreviewClient(async url => {
+      const target = String(url)
+      if (target.endsWith('/repos/owner/repo')) return githubResponse(githubFixture('repository'))
+      if (target.includes('/reviews?per_page=100')) return githubResponse(reviewsPayload)
+      return githubResponse(githubFixture('pull', { additions: 'many' }))
+    })
+    const anomalousMetadata = await anomalous.lookup(parseGithubTarget('https://github.com/owner/repo/pull/1'), githubContext())
+    assert.deepEqual(anomalousMetadata.pull.partial, ['统计']); assert.equal(anomalousMetadata.pull.stats, undefined)
+    assert.deepEqual(anomalousMetadata.pull.reviews.map(review => review.login), ['alice', 'bob'])
+  })
+
+  await withScenario({}, async ({ data, makeSession }) => {
+    await githubCase(t, 'per-group board theme persists and threads into pull rendering', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      const { GithubPreviewThemes } = require(path.join(AI_ROOT, 'lib/github-preview/themes'))
+      const settings = new GithubPreviewSettings(data.pathFor('theme')); await settings.update('10001', true)
+      const themes = new GithubPreviewThemes(data.pathFor('theme'))
+      const seen = []
+      const image = () => ({ images: [Buffer.from('theme-image')], capturedAt: Date.now() })
+      const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'title', facts: [], fetchedAt: Date.now() }), renderPull: async (_metadata, _context, theme) => { seen.push(theme || 'dark'); return image() }, screenshot: image, render: image, acquire: async () => () => {}, log: () => {} }, undefined, themes)
+      try {
+        assert.equal(await runtime.handle(makeSession({ content: 'GitHub群主题查看' }), 'GitHub群主题查看'), '本群 GitHub PR 卡片主题：暗色')
+        await runtime.handle(makeSession({ content: 'https://github.com/owner/repo/pull/1', messageId: 'theme-before' }), 'https://github.com/owner/repo/pull/1'); await flushAsync(3)
+        assert.equal(await runtime.handle(makeSession({ content: 'GitHub群主题 明亮' }), 'GitHub群主题 明亮'), '已设置本群 GitHub PR 卡片主题：明亮')
+        await runtime.handle(makeSession({ content: 'https://github.com/owner/repo/pull/2', messageId: 'theme-after' }), 'https://github.com/owner/repo/pull/2'); await flushAsync(3)
+        assert.deepEqual(seen, ['dark', 'light'])
+        assert.equal(new GithubPreviewThemes(data.pathFor('theme')).theme('10001'), 'light')
+        assert.equal(await runtime.handle(makeSession({ content: 'GitHub群主题查看' }), 'GitHub群主题查看'), '本群 GitHub PR 卡片主题：明亮')
+        assert.equal(await runtime.handle(makeSession({ content: 'GitHub群主题 蓝色' }), 'GitHub群主题 蓝色'), '用法：GitHub群主题 明亮|暗色（默认暗色） / GitHub群主题查看')
+        assert.equal(await runtime.handle(makeSession({ isDirect: true, content: 'GitHub群主题 明亮' }), 'GitHub群主题 明亮'), '请在群中设置 GitHub PR 卡片主题。')
+      } finally { runtime.dispose() }
+    })
   })
   await githubCase(t, 'request coalescing, conditional metadata and original fetch time', async () => {
     const originalNow = Date.now; let offset = 0; Date.now = () => originalNow() + offset
@@ -369,7 +447,7 @@ async function run(t) {
         calls.push(String(url))
         return githubResponse(String(url).endsWith('/repos/owner/repo') ? githubFixture('repository') : String(url).includes('/issues/') ? githubFixture('issue', { pull_request: { url: 'official' } }) : githubFixture('pull'))
       })
-      const runtime = new GithubPreviewRuntime(settings, { lookup: (target, context) => client.lookup(target, context), screenshot: async metadata => { captures.push(metadata.target.kind); return { images: [Buffer.from('pull-image')], capturedAt: Date.now() } }, acquire: async () => () => {}, log: () => {} })
+      const runtime = new GithubPreviewRuntime(settings, { lookup: (target, context) => client.lookup(target, context), renderPull: async metadata => { captures.push(metadata.target.kind); return { images: [Buffer.from('pull-image')], capturedAt: Date.now() } }, acquire: async () => () => {}, log: () => {} })
       try {
         const session = makeSession({ content: '#1', messageId: 'number-pr' })
         assert.equal(runtime.accepts(session, '#1'), false)
@@ -458,7 +536,7 @@ async function run(t) {
         let captures = 0
         // Both renderer branches must preserve partial-avatar retry behavior across groups.
         const partial = async () => { captures++; return { images: [Buffer.from('partial')], capturedAt: Date.now(), incomplete: true, note: '头像暂未载入，请查看原文。' } }
-        const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'title', facts: [], fetchedAt: Date.now() }), screenshot: partial, render: partial, acquire: async () => () => {}, log: () => {} })
+        const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'title', facts: [], fetchedAt: Date.now() }), screenshot: partial, renderPull: partial, render: partial, acquire: async () => () => {}, log: () => {} })
         try {
           const first = makeSession({ messageId: 'partial-one' }), second = makeSession({ guildId: '10002', messageId: 'partial-two' })
           await runtime.handle(first, url); await runtime.handle(second, url)

@@ -5,11 +5,24 @@
  * 边界: 不访问网络、不调用模型；无持久状态。
  */
 export type GithubKind = 'issue' | 'pull' | 'repository' | 'user'
+// The board card ships the dashboard's two skins; dark is the default.
+export type GithubPullTheme = 'dark' | 'light'
 export interface GithubTarget { kind: GithubKind; owner: string; repo?: string; number?: number; url: string; key: string }
+// Pull-only extras mirror the progress-board detail view: verified counts, latest review verdicts and CI summary.
+export interface GithubPullStats {
+  commits?: number; additions?: number; deletions?: number; changedFiles?: number; comments?: number; reviewComments?: number
+  headRef?: string; baseRef?: string; headSha?: string; mergeableState?: string; updatedAt?: string; closedAt?: string; mergedAt?: string; mergedBy?: string
+  assignees?: string[]; requestedReviewers?: string[]; milestone?: string
+}
+export interface GithubReviewVerdict { login: string; state: string; submittedAt?: string }
+export type GithubCheckBucket = 'failure' | 'pending' | 'success' | 'neutral' | 'skipped'
+export interface GithubCheckRun { name: string; status: string; conclusion?: string; bucket: GithubCheckBucket }
+export interface GithubPullChecks { overall: 'failure' | 'pending' | 'success' | 'neutral'; total: number; counts: Record<GithubCheckBucket, number>; runs: GithubCheckRun[] }
+export interface GithubPullExtras { stats?: GithubPullStats; reviews: GithubReviewVerdict[]; reviewTotal: number; checks?: GithubPullChecks; partial: string[] }
 export interface GithubMetadata {
   target: GithubTarget; title: string; url: string; fetchedAt: number; state?: string
   description?: string; author?: string; avatar?: string; labels?: { name: string; color: string }[]
-  bodyHtml?: string; createdAt?: string
+  bodyHtml?: string; createdAt?: string; pull?: GithubPullExtras
   facts: [string, string][]; stale?: boolean
 }
 export interface GithubImageResult { images: Buffer[]; incomplete?: boolean; note?: string; capturedAt: number }

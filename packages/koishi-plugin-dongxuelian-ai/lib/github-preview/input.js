@@ -59,4 +59,4 @@ function resolveGithubNumber(text, repository) {
     return parseGithubTarget(repository.url + '/issues/' + match[1]);
 }
 // Reserve the complete command family for deterministic management routing.
-function isGithubPreviewCommand(text) { return /^GitHub(?:查询(?:群|状态)|群项目)/i.test(text); }
+function isGithubPreviewCommand(text) { return /^GitHub(?:查询(?:群|状态)|群项目|群主题)/i.test(text); }
