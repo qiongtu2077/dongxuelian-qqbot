@@ -3,7 +3,7 @@
  * 职责: 公开性校验、类型分流、固定字段读取、限流与条件请求。
  * 边界: 不总结正文、不调用模型；实例拥有有界元数据缓存和串行请求链。
  */
-import type { GithubTarget, GithubMetadata, GithubWorkContext } from './models'
+import type { GithubTarget, GithubMetadata, GithubWorkContext, GithubPullStats, GithubReviewVerdict, GithubCheckRun, GithubPullChecks, GithubPullExtras } from './models'
 import { GITHUB_LIMITS, assertGithubWork, waitGithubWork } from './models'
 import { parseGithubTarget } from './input'
 
@@ -38,7 +38,7 @@ function githubObject(value: unknown, field: string): GithubObject {
 
 // Keep only bounded official display fields, including the requested HTML representation.
 function selectGithubFields(raw: GithubObject): GithubObject {
-  const fields = ['full_name', 'name', 'login', 'html_url', 'private', 'description', 'language', 'stargazers_count', 'forks_count', 'archived', 'updated_at', 'license', 'type', 'bio', 'avatar_url', 'public_repos', 'followers', 'following', 'created_at', 'title', 'number', 'state', 'merged', 'draft', 'pull_request', 'labels']
+  const fields = ['full_name', 'name', 'login', 'html_url', 'private', 'description', 'language', 'stargazers_count', 'forks_count', 'archived', 'updated_at', 'license', 'type', 'bio', 'avatar_url', 'public_repos', 'followers', 'following', 'created_at', 'title', 'number', 'state', 'merged', 'draft', 'pull_request', 'labels', 'additions', 'deletions', 'changed_files', 'commits', 'comments', 'review_comments', 'closed_at', 'merged_at', 'mergeable_state']
   const result: GithubObject = {}
   if (raw.body_html !== undefined) {
     const body = githubString(raw, 'body_html', true)
@@ -48,11 +48,106 @@ function selectGithubFields(raw: GithubObject): GithubObject {
   for (const field of fields) if (raw[field] !== undefined) result[field] = raw[field]
   if (raw.user) { const user = githubObject(raw.user, 'user'); result.user = { login: user.login, avatar_url: user.avatar_url } }
   if (raw.owner) { const owner = githubObject(raw.owner, 'owner'); result.owner = { login: owner.login, avatar_url: owner.avatar_url } }
+  if (raw.merged_by) { const mergedBy = githubObject(raw.merged_by, 'merged_by'); result.merged_by = { login: mergedBy.login, avatar_url: mergedBy.avatar_url } }
+  if (raw.milestone) { const milestone = githubObject(raw.milestone, 'milestone'); result.milestone = { title: milestone.title } }
+  if (raw.head) { const head = githubObject(raw.head, 'head'); result.head = { ref: head.ref, sha: head.sha } }
+  if (raw.base) { const base = githubObject(raw.base, 'base'); result.base = { ref: base.ref, sha: base.sha } }
+  if (raw.assignees) result.assignees = selectGithubUsers(raw.assignees, 'assignees')
+  if (raw.requested_reviewers) result.requested_reviewers = selectGithubUsers(raw.requested_reviewers, 'requested_reviewers')
   return result
+}
+
+// Bound official user lists to display identities only.
+function selectGithubUsers(value: unknown, field: string): GithubObject[] {
+  if (!Array.isArray(value) || value.length > 10) throw new GithubQueryError('官方用户列表字段异常：' + field)
+  return value.map(item => { const user = githubObject(item, field); return { login: user.login, avatar_url: user.avatar_url } })
+}
+
+// --- PR 详情数据合同（对应进度看板详情视图） --- //
+// Read an optional count strictly: absent stays absent, anomalies are rejected.
+function githubMetric(data: GithubObject, field: string): number | undefined {
+  const value = data[field]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new GithubQueryError('官方计数字段异常：' + field)
+  return value
+}
+
+// Read an optional nullable official string under the same contract.
+function githubOptionalText(data: GithubObject, field: string): string | undefined {
+  if (data[field] === undefined) return undefined
+  return githubString(data, field, true) || undefined
+}
+
+// Project verified pull counts and refs; the caller degrades the whole block on any anomaly.
+function buildGithubPullStats(pull: GithubObject): GithubPullStats {
+  const stats: GithubPullStats = {}
+  const commits = githubMetric(pull, 'commits'); if (commits !== undefined) stats.commits = commits
+  const additions = githubMetric(pull, 'additions'); if (additions !== undefined) stats.additions = additions
+  const deletions = githubMetric(pull, 'deletions'); if (deletions !== undefined) stats.deletions = deletions
+  const changedFiles = githubMetric(pull, 'changed_files'); if (changedFiles !== undefined) stats.changedFiles = changedFiles
+  const comments = githubMetric(pull, 'comments'); if (comments !== undefined) stats.comments = comments
+  const reviewComments = githubMetric(pull, 'review_comments'); if (reviewComments !== undefined) stats.reviewComments = reviewComments
+  const updatedAt = githubOptionalText(pull, 'updated_at'); if (updatedAt !== undefined) stats.updatedAt = updatedAt
+  const closedAt = githubOptionalText(pull, 'closed_at'); if (closedAt !== undefined) stats.closedAt = closedAt
+  const mergedAt = githubOptionalText(pull, 'merged_at'); if (mergedAt !== undefined) stats.mergedAt = mergedAt
+  const mergeableState = githubOptionalText(pull, 'mergeable_state'); if (mergeableState !== undefined) stats.mergeableState = mergeableState
+  if (pull.head) { const head = githubObject(pull.head, 'head'); const ref = githubOptionalText(head, 'ref'); const sha = githubOptionalText(head, 'sha'); if (ref !== undefined) stats.headRef = ref; if (sha !== undefined) stats.headSha = sha }
+  if (pull.base) { const base = githubObject(pull.base, 'base'); const ref = githubOptionalText(base, 'ref'); if (ref !== undefined) stats.baseRef = ref }
+  if (pull.merged_by) { const mergedBy = githubObject(pull.merged_by, 'merged_by'); const login = githubOptionalText(mergedBy, 'login'); if (login !== undefined) stats.mergedBy = login }
+  if (pull.milestone) stats.milestone = githubString(githubObject(pull.milestone, 'milestone'), 'title', true) || undefined
+  if (pull.assignees) stats.assignees = selectGithubUsers(pull.assignees, 'assignees').map(user => githubString(user, 'login'))
+  if (pull.requested_reviewers) stats.requestedReviewers = selectGithubUsers(pull.requested_reviewers, 'requested_reviewers').map(user => githubString(user, 'login'))
+  return stats
+}
+
+// Validate the official reviews list payload into bounded display records.
+function selectGithubReviews(payload: unknown): GithubObject {
+  if (!Array.isArray(payload) || payload.length > 100) throw new GithubQueryError('官方评审列表字段异常')
+  const reviews = payload.map(item => { const review = githubObject(item, 'review'); return { login: githubString(githubObject(review.user, 'review.user'), 'login'), state: githubString(review, 'state'), submitted_at: githubString(review, 'submitted_at', true) } })
+  return { reviews }
+}
+
+// Keep each reviewer's latest verdict; a later comment never erases an approval state.
+function latestGithubReviews(shaped: { login: string; state: string; submitted_at: string }[]): { verdicts: GithubReviewVerdict[]; total: number } {
+  const byLogin = new Map<string, GithubReviewVerdict>()
+  for (const review of shaped) {
+    if (review.state === 'COMMENTED' && byLogin.has(review.login)) continue
+    byLogin.set(review.login, { login: review.login, state: review.state, submittedAt: review.submitted_at || undefined })
+  }
+  return { verdicts: [...byLogin.values()].slice(0, 8), total: shaped.length }
+}
+
+// Validate the official check-runs payload into bounded display records.
+function selectGithubCheckRuns(payload: unknown): GithubObject {
+  const data = githubObject(payload, 'check-runs')
+  if (!Array.isArray(data.check_runs) || data.check_runs.length > 100) throw new GithubQueryError('官方检查字段异常：check_runs')
+  return { check_runs: data.check_runs.slice(0, 30).map(item => { const run = githubObject(item, 'check_run'); return { name: githubString(run, 'name'), status: githubString(run, 'status'), conclusion: githubString(run, 'conclusion', true), html_url: githubString(run, 'html_url', true) } }) }
+}
+
+// Bucket and rank official check runs exactly like the progress board's summary.
+function summarizeGithubChecks(raw: GithubObject[]): GithubPullChecks | undefined {
+  if (!raw.length) return undefined
+  const counts: Record<GithubCheckRun['bucket'], number> = { failure: 0, pending: 0, success: 0, neutral: 0, skipped: 0 }
+  const runs: GithubCheckRun[] = raw.map(item => {
+    const run = githubObject(item, 'check_run')
+    const status = githubString(run, 'status'), conclusion = githubString(run, 'conclusion', true)
+    const bucket: GithubCheckRun['bucket'] = status !== 'completed' ? 'pending' : conclusion === 'success' ? 'success' : ['failure', 'timed_out', 'startup_failure', 'action_required', 'cancelled'].includes(conclusion) ? 'failure' : conclusion === 'skipped' ? 'skipped' : 'neutral'
+    counts[bucket]++
+    return { name: githubString(run, 'name'), status, conclusion: conclusion || undefined, bucket }
+  })
+  const overall = counts.failure ? 'failure' : counts.pending ? 'pending' : counts.success ? 'success' : 'neutral'
+  const order: Record<GithubCheckRun['bucket'], number> = { failure: 0, pending: 1, success: 2, neutral: 3, skipped: 4 }
+  runs.sort((first, second) => order[first.bucket] - order[second.bucket])
+  return { overall, total: runs.length, counts, runs: runs.slice(0, 10) }
 }
 
 // Consume a bounded JSON response with the same request cancellation signal.
 async function readGithubJson(response: Response): Promise<GithubObject> {
+  return githubObject(await readGithubPayload(response), 'response')
+}
+
+// Read any bounded official JSON payload; list endpoints answer with top-level arrays.
+async function readGithubPayload(response: Response): Promise<unknown> {
   const reader = response.body?.getReader()
   if (!reader) throw new GithubQueryError('官方接口返回空响应')
   const chunks: Uint8Array[] = []
@@ -66,8 +161,8 @@ async function readGithubJson(response: Response): Promise<GithubObject> {
       chunks.push(part.value)
     }
   } finally { await reader.cancel().catch(() => {}) }
-  try { return githubObject(JSON.parse(Buffer.concat(chunks).toString('utf8')), 'response') }
-  catch (error) { if (error instanceof GithubQueryError) throw error; throw new GithubQueryError('官方接口返回无效数据') }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) }
+  catch { throw new GithubQueryError('官方接口返回无效数据') }
 }
 
 // --- 串行请求与缓存 --- //
@@ -79,14 +174,14 @@ export class GithubPreviewClient {
   constructor(private readonly transport: typeof fetch = (...args) => fetch(...args), private readonly token = process.env.GITHUB_PREVIEW_TOKEN || '') {}
 
   // Serialize official requests and merge repeated calls via the metadata cache.
-  private async request(route: string, context: GithubWorkContext): Promise<GithubCacheEntry> {
-    const job = this.serial.catch(() => {}).then(() => this.requestSerial(route, context))
+  private async request(route: string, context: GithubWorkContext, select?: (payload: unknown) => GithubObject): Promise<GithubCacheEntry> {
+    const job = this.serial.catch(() => {}).then(() => this.requestSerial(route, context, select))
     this.serial = job
     return job
   }
 
   // Revalidate metadata using ETag; enforce rate limits, bounded retries and safe redirects.
-  private async requestSerial(route: string, context: GithubWorkContext): Promise<GithubCacheEntry> {
+  private async requestSerial(route: string, context: GithubWorkContext, select?: (payload: unknown) => GithubObject): Promise<GithubCacheEntry> {
     assertGithubWork(context)
     const accept = /\/(issues|pulls)\/\d+$/.test(route) ? 'application/vnd.github.html+json' : 'application/vnd.github+json'
     // Rendered bodies contain short-lived signed image URLs: refresh HTML without conditional reuse.
@@ -149,7 +244,7 @@ export class GithubPreviewClient {
         const message = rateLimited ? 'GitHub 请求受限，请稍后重试' : ({ 401: 'GitHub 认证配置不可用', 403: 'GitHub 拒绝访问', 404: '资源不存在或当前不可访问', 410: '资源已移除' } as Record<number, string>)[status] || 'GitHub 服务请求失败'
         throw new GithubQueryError(message, status, rateLimited || status >= 500)
       }
-      const value = selectGithubFields(await readGithubJson(response))
+      const value = select ? select(await readGithubPayload(response)) : selectGithubFields(await readGithubJson(response))
       const entry = { value, etag: response.headers.get('etag') || undefined, fetchedAt: Date.now(), checkedAt: Date.now() }
       this.remember(cacheKey, entry)
       return entry
@@ -216,7 +311,36 @@ export class GithubPreviewClient {
       metadata.author = githubString(user, 'login'); metadata.avatar = githubString(user, 'avatar_url')
       if (!Array.isArray(value.labels)) throw new GithubQueryError('官方标签字段异常')
       metadata.labels = value.labels.map(item => { const label = githubObject(item, 'labels'); return { name: githubString(label, 'name'), color: githubString(label, 'color') } })
+      if (target.kind === 'pull') metadata.pull = await this.lookupPullExtras(canonical, value, context)
     }
     return metadata
+  }
+
+  // Best-effort PR detail extras; every failed part degrades by name instead of failing the preview.
+  private async lookupPullExtras(target: GithubTarget, pull: GithubObject, context: GithubWorkContext): Promise<GithubPullExtras> {
+    const encode = encodeURIComponent
+    const partial: string[] = []
+    let stats: GithubPullStats | undefined
+    try { stats = buildGithubPullStats(pull) } catch { partial.push('统计') }
+    let reviews: GithubReviewVerdict[] = [], reviewTotal = 0
+    try {
+      const entry = await this.request(`/repos/${encode(target.owner)}/${encode(target.repo!)}/pulls/${target.number}/reviews?per_page=100`, context, selectGithubReviews)
+      const latest = latestGithubReviews(entry.value!.reviews as { login: string; state: string; submitted_at: string }[])
+      reviews = latest.verdicts; reviewTotal = latest.total
+    } catch (error) {
+      if (context.signal.aborted || Date.now() >= context.deadline) throw error
+      partial.push('评审')
+    }
+    let checks: GithubPullChecks | undefined
+    if (stats?.headSha) {
+      try {
+        const entry = await this.request(`/repos/${encode(target.owner)}/${encode(target.repo!)}/commits/${encode(stats.headSha)}/check-runs?per_page=100`, context, selectGithubCheckRuns)
+        checks = summarizeGithubChecks(entry.value!.check_runs as GithubObject[])
+      } catch (error) {
+        if (context.signal.aborted || Date.now() >= context.deadline) throw error
+        partial.push('检查')
+      }
+    }
+    return { stats, reviews, reviewTotal, checks, partial }
   }
 }

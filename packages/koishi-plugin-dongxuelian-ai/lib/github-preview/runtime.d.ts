@@ -27,6 +27,7 @@ export interface GithubSession {
 interface GithubRuntimeDependencies {
     lookup(target: GithubTarget, context: GithubWorkContext): Promise<GithubMetadata>;
     screenshot(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>;
+    renderPull(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>;
     render(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>;
     acquire(context: GithubWorkContext, group: string): Promise<() => void>;
     log(message: string): void;

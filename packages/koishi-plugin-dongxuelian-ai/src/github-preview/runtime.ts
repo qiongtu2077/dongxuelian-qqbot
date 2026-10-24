@@ -11,6 +11,7 @@ import { extractGithubTargets, isGithubPreviewCommand, resolveGithubNumber } fro
 import { GithubGroupRepositories, handleGithubRepositoryCommand } from './repositories'
 import { GithubPreviewClient, GithubQueryError } from './client'
 import { renderGithubIssue } from './issue-renderer'
+import { renderGithubPullCard } from './pull-card'
 import { renderGithubCard, githubTextFallback } from './renderer'
 const { h } = require('koishi') as typeof import('koishi')
 const { hasAdminPermission } = require('../core/utils') as typeof import('../core/utils')
@@ -24,6 +25,7 @@ export interface GithubSession {
 interface GithubRuntimeDependencies {
   lookup(target: GithubTarget, context: GithubWorkContext): Promise<GithubMetadata>
   screenshot(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>
+  renderPull(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>
   render(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>
   acquire(context: GithubWorkContext, group: string): Promise<() => void>
   log(message: string): void
@@ -73,7 +75,7 @@ export class GithubPreviewRuntime {
     this.settings = settings
     this.repositories = repositories
     const client = new GithubPreviewClient()
-    this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: renderGithubIssue, render: renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies }
+    this.deps = { lookup: (target, context) => client.lookup(target, context), screenshot: renderGithubIssue, renderPull: renderGithubPullCard, render: renderGithubCard, acquire: acquireGithubResources, log: message => console.warn(message), ...dependencies }
     this.unsubscribe = settings.onRemoved(group => this.cancelGroup(group))
     this.unsubscribeRepositories = repositories.onChanged(group => this.cancelGroup(group))
   }
@@ -205,7 +207,7 @@ export class GithubPreviewRuntime {
       for (const target of job.targets) {
         if (!this.valid(job)) break
         if (context.deadline - Date.now() < 1000) { await this.deliver(job, '剩余链接未处理：本次查询已到处理时限。', context); break }
-        const cacheKey = target.key + (['issue', 'pull'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + GITHUB_LIMITS.padding
+        const cacheKey = target.key + (target.kind === 'pull' ? ':pull-dashboard-v1:' : ['issue'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + GITHUB_LIMITS.padding
         const cached = this.images.get(cacheKey)
         let metadata: GithubMetadata | undefined, result: GithubImageResult | undefined, note = '', text = ''
         if (cached && Date.now() - cached.result.capturedAt < GITHUB_LIMITS.cacheMs) { metadata = cached.metadata; result = cached.result; note = '缓存数据，捕获于 ' + new Date(result.capturedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) }
@@ -220,7 +222,7 @@ export class GithubPreviewRuntime {
             assertGithubWork(work)
             if (!release) release = await this.deps.acquire(work, job.group)
             assertGithubWork(work)
-            result = ['issue', 'pull'].includes(metadata.target.kind) ? await this.deps.screenshot(metadata, work) : await this.deps.render(metadata, work)
+            result = metadata.target.kind === 'pull' ? await this.deps.renderPull(metadata, work) : metadata.target.kind === 'issue' ? await this.deps.screenshot(metadata, work) : await this.deps.render(metadata, work)
             assertGithubWork(work)
             this.cacheImage(cacheKey, { result, metadata, bytes: result.images.reduce((sum, image) => sum + image.length, 0) })
             if (result.incomplete) note = result.note || '正文附件未完整载入，请查看原文。'

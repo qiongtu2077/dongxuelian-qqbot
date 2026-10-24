@@ -13,6 +13,50 @@ export interface GithubTarget {
     url: string;
     key: string;
 }
+export interface GithubPullStats {
+    commits?: number;
+    additions?: number;
+    deletions?: number;
+    changedFiles?: number;
+    comments?: number;
+    reviewComments?: number;
+    headRef?: string;
+    baseRef?: string;
+    headSha?: string;
+    mergeableState?: string;
+    updatedAt?: string;
+    closedAt?: string;
+    mergedAt?: string;
+    mergedBy?: string;
+    assignees?: string[];
+    requestedReviewers?: string[];
+    milestone?: string;
+}
+export interface GithubReviewVerdict {
+    login: string;
+    state: string;
+    submittedAt?: string;
+}
+export type GithubCheckBucket = 'failure' | 'pending' | 'success' | 'neutral' | 'skipped';
+export interface GithubCheckRun {
+    name: string;
+    status: string;
+    conclusion?: string;
+    bucket: GithubCheckBucket;
+}
+export interface GithubPullChecks {
+    overall: 'failure' | 'pending' | 'success' | 'neutral';
+    total: number;
+    counts: Record<GithubCheckBucket, number>;
+    runs: GithubCheckRun[];
+}
+export interface GithubPullExtras {
+    stats?: GithubPullStats;
+    reviews: GithubReviewVerdict[];
+    reviewTotal: number;
+    checks?: GithubPullChecks;
+    partial: string[];
+}
 export interface GithubMetadata {
     target: GithubTarget;
     title: string;
@@ -28,6 +72,7 @@ export interface GithubMetadata {
     }[];
     bodyHtml?: string;
     createdAt?: string;
+    pull?: GithubPullExtras;
     facts: [string, string][];
     stale?: boolean;
 }
