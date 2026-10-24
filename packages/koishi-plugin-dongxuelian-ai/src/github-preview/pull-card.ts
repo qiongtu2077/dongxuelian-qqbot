@@ -1,12 +1,13 @@
 /**
- * MODULE: GitHub PR 看板风格卡片。
- * 职责: 用进度看板详情视图的暗色版式离线渲染合并请求卡片（状态、统计、评审、检查、正文）。
+ * MODULE: GitHub PR 前后风格对比卡片。
+ * 职责: 离线渲染「前风格工业风卡片」与「后风格看板详情卡片」，同一条消息按序发出两张图。
  * 边界: 不打开官网、不调用模型；调用方拥有全局资源门卫与官方字段合同。
  */
 import type { GithubMetadata, GithubImageResult, GithubWorkContext, GithubCheckRun } from './models'
 import { GITHUB_LIMITS, assertGithubWork } from './models'
 import { escapeGithubText as esc, loadGithubAvatar, splitGithubImage } from './renderer'
 import { prepareGithubBody } from './body-content'
+const { buildGithubIssueHtml } = require('./issue-renderer') as { buildGithubIssueHtml(metadata: GithubMetadata, body: string, avatar: Buffer | null, note?: string): string }
 const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer') as {
   renderHtmlToImage(html: string, context: { signal: AbortSignal; deadlineMs: number; workDeadlineMs: number; taskId: string; source: string; networkPolicy: 'offline'; captureSelector: string }): Promise<Buffer>
 }
@@ -14,7 +15,6 @@ const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot') 
 
 // --- 固定模板（看板详情暗色令牌） --- //
 const REVIEW_TEXT: Record<string, string> = { APPROVED: '✅ 已批准', CHANGES_REQUESTED: '⛔ 要求修改', COMMENTED: '💬 评论', DISMISSED: '已撤销', PENDING: '待提交' }
-const CHECK_ORDER: Record<GithubCheckRun['bucket'], number> = { failure: 0, pending: 1, success: 2, neutral: 3, skipped: 4 }
 
 function githubPullStateHtml(metadata: GithubMetadata): string {
   const cls = metadata.state === '已合并' ? 'is-merged' : metadata.state === '已关闭' ? 'is-closed' : metadata.state === '草稿' ? 'is-draft' : 'is-open'
@@ -140,10 +140,15 @@ export async function renderGithubPullCard(metadata: GithubMetadata, context: Gi
     assertGithubWork(work)
     const avatarMissing = Boolean(metadata.avatar && !avatar)
     const note = [body.missing ? `正文附件未完整载入：${body.missing} 处图片未载入，请查看原文。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ')
-    const html = buildGithubPullHtml(metadata, body.html, avatar, note)
-    if (Buffer.byteLength(html, 'utf8') > GITHUB_LIMITS.htmlBytes) throw new Error('正文模板超过大小限制，请查看原文')
-    const raw = await renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' })
-    const images = await splitGithubImage(raw, work)
+    const classicHtml = buildGithubIssueHtml(metadata, body.html, avatar, note)
+    const boardHtml = buildGithubPullHtml(metadata, body.html, avatar, note)
+    if ([classicHtml, boardHtml].some(html => Buffer.byteLength(html, 'utf8') > GITHUB_LIMITS.htmlBytes)) throw new Error('正文模板超过大小限制，请查看原文')
+    const render = { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline' as const, captureSelector: '#github-preview' }
+    // Sequential captures keep at most one owned browser alive at a time; both cards ship as separate images.
+    const before = await splitGithubImage(await renderHtmlToImage(classicHtml, render), work)
+    assertGithubWork(work)
+    const after = await splitGithubImage(await renderHtmlToImage(boardHtml, render), work)
+    const images = [...before, ...after]
     assertGithubWork(work)
     return { images, capturedAt: Date.now(), incomplete: body.missing > 0 || avatarMissing, note }
   } catch (error) {

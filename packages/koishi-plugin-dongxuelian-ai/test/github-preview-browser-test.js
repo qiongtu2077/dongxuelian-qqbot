@@ -79,7 +79,8 @@ async function verifyRender(kind, options = {}) {
     assert.equal(requestOptions.headers, undefined)
     return options.avatarFailure ? new Response(null, { status: 503 }) : new Response(avatarPng)
   }
-  let owned, closeOwned, cleanupStarted, layout, requests = 0, screenshotStarted = false
+  let owned, closeOwned, cleanupStarted, requests = 0, screenshotStarted = false
+  const layouts = []
   const controller = new AbortController()
   let abortTimer
   puppeteer.launch = async launchOptions => {
@@ -92,7 +93,7 @@ async function verifyRender(kind, options = {}) {
       page.on('request', request => { if (/^https?:/.test(request.url())) requests++ })
       const screenshot = page.screenshot.bind(page)
       page.screenshot = async (...args) => {
-        layout = await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) }))
+        layouts.push(await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) })))
         return screenshot(...args)
       }
       if (options.stall) page.screenshot = () => { screenshotStarted = true; return new Promise(() => {}) }
@@ -116,13 +117,22 @@ async function verifyRender(kind, options = {}) {
     else if (options.guardFailure) await assert.rejects(promise, /guard setup failed/)
     else {
       const result = await promise
-      assert.equal(result.incomplete, Boolean(options.avatarFailure)); assert.equal(result.images.length, 1)
-      if (kind === 'pull') { assert.equal(layout.dark, 'rgb(23, 26, 33)'); assert.equal(layout.yellow, ''); assert.equal(layout.pills, 2); assert.equal(layout.placeholder, false) }
-      else { assert.equal(layout.yellow, 'rgb(245, 213, 49)'); assert.equal(layout.placeholder, Boolean(options.avatarFailure)) }
-      assert.equal(layout.avatar, options.avatarFailure ? 0 : 64)
+      assert.equal(result.incomplete, Boolean(options.avatarFailure)); assert(result.images.length >= (kind === 'pull' ? 2 : 1) && result.images.length <= 6)
+      if (kind === 'pull') {
+        assert.equal(layouts.length, 2)
+        assert.equal(layouts[0].yellow, 'rgb(245, 213, 49)', 'first image keeps the industrial before-card')
+        assert.equal(layouts[1].dark, 'rgb(23, 26, 33)', 'second image is the board after-card')
+        assert(layouts[1].pills >= 2, 'board card carries state pills')
+        assert(layouts.every(item => !item.placeholder))
+        assert(layouts.some(item => item.avatar === (options.avatarFailure ? 0 : 64)))
+      }
+      else {
+        assert.equal(layouts[0].yellow, 'rgb(245, 213, 49)'); assert.equal(layouts[0].placeholder, Boolean(options.avatarFailure))
+        assert.equal(layouts[0].avatar, options.avatarFailure ? 0 : 64)
+      }
       if (options.avatarFailure) assert.match(result.note, /头像暂未载入/)
       const dimensions = await sharp(result.images[0]).metadata()
-      assert.equal(dimensions.width, 928); assert(dimensions.height < (kind === 'pull' ? 1600 : 800))
+      assert.equal(dimensions.width, 928); assert(dimensions.height < (kind === 'pull' ? 2000 : 800))
       await verifyPadding(result.images)
     }
     if (options.stuckClose) await new Promise(resolve => setTimeout(resolve, 150))

@@ -5,11 +5,11 @@ exports.renderGithubPullCard = renderGithubPullCard;
 const models_1 = require("./models");
 const renderer_1 = require("./renderer");
 const body_content_1 = require("./body-content");
+const { buildGithubIssueHtml } = require('./issue-renderer');
 const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer');
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot');
 // --- 固定模板（看板详情暗色令牌） --- //
 const REVIEW_TEXT = { APPROVED: '✅ 已批准', CHANGES_REQUESTED: '⛔ 要求修改', COMMENTED: '💬 评论', DISMISSED: '已撤销', PENDING: '待提交' };
-const CHECK_ORDER = { failure: 0, pending: 1, success: 2, neutral: 3, skipped: 4 };
 function githubPullStateHtml(metadata) {
     const cls = metadata.state === '已合并' ? 'is-merged' : metadata.state === '已关闭' ? 'is-closed' : metadata.state === '草稿' ? 'is-draft' : 'is-open';
     return `<span class="state ${cls}"><i></i>${(0, renderer_1.escapeGithubText)(metadata.state || '未知')}</span>`;
@@ -133,11 +133,16 @@ async function renderGithubPullCard(metadata, context) {
         (0, models_1.assertGithubWork)(work);
         const avatarMissing = Boolean(metadata.avatar && !avatar);
         const note = [body.missing ? `正文附件未完整载入：${body.missing} 处图片未载入，请查看原文。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ');
-        const html = buildGithubPullHtml(metadata, body.html, avatar, note);
-        if (Buffer.byteLength(html, 'utf8') > models_1.GITHUB_LIMITS.htmlBytes)
+        const classicHtml = buildGithubIssueHtml(metadata, body.html, avatar, note);
+        const boardHtml = buildGithubPullHtml(metadata, body.html, avatar, note);
+        if ([classicHtml, boardHtml].some(html => Buffer.byteLength(html, 'utf8') > models_1.GITHUB_LIMITS.htmlBytes))
             throw new Error('正文模板超过大小限制，请查看原文');
-        const raw = await renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' });
-        const images = await (0, renderer_1.splitGithubImage)(raw, work);
+        const render = { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' };
+        // Sequential captures keep at most one owned browser alive at a time; both cards ship as separate images.
+        const before = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(classicHtml, render), work);
+        (0, models_1.assertGithubWork)(work);
+        const after = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(boardHtml, render), work);
+        const images = [...before, ...after];
         (0, models_1.assertGithubWork)(work);
         return { images, capturedAt: Date.now(), incomplete: body.missing > 0 || avatarMissing, note };
     }
