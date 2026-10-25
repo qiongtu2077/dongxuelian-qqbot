@@ -202,13 +202,21 @@ export class GithubPreviewRuntime {
     const context: GithubWorkContext = { signal: job.controller.signal, deadline: Date.now() + GITHUB_LIMITS.runMs, taskId: 'github-preview-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8) }
     const timer = setTimeout(() => job.controller.abort(new Error('GitHub 查询处理超时')), GITHUB_LIMITS.runMs)
     const started = Date.now()
+    // Batch image counting needs a final delivery stage within the unchanged 45-second task budget.
+    const processingDeadline = context.deadline - 5000
     this.deps.log(`github-preview started task=${context.taskId} group=${job.group} targets=${job.targets.map(target => target.key).join(',')}`)
+    const replies: { content: string | ReturnType<typeof h>[]; imageCount: number }[] = []
     let release: (() => void) | undefined
     try {
       if (job.overflow) await this.deliver(job, '每条消息最多处理前 3 个不同的 GitHub 链接。', context)
       for (const target of job.targets) {
         if (!this.valid(job)) break
-        if (context.deadline - Date.now() < 1000) { await this.deliver(job, '剩余链接未处理：本次查询已到处理时限。', context); break }
+        if (processingDeadline - Date.now() < 1000) {
+          const content = '剩余链接未处理：本次查询已到处理时限。'
+          if (replies.length) replies.push({ content, imageCount: 0 })
+          else await this.deliver(job, content, context)
+          break
+        }
         const theme = this.themes.theme(job.group)
         const cacheKey = target.key + (target.kind === 'pull' ? `:pull-board-body-v3:${theme}:` : ['issue'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + GITHUB_LIMITS.padding
         const cached = this.images.get(cacheKey)
@@ -218,7 +226,7 @@ export class GithubPreviewRuntime {
           const targetController = new AbortController()
           const cancelTarget = (): void => targetController.abort(context.signal.reason)
           context.signal.addEventListener('abort', cancelTarget, { once: true })
-          const work = { ...context, signal: targetController.signal, deadline: Math.min(context.deadline, Date.now() + GITHUB_LIMITS.targetMs) }
+          const work = { ...context, signal: targetController.signal, deadline: Math.min(processingDeadline, Date.now() + GITHUB_LIMITS.targetMs) }
           const targetTimer = setTimeout(() => targetController.abort(new Error('GitHub 单个目标处理超时（最多30秒）')), Math.max(0, work.deadline - Date.now()))
           try {
             metadata = await this.deps.lookup(target, work)
@@ -238,8 +246,18 @@ export class GithubPreviewRuntime {
           } finally { clearTimeout(targetTimer); context.signal.removeEventListener('abort', cancelTarget) }
         }
         if (!this.valid(job)) break
-        // Sending lives outside processing catches: adapter errors cannot trigger duplicate fallbacks.
-        await this.deliver(job, result && metadata ? [note ? h.text(note + '\n') : h.text(''), ...result.images.map(image => h.image(image, 'image/png')), h.text('\n' + metadata.url)] : text, context)
+        // Collect actual output, including cache hits, before deciding whether this request needs a record.
+        if (result && metadata) replies.push({ content: [...(note ? [h.text(note + '\n')] : []), ...result.images.map(image => h.image(image, 'image/png')), h.text('\n' + metadata.url)], imageCount: result.images.length })
+        else if (replies.length) replies.push({ content: text, imageCount: 0 })
+        else await this.deliver(job, text, context)
+      }
+      // Sending stays outside processing catches: an uncertain adapter result must never cause a retry.
+      if (replies.reduce((sum, reply) => sum + reply.imageCount, 0) > 3) {
+        const contents = replies.flatMap(reply => typeof reply.content === 'string' ? [h.text(reply.content)] : reply.content)
+        await this.deliver(job, h('figure', {}, contents.map(content => h('message', {}, content))), context)
+      } else for (const reply of replies) {
+        if (!this.valid(job)) break
+        await this.deliver(job, reply.content, context)
       }
     } finally {
       clearTimeout(timer); if (release) release()

@@ -32,6 +32,23 @@ function githubResponse(value, status = 200, headers = {}) { return new Response
 // Return controllable work for cancellation and queue ordering without sleeping.
 function githubDeferred() { let resolve; const promise = new Promise(done => { resolve = done }); return { promise, resolve } }
 
+// Exercise the installed OneBot encoder while replacing only the outbound QQ transport.
+async function encodeGithubReply(content) {
+  const { h, Universal } = require('koishi')
+  const { OneBotMessageEncoder } = require('koishi-plugin-adapter-onebot')
+  const calls = []
+  const internal = {
+    async sendGroupForwardMsg(groupId, nodes) { assert.equal(this, internal); calls.push({ method: 'sendGroupForwardMsg', groupId, nodes }); return 'forward-1' },
+    async sendGroupMsg(groupId, segments) { assert.equal(this, internal); calls.push({ method: 'sendGroupMsg', groupId, segments }); return 'message-1' },
+  }
+  const bot = { selfId: '10000', userId: '10000', user: { name: '东雪莲' }, internal, session() { return { event: { message: {} }, app: { emit() {} } } } }
+  const encoder = new OneBotMessageEncoder(bot, '10001')
+  encoder.session = { event: { channel: { type: Universal.Channel.Type.TEXT } }, channelId: '10001', guildId: '10001', isDirect: false }
+  await encoder.render(h.normalize(content))
+  await encoder.flush()
+  return calls
+}
+
 // Exercise official protocol, durable settings, actual middleware and cancellation behavior.
 async function run(t) {
   t.section('scenario: GitHub public previews')
@@ -135,6 +152,64 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ data, makeSession }) => {
+    await githubCase(t, 'one to three images send directly, four images use one record, including cache hits and real OneBot encoding', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      for (const count of [1, 3, 4, 5]) {
+        const settings = new GithubPreviewSettings(data.pathFor('image-count-' + count)); await settings.update('10001', true); await settings.update('10002', true)
+        const images = Array.from({ length: count }, (_, index) => Buffer.from('ordered-image-' + index))
+        let renders = 0
+        const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'PR', facts: [], fetchedAt: Date.now() }), renderPull: async () => { renders++; return { images, capturedAt: Date.now() } }, acquire: async () => () => {}, log: () => {} })
+        try {
+          for (const guildId of ['10001', '10002']) {
+            const outgoing = []
+            await runtime.handle(makeSession({ guildId, messageId: 'threshold-' + guildId, send: async content => { outgoing.push(content); return 'sent' } }), 'https://github.com/owner/repo/pull/1')
+            assert.equal(outgoing.length, 1)
+            const calls = await encodeGithubReply(outgoing[0])
+            assert.equal(calls.length, 1); assert.equal(calls[0].method, count > 3 ? 'sendGroupForwardMsg' : 'sendGroupMsg')
+            const segments = count > 3 ? calls[0].nodes.flatMap(node => node.data.content) : calls[0].segments
+            assert.deepEqual(segments.filter(item => item.type === 'image').map(item => item.data.file), images.map(image => 'base64://' + image.toString('base64')))
+            assert(segments.at(-1).data.text.includes('https://github.com/owner/repo/pull/1'))
+            if (guildId === '10002') assert(segments[0].data.text.includes('缓存数据'))
+          }
+          assert.equal(renders, 1)
+        } finally { runtime.dispose() }
+      }
+    })
+    await githubCase(t, 'two plus two images across links share one record, failures count only actual images, and send failure is not retried', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      for (const failure of [false, true]) {
+        const settings = new GithubPreviewSettings(data.pathFor('batch-record-' + failure)); await settings.update('10001', true)
+        const outgoing = []
+        const runtime = new GithubPreviewRuntime(settings, { lookup: async target => { if (failure && target.number === 2) throw new GithubQueryError('资源不存在或当前不可访问', 404); return { target, url: target.url, title: 'PR', facts: [], fetchedAt: Date.now() } }, renderPull: async metadata => ({ images: [Buffer.from('board-' + metadata.target.number), Buffer.from('body-' + metadata.target.number)], capturedAt: Date.now() }), acquire: async () => () => {}, log: () => {} })
+        try {
+          await runtime.handle(makeSession({ send: async content => { outgoing.push(content); return 'sent' } }), 'https://github.com/owner/repo/pull/1 https://github.com/owner/repo/pull/2')
+          assert.equal(outgoing.length, failure ? 2 : 1)
+          const calls = await encodeGithubReply(outgoing[0])
+          assert.equal(calls[0].method, failure ? 'sendGroupMsg' : 'sendGroupForwardMsg')
+          if (failure) assert(String(outgoing[1]).includes('资源不存在'))
+          else assert.deepEqual(calls[0].nodes.flatMap(node => node.data.content).filter(item => item.type === 'image').map(item => Buffer.from(item.data.file.slice(9), 'base64').toString()), ['board-1', 'body-1', 'board-2', 'body-2'])
+          let attempts = 0
+          await runtime.handle(makeSession({ messageId: 'uncertain', send: async () => { attempts++; throw new Error('adapter uncertain') } }), 'https://github.com/owner/repo/pull/3 https://github.com/owner/repo/pull/4')
+          assert.equal(attempts, 1)
+        } finally { runtime.dispose() }
+      }
+    })
+    await githubCase(t, 'group removal cancels a pending image record before delivery', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      const settings = new GithubPreviewSettings(data.pathFor('record-cancel')); await settings.update('10001', true)
+      const secondStarted = githubDeferred(), hold = githubDeferred()
+      let released = 0
+      const runtime = new GithubPreviewRuntime(settings, { lookup: async target => { if (target.number === 2) { secondStarted.resolve(); await hold.promise } return { target, url: target.url, title: 'PR', facts: [], fetchedAt: Date.now() } }, renderPull: async () => ({ images: Array.from({ length: 4 }, (_, index) => Buffer.from('pending-' + index)), capturedAt: Date.now() }), acquire: async () => () => { released++ }, log: () => {} })
+      try {
+        const session = makeSession()
+        const task = runtime.handle(session, 'https://github.com/owner/repo/pull/1 https://github.com/owner/repo/pull/2'); await secondStarted.promise
+        await settings.update('10001', false); hold.resolve(); await task
+        assert.equal(session.sent.length, 0); assert.equal(released, 1)
+      } finally { hold.resolve(); runtime.dispose() }
+    })
     await githubCase(t, 'pull sends one board then industrial body pages in renderer order, including cached sends', async () => {
       const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
       const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
@@ -634,6 +709,27 @@ async function run(t) {
   })
   // Fake timers are explicit here because this case verifies real queue-expiry scheduling.
   await withScenario({ fakeTimers: true }, async ({ data, clock, makeSession }) => {
+    await githubCase(t, 'finished images survive a later target timeout and are delivered as a record within the original budget', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      const settings = new GithubPreviewSettings(data.pathFor('record-deadline')); await settings.update('10001', true)
+      const secondStarted = githubDeferred(), images = Array.from({ length: 4 }, (_, index) => Buffer.from('finished-image-' + index))
+      let cancelled = false, released = 0
+      const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'PR', facts: [], fetchedAt: Date.now() }), renderPull: async (metadata, context) => {
+        if (metadata.target.number === 1) { await clock.tick(20000); return { images, capturedAt: Date.now() } }
+        secondStarted.resolve()
+        await new Promise(resolve => context.signal.addEventListener('abort', () => { cancelled = true; resolve() }, { once: true }))
+        return { images: [Buffer.from('late-image')], capturedAt: Date.now() }
+      }, acquire: async () => () => { released++ }, log: () => {} })
+      try {
+        const session = makeSession({ messageId: 'record-deadline' })
+        const task = runtime.handle(session, 'https://github.com/owner/repo/pull/1 https://github.com/owner/repo/pull/2'); await secondStarted.promise
+        await clock.tick(20001); await task
+        assert(cancelled); assert.equal(released, 1); assert.equal(session.sent.length, 1)
+        assert(session.sent[0].startsWith('<figure>')); assert(session.sent[0].includes('30秒'))
+        assert(images.every(image => session.sent[0].includes(image.toString('base64')))); assert(!session.sent[0].includes(Buffer.from('late-image').toString('base64')))
+      } finally { runtime.dispose() }
+    })
     await githubCase(t, '30-second target deadline includes lookup and rendering, then returns text without late images', async () => {
       const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
       const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
@@ -682,9 +778,9 @@ async function run(t) {
       try {
         const task = runtime.handle(session, 'https://github.com/owner/repo/issues/1 https://github.com/owner/repo/issues/2'); await started[0].promise
         await clock.tick(30001); await started[1].promise
-        assert.equal(deadlines[1] - deadlines[0], 15000)
+        assert.equal(deadlines[1] - deadlines[0], 10000, 'last five seconds are reserved for final delivery')
         await clock.tick(15000); await task
-        assert.equal(cancelled, 2); assert(released); assert.equal(session.sent.length, 1)
+        assert.equal(cancelled, 2); assert(released); assert.equal(session.sent.length, 2)
         assert(!session.sent.join('').includes('data:image'))
       } finally { runtime.dispose() }
     })

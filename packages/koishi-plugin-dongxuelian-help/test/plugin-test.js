@@ -94,6 +94,7 @@ async function run() {
   check('misc help explains optional matching URL deletion with or without a space', ['删除 [仓库链接]', '删除链接可省略', '直接拼接', '当前群匹配'].every(text => result.result.includes(text)), String(result.result))
   check('misc help explains Issue/PR official rendering and bounded work', result.result.includes('Issue / PR') && /30\s*秒/.test(result.result) && result.result.includes('官方') && result.result.includes('正文'), String(result.result))
   check('misc help explains board-first industrial body screenshots and group themes', ['第一张为看板详情卡片', '原黄色工业风正文长截图', '连续切片最多3张', 'GitHub群主题'].every(text => result.result.includes(text)), String(result.result))
+  check('misc help explains image-count record threshold', ['1～3张直接发送', '4张及以上', '消息记录', '多个链接合计'].every(text => result.result.includes(text)), String(result.result))
   check('misc help returns root-level misc branch', typeof result.result === 'string' && result.result.includes('【杂项功能】') && result.result.includes('今日情绪'), String(result.result))
 
   result = await runHelpCase(ctx, '【杂项功能】')
