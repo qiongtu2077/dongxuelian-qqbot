@@ -189,7 +189,7 @@ AI API / Agent 工具 / 群工具 / Dashboard / 日报 / 视频 / 图集
 | 昵称与集合 | `packages/koishi-plugin-group-name-at/` | 昵称绑定、集合管理、集合运算、批量 at |
 | B 站视频发送 | `packages/koishi-plugin-local-video-sender/` | 自动识别 B 站链接，或用 `bvidl` 下载并发送视频 |
 | 群聊日报 | `packages/koishi-plugin-daily-report/` | 基础日报、详细日报、HTML 模板渲染、AI 分析 |
-| GitHub 链接查询 | `packages/koishi-plugin-dongxuelian-ai/src/github-preview/` | Issue 正文卡片；PR 首图看板详情、后续正文截图；仓库 / 用户官方信息卡片；独立群白名单默认关闭 |
+| GitHub 链接查询 | `packages/koishi-plugin-dongxuelian-ai/src/github-preview/` | Issue 正文卡片；PR 首图看板详情、后接原工业风正文长截图；仓库 / 用户官方信息卡片；独立群白名单默认关闭 |
 | 退群提醒 | `packages/koishi-plugin-group-leave-notice/` | 监听成员退群事件并在群里提示 |
 | 戳一戳响应 | `packages/koishi-plugin-dongxuelian-poke/` | 调用 NapCat OneBot 扩展接口回戳 |
 | 对话防护 | `packages/koishi-plugin-defense/` | 拦截常见提示词套话、角色覆盖、格式控制类输入 |
@@ -295,9 +295,9 @@ Agent 面板还提供：
 
 发送“杂项功能”可查看入口。机器人指定管理员使用 `GitHub查询群添加 <群号>` 开启、`GitHub查询群删除 <群号>` 关闭，使用 `GitHub查询群查看` 查看配置；普通成员可用 `GitHub查询状态` 查看当前群。首次所有群关闭，配置独立保存在运行数据目录的 `github-preview-groups.json`，重启保留。
 
-开启群直接发送公开的 GitHub Issue、PR、仓库或用户根链接即可，无需艾特。Issue 按官方正文生成工业风卡片。PR 同一条消息先发一张看板详情卡片，展示状态、作者、标签、统计、评审、CI 与正文摘要，再按正文顺序独立发送最多 8 张去重截图，最后附原文链接；截图不嵌进卡片、不切成卡片续页。单个目标最多处理 30 秒，附件下载共用 10 秒预算；图片未载入会明确提示并在后续查询重试，图片生成失败或资源不足时返回文字和原链接。
+开启群直接发送公开的 GitHub Issue、PR、仓库或用户根链接即可，无需艾特。Issue 按官方正文生成工业风卡片。PR 同一条消息先发一张看板详情卡片，展示状态、作者、标签、统计、评审、CI 与正文摘要，再发送现有 bot 生成的黄色工业风 PR 正文长截图，最后附原文链接。正文保留原有文字、表格、代码及内嵌图片，沿用原来的连续切片，最多 3 张正文图；加上看板最多 4 张。单个目标最多处理 30 秒，附件下载共用 10 秒预算；图片未载入会明确提示并在后续查询重试，图片生成失败或资源不足时返回文字和原链接。
 
-PR 看板默认暗色，指定管理员可在群内使用 `GitHub群主题 明亮|暗色` 切换，使用 `GitHub群主题查看` 查看；主题保存在 `github-preview-themes.json`，重启保留。正文截图支持 GitHub 上传附件及 `raw.githubusercontent.com` 图片；保留比例，最大 1280×4000，不放大小图；单张下载上限 2 MiB、附件下载合计上限 8 MiB、整条图片输出上限 10 MiB。动画只展示首帧，长正文及未展示详情可通过原文链接查看。
+PR 看板默认暗色，指定管理员可在群内使用 `GitHub群主题 明亮|暗色` 切换，使用 `GitHub群主题查看` 查看；主题保存在 `github-preview-themes.json`，重启保留。正文内嵌图片支持 GitHub 上传附件及 `raw.githubusercontent.com`，保持原位置和比例；最多下载 8 个不同图片 URL，单张下载上限 2 MiB、附件下载合计上限 8 MiB、整条图片输出上限 10 MiB。重复 URL 只下载一次，正文中的重复图片位置保留。动画展示首帧，截图生成失败时通过文字与原文链接降级。
 
 指定管理员在群内发送 `GitHub群项目导入 <公开仓库链接>` 可绑定该群的项目，每群最多一个；再次导入会替换并显示原、新项目。`GitHub群项目查看` 查看本群绑定，`GitHub群项目删除` 删除本群绑定。绑定独立保存在 `github-preview-repositories.json`，重启保留，不会自动开启查询白名单。在已开启且已绑定的群中，整条消息为 `#123` 时查询该仓库的编号，官方接口识别到 PR 则自动输出 PR 图；带其他文字、提及、图片或多个编号的消息不触发。更换、删除绑定会取消该群尚未发送的查询。
 

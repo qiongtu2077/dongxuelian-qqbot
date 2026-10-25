@@ -1,12 +1,13 @@
 /**
- * MODULE: GitHub PR 看板详情与正文截图。
- * 职责: 首图离线渲染明暗看板详情，后续按正文顺序独立输出截图。
+ * MODULE: GitHub PR 看板详情与正文长截图。
+ * 职责: 首图离线渲染明暗看板详情，后续输出原工业风正文的连续切片。
  * 边界: 不打开官网、不调用模型；调用方拥有全局资源门卫与官方字段合同。
  */
 import type { GithubMetadata, GithubImageResult, GithubWorkContext, GithubPullTheme } from './models'
 import { GITHUB_LIMITS, assertGithubWork } from './models'
 import { escapeGithubText as esc, loadGithubAvatar, splitGithubImage } from './renderer'
-import { prepareGithubBody } from './body-content'
+import { cleanGithubBody, prepareGithubBody } from './body-content'
+import { buildGithubIssueHtml } from './issue-renderer'
 const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer') as {
   renderHtmlToImage(html: string, context: { signal: AbortSignal; deadlineMs: number; workDeadlineMs: number; taskId: string; source: string; networkPolicy: 'offline'; captureSelector: string }): Promise<Buffer>
 }
@@ -168,18 +169,22 @@ export async function renderGithubPullCard(metadata: GithubMetadata, context: Gi
     if (memory !== null && memory < GITHUB_LIMITS.stopMemoryMb) controller.abort(new Error('可用内存过低，已停止正文渲染'))
   }, 500)
   try {
-    const [body, avatar] = await Promise.all([prepareGithubBody(metadata.bodyHtml, metadata.url, work, undefined, undefined, { separateImages: true }), metadata.avatar ? loadGithubAvatar(metadata.avatar, work) : Promise.resolve(null)])
+    const [body, avatar] = await Promise.all([prepareGithubBody(metadata.bodyHtml, metadata.url, work), metadata.avatar ? loadGithubAvatar(metadata.avatar, work) : Promise.resolve(null)])
     assertGithubWork(work)
     const avatarMissing = Boolean(metadata.avatar && !avatar)
-    const note = [body.missing ? `正文附件未完整载入：${body.missing} 张图片未载入，请查看原文。` : '', body.animations ? `${body.animations} 张动画仅展示首帧。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ')
-    const boardHtml = buildGithubPullHtml(metadata, body.html, avatar, note, theme)
-    if (Buffer.byteLength(boardHtml, 'utf8') > GITHUB_LIMITS.htmlBytes) throw new Error('正文模板超过大小限制，请查看原文')
+    const note = [body.missing ? `正文附件未完整载入：${body.missing} 处图片未载入，请查看原文。` : '', body.animations ? `${body.animations} 处动画仅展示首帧。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ')
+    // The board carries a text summary; the following classic pages retain the complete body and images.
+    const summary = cleanGithubBody(metadata.bodyHtml, metadata.url).html.replace(/<!--github-asset:(\d+)-->/g, '')
+    const boardHtml = buildGithubPullHtml(metadata, summary, avatar, note, theme)
+    const classicHtml = buildGithubIssueHtml(metadata, body.html, avatar, note)
+    if ([boardHtml, classicHtml].some(html => Buffer.byteLength(html, 'utf8') > GITHUB_LIMITS.htmlBytes)) throw new Error('正文模板超过大小限制，请查看原文')
     const render = { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline' as const, captureSelector: '#github-preview' }
-    // Capture only the bounded board; screenshots remain independent PNGs after the first image.
+    // Render sequentially under one deadline: the single board comes before the existing body slices.
     const card = await splitGithubImage(await renderHtmlToImage(boardHtml, render), work)
     if (card.length !== 1) throw new Error('看板详情卡片超过单图限制，请查看原文')
     assertGithubWork(work)
-    const images = [...card, ...body.images]
+    const pages = await splitGithubImage(await renderHtmlToImage(classicHtml, render), work)
+    const images = [...card, ...pages]
     if (images.reduce((sum, image) => sum + image.length, 0) > GITHUB_LIMITS.imageBytes) throw new Error('正文图片超过大小限制，请查看原文')
     assertGithubWork(work)
     return { images, capturedAt: Date.now(), incomplete: body.missing > 0 || avatarMissing, note }

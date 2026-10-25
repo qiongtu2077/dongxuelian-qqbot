@@ -5,6 +5,7 @@ exports.renderGithubPullCard = renderGithubPullCard;
 const models_1 = require("./models");
 const renderer_1 = require("./renderer");
 const body_content_1 = require("./body-content");
+const issue_renderer_1 = require("./issue-renderer");
 const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer');
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot');
 // --- 固定模板（看板详情两套皮肤令牌） --- //
@@ -154,20 +155,24 @@ async function renderGithubPullCard(metadata, context, theme = 'dark') {
             controller.abort(new Error('可用内存过低，已停止正文渲染'));
     }, 500);
     try {
-        const [body, avatar] = await Promise.all([(0, body_content_1.prepareGithubBody)(metadata.bodyHtml, metadata.url, work, undefined, undefined, { separateImages: true }), metadata.avatar ? (0, renderer_1.loadGithubAvatar)(metadata.avatar, work) : Promise.resolve(null)]);
+        const [body, avatar] = await Promise.all([(0, body_content_1.prepareGithubBody)(metadata.bodyHtml, metadata.url, work), metadata.avatar ? (0, renderer_1.loadGithubAvatar)(metadata.avatar, work) : Promise.resolve(null)]);
         (0, models_1.assertGithubWork)(work);
         const avatarMissing = Boolean(metadata.avatar && !avatar);
-        const note = [body.missing ? `正文附件未完整载入：${body.missing} 张图片未载入，请查看原文。` : '', body.animations ? `${body.animations} 张动画仅展示首帧。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ');
-        const boardHtml = buildGithubPullHtml(metadata, body.html, avatar, note, theme);
-        if (Buffer.byteLength(boardHtml, 'utf8') > models_1.GITHUB_LIMITS.htmlBytes)
+        const note = [body.missing ? `正文附件未完整载入：${body.missing} 处图片未载入，请查看原文。` : '', body.animations ? `${body.animations} 处动画仅展示首帧。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ');
+        // The board carries a text summary; the following classic pages retain the complete body and images.
+        const summary = (0, body_content_1.cleanGithubBody)(metadata.bodyHtml, metadata.url).html.replace(/<!--github-asset:(\d+)-->/g, '');
+        const boardHtml = buildGithubPullHtml(metadata, summary, avatar, note, theme);
+        const classicHtml = (0, issue_renderer_1.buildGithubIssueHtml)(metadata, body.html, avatar, note);
+        if ([boardHtml, classicHtml].some(html => Buffer.byteLength(html, 'utf8') > models_1.GITHUB_LIMITS.htmlBytes))
             throw new Error('正文模板超过大小限制，请查看原文');
         const render = { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' };
-        // Capture only the bounded board; screenshots remain independent PNGs after the first image.
+        // Render sequentially under one deadline: the single board comes before the existing body slices.
         const card = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(boardHtml, render), work);
         if (card.length !== 1)
             throw new Error('看板详情卡片超过单图限制，请查看原文');
         (0, models_1.assertGithubWork)(work);
-        const images = [...card, ...body.images];
+        const pages = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(classicHtml, render), work);
+        const images = [...card, ...pages];
         if (images.reduce((sum, image) => sum + image.length, 0) > models_1.GITHUB_LIMITS.imageBytes)
             throw new Error('正文图片超过大小限制，请查看原文');
         (0, models_1.assertGithubWork)(work);

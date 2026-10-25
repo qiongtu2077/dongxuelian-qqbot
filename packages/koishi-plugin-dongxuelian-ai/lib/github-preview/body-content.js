@@ -91,7 +91,7 @@ function isGithubBodyImageUrl(raw) {
     }
 }
 // Fetch one image with validated redirects and streamed byte limits, then decode and resample it.
-async function fetchBodyImage(raw, signal, budget, transport, resolve, separateImages) {
+async function fetchBodyImage(raw, signal, budget, transport, resolve) {
     let url = raw;
     for (let hop = 0; hop <= 3; hop++) {
         signal.throwIfAborted();
@@ -132,18 +132,14 @@ async function fetchBodyImage(raw, signal, budget, transport, resolve, separateI
         if (!['png', 'jpeg', 'webp', 'gif', 'heif'].includes(metadata.format || ''))
             throw new Error('附件图片格式不受支持');
         signal.throwIfAborted();
-        const pipeline = sharp(source, { limitInputPixels: 4000000, animated: false });
-        // Standalone screenshots keep their aspect ratio and text detail; they never become card slices.
-        const buffer = separateImages
-            ? await pipeline.resize({ width: 1280, height: 4000, fit: 'inside', withoutEnlargement: true }).png().toBuffer()
-            : await pipeline.resize({ width: 776, withoutEnlargement: true }).webp({ quality: 82 }).toBuffer();
+        const buffer = await sharp(source, { limitInputPixels: 4000000, animated: false }).resize({ width: 776, withoutEnlargement: true }).webp({ quality: 82 }).toBuffer();
         signal.throwIfAborted();
-        return { data: separateImages ? '' : 'data:image/webp;base64,' + buffer.toString('base64'), image: separateImages ? buffer : undefined, animated: (metadata.pages || 1) > 1 };
+        return { data: 'data:image/webp;base64,' + buffer.toString('base64'), animated: (metadata.pages || 1) > 1 };
     }
     throw new Error('附件跳转次数过多');
 }
 // Download at most eight unique images with two workers and one shared bounded asset budget.
-async function prepareGithubBody(raw, base, context, transport = fetch, resolve = resolveAndValidateHostname, options = {}) {
+async function prepareGithubBody(raw, base, context, transport = fetch, resolve = resolveAndValidateHostname) {
     (0, models_1.assertGithubWork)(context);
     const clean = cleanGithubBody(raw, base);
     const urls = [...new Set(clean.images.map(image => image.url))].filter(isGithubBodyImageUrl).slice(0, 8);
@@ -160,7 +156,7 @@ async function prepareGithubBody(raw, base, context, transport = fetch, resolve 
         while (next < urls.length && !controller.signal.aborted && remaining > 0) {
             const url = urls[next++];
             try {
-                assets.set(url, await fetchBodyImage(url, controller.signal, budget, transport, resolve, Boolean(options.separateImages)));
+                assets.set(url, await fetchBodyImage(url, controller.signal, budget, transport, resolve));
             }
             catch (error) {
                 const known = ['附件来源不受支持', '附件不是可用图片', '附件超过大小限制', '附件图片格式不受支持', '附件跳转次数过多'];
@@ -178,25 +174,9 @@ async function prepareGithubBody(raw, base, context, transport = fetch, resolve 
         context.signal.removeEventListener('abort', cancelGithubBodyAssets);
     }
     (0, models_1.assertGithubWork)(context);
-    let missing = 0, animations = 0, embeddedBytes = Buffer.byteLength(clean.html, 'utf8'), imageBytes = 0;
-    const images = [], emitted = new Set();
+    let missing = 0, animations = 0, embeddedBytes = Buffer.byteLength(clean.html, 'utf8');
     const html = clean.html.replace(/<!--github-asset:(\d+)-->/g, (_marker, index) => {
         const image = clean.images[Number(index)], asset = assets.get(image.url);
-        if (options.separateImages) {
-            // Iterate source placeholders, not download completion order; duplicate URLs are emitted once.
-            if (emitted.has(image.url))
-                return '';
-            emitted.add(image.url);
-            if (asset?.image && imageBytes + asset.image.length <= models_1.GITHUB_LIMITS.imageBytes - models_1.GITHUB_LIMITS.htmlBytes) {
-                images.push(asset.image);
-                imageBytes += asset.image.length;
-                if (asset.animated)
-                    animations++;
-            }
-            else
-                missing++;
-            return '';
-        }
         // Leave room for the fixed header/footer and avatar inside the shared renderer's HTML cap.
         if (asset && embeddedBytes + asset.data.length < models_1.GITHUB_LIMITS.htmlBytes - 48 * 1024) {
             embeddedBytes += asset.data.length;
@@ -207,5 +187,5 @@ async function prepareGithubBody(raw, base, context, transport = fetch, resolve 
         missing++;
         return `<span class="image-missing">图片未载入，请查看原文 · ${(0, renderer_1.escapeGithubText)(image.alt)}</span>`;
     });
-    return { html, missing, animations, images };
+    return { html, missing, animations };
 }

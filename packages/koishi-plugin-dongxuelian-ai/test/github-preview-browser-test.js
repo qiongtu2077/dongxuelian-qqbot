@@ -69,10 +69,7 @@ async function verifyBody() {
   assert.equal(dns.missing, 1); assert(performance.now() - dnsStart < 1000)
   const oversized = await prepareGithubBody(`<img src="${url}">`, metadata().url, context(), async () => new Response(Buffer.alloc(2 * 1024 * 1024 + 1), { headers: { 'content-type': 'image/png' } }), async () => [])
   assert.equal(oversized.missing, 1)
-  const screenshots = await prepareGithubBody(`<p>描述保留</p><img src="${url}"><img src="${url}"><img src="https://example.org/no.png">`, metadata('pull').url, context(), async () => new Response(png, { headers: { 'content-type': 'image/png' } }), async () => [], { separateImages: true })
-  assert.equal(screenshots.images.length, 1); assert.equal(screenshots.missing, 1)
-  assert(!screenshots.html.includes('<img')); assert(screenshots.html.includes('描述保留'))
-  assert.equal((await sharp(screenshots.images[0]).metadata()).format, 'png')
+  assert.equal((body.html.match(/<figure>/g) || []).length, 2, 'duplicate image nodes retain their original positions')
   console.log('PASS official HTML structure, task state, expanded details, deduplicated assets, redirects, DNS cancellation and byte caps')
 }
 
@@ -85,12 +82,15 @@ async function verifyRender(kind, options = {}) {
   const screenshotPng = [await sharp({ create: { width: 900, height: 2200, channels: 3, background: '#1177cc' } }).png().toBuffer(), await sharp({ create: { width: 600, height: 450, channels: 3, background: '#cc5511' } }).png().toBuffer()]
   const assetCalls = []
   let owned, closeOwned, cleanupStarted, requests = 0, screenshotStarted = false
-  const layouts = []
+  const layouts = [], captures = [], browsers = []
+  let maxActiveBrowsers = 0
   const controller = new AbortController()
   let abortTimer
   puppeteer.launch = async launchOptions => {
     owned = await originalLaunch(launchOptions)
     closeOwned = owned.close.bind(owned)
+    browsers.push({ browser: owned, close: closeOwned })
+    maxActiveBrowsers = Math.max(maxActiveBrowsers, browsers.filter(item => item.browser.connected).length)
     if (options.stuckClose) owned.close = () => { cleanupStarted = performance.now(); return new Promise(() => {}) }
     const newPage = owned.newPage.bind(owned)
     owned.newPage = async () => {
@@ -98,8 +98,11 @@ async function verifyRender(kind, options = {}) {
       page.on('request', request => { if (/^https?:/.test(request.url())) requests++ })
       const screenshot = page.screenshot.bind(page)
       page.screenshot = async (...args) => {
-        layouts.push(await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', tile: document.querySelector('.stat') ? getComputedStyle(document.querySelector('.stat')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')), bodyImages: document.querySelectorAll('.body img').length, footerBottom: document.querySelector('footer').getBoundingClientRect().bottom, cardBottom: document.querySelector('#github-preview').getBoundingClientRect().bottom })))
-        return screenshot(...args)
+        layouts.push(await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', tile: document.querySelector('.stat') ? getComputedStyle(document.querySelector('.stat')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')), bodyImages: document.querySelectorAll('.body img').length, bodyText: document.querySelector('.body').textContent, footerBottom: document.querySelector('footer').getBoundingClientRect().bottom, cardBottom: document.querySelector('#github-preview').getBoundingClientRect().bottom })))
+        if (options.cancelSecond && layouts.length === 2) controller.abort(new Error('cancel second capture'))
+        const raw = await screenshot(...args)
+        captures.push(raw)
+        return raw
       }
       if (options.stall) page.screenshot = () => { screenshotStarted = true; return new Promise(() => {}) }
       if (options.guardFailure) page.setRequestInterception = async () => { throw new Error('guard setup failed') }
@@ -130,8 +133,8 @@ async function verifyRender(kind, options = {}) {
       return options.avatarFailure ? new Response(null, { status: 503 }) : new Response(avatarPng)
     }
     const data = metadata(kind)
-    if (options.screenshots) data.bodyHtml = '<p>Bot 效果截图</p><img src="https://raw.githubusercontent.com/owner/repo/main/one.png"><img src="https://raw.githubusercontent.com/owner/repo/main/two.png"><img src="https://raw.githubusercontent.com/owner/repo/main/one.png">'
-    if (options.longBody) { data.bodyHtml = '<p>完整正文保留在原文</p>'.repeat(300); data.title = '很长的标题'.repeat(100) }
+    if (options.screenshots) data.bodyHtml = '<p>正文开头</p><img src="https://raw.githubusercontent.com/owner/repo/main/one.png"><p>正文中间</p><img src="https://raw.githubusercontent.com/owner/repo/main/two.png"><img src="https://raw.githubusercontent.com/owner/repo/main/one.png"><p>正文结尾</p>'
+    if (options.longBody || options.oversizedBody) { data.bodyHtml = '<p>正文开头</p>' + '<p>完整正文保留在原文</p>'.repeat(options.oversizedBody ? 300 : 45) + '<p>正文结尾</p>'; data.title = '很长的标题'.repeat(100) }
     data.avatar = 'https://avatars.githubusercontent.com/u/browser-' + kind + (options.avatarFailure ? '-failed' : '-ok')
     const promise = ['repository', 'user'].includes(kind) ? renderGithubCard(data, work) : kind === 'pull' ? renderGithubPullCard(data, work, options.light ? 'light' : 'dark') : renderGithubIssue(data, work)
     if (options.stall) {
@@ -140,28 +143,33 @@ async function verifyRender(kind, options = {}) {
       assert(performance.now() - started >= 29500); assert(performance.now() - started < 34000)
     }
     else if (options.cancel) await assert.rejects(promise, /group removed/)
+    else if (options.cancelSecond) { await assert.rejects(promise, /cancel second capture/); assert.equal(layouts.length, 2) }
+    else if (options.oversizedBody) await assert.rejects(promise, /正文内容超出截图高度限制/)
     else if (options.guardFailure) await assert.rejects(promise, /guard setup failed/)
     else {
       const result = await promise
       assert.equal(result.incomplete, Boolean(options.avatarFailure || options.assetFailure))
-      assert.equal(result.images.length, options.screenshots ? options.assetFailure ? 2 : 3 : 1)
+      assert(kind === 'pull' ? result.images.length >= 2 && result.images.length <= 4 : result.images.length === 1)
       if (kind === 'pull') {
-        assert.equal(layouts.length, 1, 'capture the board exactly once')
-        assert.equal(layouts[0].yellow, '', 'no industrial comparison card')
+        assert.equal(layouts.length, 2, 'capture one board and one complete industrial body')
+        assert.equal(layouts[0].yellow, '', 'first capture is the board')
+        assert.equal(layouts[1].yellow, 'rgb(245, 213, 49)', 'the existing bot body follows the board')
         assert.equal(layouts[0].dark, options.light ? 'rgb(255, 255, 255)' : 'rgb(23, 26, 33)', 'first image is the board card')
         assert.equal(layouts[0].tile, options.light ? 'rgb(232, 237, 245)' : 'rgb(30, 35, 48)', 'board skin follows the group theme')
         assert(layouts[0].pills >= 2, 'board card carries state pills')
-        assert.equal(layouts[0].bodyImages, 0, 'screenshots are not embedded into the board')
+        assert.equal(layouts[0].bodyImages, 0, 'board text summary does not duplicate body images')
         assert(layouts[0].footerBottom <= layouts[0].cardBottom, 'source footer remains visible')
-        assert(layouts.every(item => !item.placeholder))
-        assert(layouts.some(item => item.avatar === (options.avatarFailure ? 0 : 64)))
+        assert.equal(layouts[0].placeholder, false)
+        assert.equal(layouts[1].placeholder, Boolean(options.avatarFailure))
+        assert(layouts.every(item => item.avatar === (options.avatarFailure ? 0 : 64)))
         if (options.screenshots) {
           assert.deepEqual(assetCalls.sort(), [0, 1], 'duplicate image is downloaded once')
-          for (let index = 1; index < result.images.length; index++) {
-            assert.deepEqual(await sharp(result.images[index]).raw().toBuffer(), await sharp(screenshotPng[index - 1]).raw().toBuffer(), 'screenshots preserve source order and pixels without splitting')
-          }
+          assert.equal(layouts[1].bodyImages, options.assetFailure ? 2 : 3, 'images remain at all original body positions')
+          assert(['正文开头', '正文中间', '正文结尾'].every(text => layouts[1].bodyText.includes(text)))
         }
-        if (options.assetFailure) assert.match(result.note, /1 张图片未载入/)
+        if (options.longBody) { assert(layouts[1].bodyText.includes('正文结尾')); assert(result.images.length > 2, 'long body continues after the first industrial page') }
+        if (options.assetFailure) assert.match(result.note, /1 处图片未载入/)
+        await verifyPadding(result.images.slice(1), captures[1])
       }
       else {
         assert.equal(layouts[0].yellow, 'rgb(245, 213, 49)'); assert.equal(layouts[0].placeholder, Boolean(options.avatarFailure))
@@ -173,11 +181,11 @@ async function verifyRender(kind, options = {}) {
       await verifyPadding([result.images[0]])
     }
     if (options.stuckClose) await new Promise(resolve => setTimeout(resolve, 150))
-    assert.equal(requests, 0); assert.equal(owned.connected, false)
+    assert.equal(requests, 0); assert(browsers.every(item => !item.browser.connected)); assert.equal(maxActiveBrowsers, 1)
     assert.equal(readResourceActivityLease('render_active'), null)
     if (options.stuckClose) assert(performance.now() - cleanupStarted < 4500)
     console.log(`PASS ${kind} local rendering ${JSON.stringify(options)}: elapsed=${Math.round(performance.now() - started)}ms, offline and reclaimed`)
-  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; global.fetch = originalFetch; dns.lookup = originalLookup; if (owned?.connected) await closeOwned() }
+  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; global.fetch = originalFetch; dns.lookup = originalLookup; for (const item of browsers) if (item.browser.connected) await item.close() }
 }
 
 // Validate real layout, external-resource blocking, clipping and the hard timeout without GitHub access.
@@ -188,6 +196,8 @@ async function main() {
   await verifyRender('pull', { screenshots: true })
   await verifyRender('pull', { screenshots: true, assetFailure: true })
   await verifyRender('pull', { longBody: true })
+  await verifyRender('pull', { oversizedBody: true })
+  await verifyRender('pull', { cancelSecond: true })
   await verifyRender('pull', { avatarFailure: true })
   await verifyRender('repository', { avatarFailure: true })
   await verifyRender('issue', { avatarFailure: true })

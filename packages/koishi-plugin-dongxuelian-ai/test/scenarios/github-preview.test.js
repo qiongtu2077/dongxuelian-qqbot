@@ -135,11 +135,11 @@ async function run(t) {
   })
 
   await withScenario({}, async ({ data, makeSession }) => {
-    await githubCase(t, 'pull sends one board then screenshots in renderer order, including cached sends', async () => {
+    await githubCase(t, 'pull sends one board then industrial body pages in renderer order, including cached sends', async () => {
       const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
       const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
       const settings = new GithubPreviewSettings(data.pathFor('pull-images')); await settings.update('10001', true); await settings.update('10002', true)
-      const images = ['board-card', 'bot-screen-one', 'bot-screen-two'].map(text => Buffer.from(text))
+      const images = ['board-card', 'industrial-body-page-one', 'industrial-body-page-two'].map(text => Buffer.from(text))
       let renders = 0
       const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'PR', facts: [], fetchedAt: Date.now() }), renderPull: async () => { renders++; return { images, capturedAt: Date.now() } }, acquire: async () => () => {}, log: () => {} })
       try {
@@ -152,7 +152,7 @@ async function run(t) {
           assert(positions[0] >= 0 && positions[0] < positions[1] && positions[1] < positions[2])
           assert(message.indexOf('https://github.com/owner/repo/pull/1') > positions[2])
         }
-        assert.equal(renders, 1, 'cached messages preserve the same board and screenshot order')
+        assert.equal(renders, 1, 'cached messages preserve the same board and complete body page order')
       } finally { runtime.dispose() }
     })
     await githubCase(t, 'per-group board theme persists and threads into pull rendering', async () => {

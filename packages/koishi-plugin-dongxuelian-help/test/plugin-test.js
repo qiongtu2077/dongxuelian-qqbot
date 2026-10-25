@@ -93,7 +93,7 @@ async function run() {
   check('misc help explains single repository binding, exact numbers and thirty-second local rendering', ['GitHub群项目导入', 'GitHub群项目查看', 'GitHub群项目删除', '每群最多绑定一个', '整条发送 #数字', '最多30秒', '占位'].every(text => result.result.includes(text)), String(result.result))
   check('misc help explains optional matching URL deletion with or without a space', ['删除 [仓库链接]', '删除链接可省略', '直接拼接', '当前群匹配'].every(text => result.result.includes(text)), String(result.result))
   check('misc help explains Issue/PR official rendering and bounded work', result.result.includes('Issue / PR') && /30\s*秒/.test(result.result) && result.result.includes('官方') && result.result.includes('正文'), String(result.result))
-  check('misc help explains board-first screenshots and group themes', ['第一张为看板详情卡片', '独立发送截图', '最多8张', 'GitHub群主题'].every(text => result.result.includes(text)), String(result.result))
+  check('misc help explains board-first industrial body screenshots and group themes', ['第一张为看板详情卡片', '原黄色工业风正文长截图', '连续切片最多3张', 'GitHub群主题'].every(text => result.result.includes(text)), String(result.result))
   check('misc help returns root-level misc branch', typeof result.result === 'string' && result.result.includes('【杂项功能】') && result.result.includes('今日情绪'), String(result.result))
 
   result = await runHelpCase(ctx, '【杂项功能】')
