@@ -1162,6 +1162,86 @@ async function testForwardedVideoBvReplies() {
   })
 }
 
+// 验证实际下载文件经 QQ 转发后由真实 Koishi 中间件执行器仅回复原始大小写 BV。
+async function testDownloadedVideoForwardRoundTrip() {
+  section('downloaded video forward round trip')
+  await withIsolatedPlugin(async ({ plugin, tmpRoot }) => {
+    const { h } = require('koishi')
+    const { Processor } = require('@koishijs/core')
+    const { OneBot } = require('koishi-plugin-adapter-onebot')
+    const { fileURLToPath } = require('url')
+    const incidentBv = 'BV19pn86hEUJ'
+    const incidentUrl = `https://www.bilibili.com/video/${incidentBv}`
+    const legacyFileName = 'bili-cache-19pn86heuj-1792909868362-pub5es.mp4'
+    const ctx = makeCtx()
+    const counters = { probes: 0, downloads: 0 }
+    const deps = makeDeps(1_000_000, 1_000_000, counters, {
+      probeVideo: makeProbe(1_000_000, counters, { id: incidentBv, webpage_url: incidentUrl }),
+    })
+    const original = makeSession({ guildId: '10001', channelId: '10001' })
+    const downloadResult = await plugin.downloadAndSend(ctx, original, incidentUrl, incidentBv, deps)
+    const sentVideo = h.select(original.sent.join(''), 'video')[0]
+    const cachedFile = fileURLToPath(sentVideo.attrs.src)
+    const fileName = path.basename(cachedFile)
+    check('downloaded video retains the complete original-case BV in its actual basename', downloadResult === undefined && fileName.startsWith(`bili-cache-${incidentBv}-`) && fs.existsSync(cachedFile), JSON.stringify({ downloadResult, fileName, sent: original.sent }))
+
+    // 运行已安装的 Processor._handleMessage，让框架真实执行返回值发送；仅 send 接口使用内存替身。
+    const processor = Object.create(Processor.prototype)
+    let nextCalls = 0
+    processor.ctx = {
+      lifecycle: { filterHooks: hooks => hooks },
+      emit() {},
+      logger: name => ctx.logger(name),
+    }
+    processor._sessions = Object.create(null)
+    processor._hooks = [
+      { callback: (session, next) => plugin.handleStandaloneBilibiliVideoInput(ctx, session, next, deps) },
+      { callback: () => { nextCalls += 1 } },
+    ]
+    const fixtures = [
+      { label: 'new original-case filename', fileName, expected: [incidentBv], expectedNext: 0 },
+      { label: 'legacy filename without BV prefix and case', fileName: legacyFileName, expected: [], expectedNext: 1 },
+    ]
+    for (const fixture of fixtures) {
+      const adapted = await OneBot.adaptMessage({
+        platform: 'onebot',
+        config: { advanced: { splitMixedContent: false } },
+      }, {
+        message_id: 1,
+        message_type: 'group',
+        group_id: 10001,
+        user_id: 100000000,
+        time: 1,
+        sender: { user_id: 100000000, nickname: 'forwarded bot video fixture' },
+        message: [{ type: 'video', data: { file: fixture.fileName, url: 'https://cdn.example.invalid/opaque-video.mp4' } }],
+      })
+      const forwarded = makeSession({ id: `round-trip-${fixture.expectedNext}`, selfId: '999999999', guildId: '10001', channelId: '10001', content: adapted.content })
+      nextCalls = 0
+      await processor._handleMessage(forwarded)
+      check(`${fixture.label} gets the exact framework-sent reply without a fabricated BV`, JSON.stringify(forwarded.sent) === JSON.stringify(fixture.expected) && nextCalls === fixture.expectedNext && Object.keys(processor._sessions).length === 0, JSON.stringify({ content: adapted.content, sent: forwarded.sent, nextCalls }))
+    }
+    check('forwarded videos perform no additional probe or download', counters.probes === 1 && counters.downloads === 1, JSON.stringify(counters))
+
+    const cacheHit = makeSession({ guildId: 'round-trip-cache', channelId: 'round-trip-cache' })
+    await plugin.downloadAndSend(ctx, cacheHit, incidentUrl, incidentBv, deps)
+    check('original-case cache file is safely reused across groups', cacheHit.sent.length === 2 && cacheHit.sent[1] === String(sentVideo) && counters.probes === 1 && counters.downloads === 1, JSON.stringify({ sent: cacheHit.sent, counters }))
+    const expiresAt = plugin.getVideoCacheStatus().items[0].expiresAt
+    const expiredCleanup = await plugin.cleanupVideoCache(ctx, expiresAt + 1)
+    check('expired original-case cache entry and disk file are deleted', expiredCleanup.entriesRemoved === 1 && plugin.getVideoCacheStatus().entries === 0 && !fs.existsSync(cachedFile), JSON.stringify(expiredCleanup))
+
+    // 同时覆盖新旧缓存文件的遗留扫描，避免放宽命名后遗漏大小写文件或破坏旧命名清理。
+    const cacheDir = path.join(tmpRoot, 'downloads', 'cache')
+    const orphanFiles = [path.join(cacheDir, fileName), path.join(cacheDir, legacyFileName)]
+    const oldDate = new Date(Date.now() - 11 * 60 * 1000)
+    for (const orphanFile of orphanFiles) {
+      createSparseFile(orphanFile, 10)
+      fs.utimesSync(orphanFile, oldDate, oldDate)
+    }
+    const orphanCleanup = await plugin.cleanupVideoCache(ctx)
+    check('orphan sweep deletes both original-case and legacy cache filenames', orphanCleanup.filesRemoved === 2 && orphanFiles.every(file => !fs.existsSync(file)), JSON.stringify(orphanCleanup))
+  })
+}
+
 // 验证裸 BV 前置入口在三档边界上进入统一准入，且红档不启动探测或下载。
 async function testStandaloneMiddlewareResourceBoundaries() {
   section('standalone middleware resource boundaries')
@@ -2136,7 +2216,7 @@ async function testStagingDownloadLifecycle() {
     const outputName = counters.args[counters.args.indexOf('-o') + 1]
     check('yt-dlp uses exact home cache directory', getYtdlpPath(counters.args, 'home') === cacheDir, JSON.stringify(counters.args))
     check('yt-dlp uses a unique temp staging directory', path.dirname(getYtdlpPath(counters.args, 'temp')) === stagingRoot, JSON.stringify(counters.args))
-    check('yt-dlp output template is a safe basename', !path.isAbsolute(outputName) && path.dirname(outputName) === '.' && /^bili-cache-[a-z0-9]+-\d+-[a-z0-9]+\.%\(ext\)s$/.test(outputName), outputName)
+    check('yt-dlp output template is a safe basename with the original-case BV', !path.isAbsolute(outputName) && path.dirname(outputName) === '.' && /^bili-cache-[A-Za-z0-9]+-\d+-[a-z0-9]+\.%\(ext\)s$/.test(outputName) && outputName.startsWith(`bili-cache-${TEST_BV}-`), outputName)
     check('successful download retains only final cache file', fs.readdirSync(cacheDir).length === 1 && fs.readdirSync(stagingRoot).length === 0, JSON.stringify(fs.readdirSync(cacheDir)))
   })
 }
@@ -2152,6 +2232,7 @@ async function run() {
   await testStandaloneMiddlewareRegistration()
   await testUnifiedBilibiliInputsAndCards()
   await testForwardedVideoBvReplies()
+  await testDownloadedVideoForwardRoundTrip()
   await testStandaloneMiddlewareResourceBoundaries()
   await testP1NormalizationAndResponseTimeout()
   await testChineseUserErrorCatalog()

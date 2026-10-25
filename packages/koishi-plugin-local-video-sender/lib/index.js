@@ -44,7 +44,7 @@ const MAX_YTDLP_STDIO_BYTES = 1024 * 1024;
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024;
 const MAX_ADMIN_IDS_BYTES = 128 * 1024;
 const EXTERNAL_VIDEO_TASK_KIND = 'external_video_download';
-const CACHE_FILE_RE = /^bili-cache-[a-z0-9]+-\d+-[a-z0-9]+\.mp4$/;
+const CACHE_FILE_RE = /^bili-cache-[A-Za-z0-9]+-\d+-[a-z0-9]+\.mp4$/;
 const STAGING_DIR_RE = /^bili-job-[a-z0-9]+-\d+-[a-z0-9]+$/;
 const CACHE_DIR = path.join(WORKDIR, 'cache');
 const STAGING_ROOT = path.join(WORKDIR, '.staging');
@@ -1553,7 +1553,9 @@ async function processInitialVideoRequest(ctx, session, url, source, keys, recen
         }
         bvKey = canonicalKeys.find(key => key.startsWith('bv:')) || '';
         const cacheSlug = (bvKey.replace(/^bv:/, '') || 'unknown').replace(/[^a-z0-9]/g, '').slice(0, 32) || 'unknown';
-        cacheId = `bili-cache-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        // QQ 转发会保留视频文件名；完整 BV 及其大小写必须保留，不能使用已转小写的缓存键。
+        const outputSlug = bvId || cacheSlug;
+        cacheId = `bili-cache-${outputSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         outputFile = path.join(CACHE_DIR, `${cacheId}.mp4`);
         let stagingResult;
         try {
