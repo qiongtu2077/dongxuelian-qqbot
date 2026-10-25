@@ -68,6 +68,7 @@ async function synthesizeCommandSpeech(text: string, options: Record<string, unk
   })
 }
 
+// 处理语音命令，将完整多行朗读正文交给语音合成。
 async function handleVoiceCommand(session: VoiceSessionLike, state: VoiceCommandState, runtime: VoiceRuntime = {}) {
   const { plain, channelKey, currentUserId } = state
 
@@ -88,7 +89,7 @@ async function handleVoiceCommand(session: VoiceSessionLike, state: VoiceCommand
     return handled('语音合成失败了，可能是服务暂时不可用。')
   }
 
-  const readAloudMatch = plain.match(/^东雪莲朗读\s*(.+)/)
+  const readAloudMatch = plain.match(/^东雪莲朗读\s*(.+)/s)
   if (readAloudMatch) {
     const text = readAloudMatch[1].trim()
     if (!text) return handled('请告诉我要朗读什么内容。')

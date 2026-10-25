@@ -10,6 +10,20 @@ async function runMessageCommandContracts(context) {
   } = context
   const { createCapabilityConfig } = require('../helpers/ai-capability-fixture')
   section('7. message reader behavior')
+  const multilineBody = '第一行\t内容\r\n第二行\r\n\r\n最后一行'
+  const normalizedMultilineBody = '第一行 内容\n第二行\n\n最后一行'
+  const structuredMultiline = reader.analyzeIncomingMessage({
+    content: '',
+    event: { message: [{ type: 'text', data: { text: multilineBody } }] },
+  })
+  checkEqual('structured text preserves normalized line breaks and blank lines', structuredMultiline.plain, normalizedMultilineBody)
+  checkEqual('structured text memory preserves normalized line breaks and blank lines', structuredMultiline.memory, normalizedMultilineBody)
+  const fallbackMultiline = reader.analyzeIncomingMessage({ content: `<at id="90000"/> ${multilineBody}`, event: {} })
+  checkEqual('fallback text preserves normalized line breaks and blank lines', fallbackMultiline.plain, normalizedMultilineBody)
+  checkEqual('fallback text memory preserves normalized line breaks and blank lines', fallbackMultiline.memory, normalizedMultilineBody)
+  const carriageReturnMultiline = reader.analyzeIncomingMessage({ content: '第一行\r第二行\r\r最后一行', event: {} })
+  checkEqual('fallback text normalizes standalone carriage returns without dropping blank lines', carriageReturnMultiline.plain, '第一行\n第二行\n\n最后一行')
+
   const structuredFace = reader.analyzeIncomingMessage({ content: '', event: { message: [{ type: 'face', data: { id: 76 } }] } })
   checkEqual('structured face plain', structuredFace.plain, STR.qqFaceLike)
   checkEqual('structured face memory omits face', structuredFace.memory, '')

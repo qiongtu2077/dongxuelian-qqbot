@@ -5,7 +5,7 @@
  * 状态: recentAgentContextCache (Map，按 channelKey:userId 保存短期 Agent 摘要)。
  */
 const { saveConversationTurn, getChannelKey } = require('../conversation') as typeof import('../conversation')
-const { sanitizeUserName, normalizeText } = require('../core/utils') as typeof import('../core/utils')
+const { sanitizeUserName, normalizeText, normalizeMessageText } = require('../core/utils') as typeof import('../core/utils')
 const { redactAgentMaterial } = require('./agent-retell-guard') as typeof import('./agent-retell-guard')
 
 const RECENT_AGENT_CONTEXT_TTL_MS: number = 10 * 60 * 1000
@@ -156,13 +156,14 @@ function summarizeAgentToolResults(toolResults: AgentToolResult[] = []): string 
   return parts.join('\n\n').slice(0, MAX_TOOL_SUMMARY_CHARS)
 }
 
+// 将 Agent 对话写入历史和短期上下文，保留消息正文换行。
 function recordAgentChatResult({ session, userMessage = '', userName = '用户', userId = '', channelKey = '', agentResult = {} }: RecordAgentChatResultOptions = {}): RecentAgentContextEntry | null {
-  const reply = normalizeText(redactAgentMaterial(String(agentResult && agentResult.reply || '')))
+  const reply = normalizeMessageText(redactAgentMaterial(String(agentResult && agentResult.reply || '')))
   if (!reply || /^\(Agent 未获取到有效回复\)/.test(reply)) return null
   if (agentResult && agentResult.pendingId) return null
 
   const safeUserName = sanitizeUserName(userName || '用户')
-  const cleanUserMessage = normalizeText(userMessage).slice(0, 1200)
+  const cleanUserMessage = normalizeMessageText(userMessage).slice(0, 1200)
   const normalizedChannelKey = String(channelKey || (session ? getChannelKey(session) : 'dashboard'))
   const normalizedUserId = String(userId || (session ? (session.userId || session.author?.id || session.username) : 'dashboard') || 'unknown')
   const toolSummary = summarizeAgentToolResults(Array.isArray(agentResult.toolResults) ? agentResult.toolResults : [])
@@ -188,8 +189,9 @@ function recordAgentChatResult({ session, userMessage = '', userName = '用户',
   return entry
 }
 
+// 使用单行副本识别 Agent 追问，正文与历史仍保留换行。
 function isAgentFollowUp(text: string = ''): boolean {
-  return /(?:刚刚|刚才|上次|前面|你).*?(?:搜|查|工具|来源|依据|结果)|(?:搜到|查到).{0,8}(?:什么|哪些|哪几个|结果|来源|依据)/.test(String(text || ''))
+  return /(?:刚刚|刚才|上次|前面|你).*?(?:搜|查|工具|来源|依据|结果)|(?:搜到|查到).{0,8}(?:什么|哪些|哪几个|结果|来源|依据)/.test(normalizeText(text))
 }
 
 function getRecentAgentContextNote({ channelKey = '', userId = '', userMessage = '' }: RecentAgentContextOptions = {}): string {

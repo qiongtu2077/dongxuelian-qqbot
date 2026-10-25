@@ -287,7 +287,7 @@ async function handleConversationCommandDomain(session, ctx, state) {
     }
     // #3 随机选 A/B
     if (plain.startsWith('东雪莲帮我选') && plain.includes('还是')) {
-        const m = plain.match(/选\s*(.+?)\s*还是\s*(.+)/);
+        const m = plain.match(/选\s*(.+?)\s*还是\s*(.+)/s);
         if (m) {
             const chosen = Math.random() < 0.5 ? m[1].trim() : m[2].trim();
             return handled(`我投了个骰子……${chosen}！`);

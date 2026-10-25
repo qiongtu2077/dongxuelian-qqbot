@@ -80,6 +80,7 @@ const { isReservedCommand, // 判断是否为保留指令前缀
 hasAdminPermission, // 管理员权限判断
 stripMentions, // 去除 @mention 标记
 collapseRepeatedBotCalls, // 折叠连续重复 @bot 调用
+normalizeMessageText, // 正文保留换行的空白清洗
 sanitizeUserName, // 昵称安全清洗
 extractAtIds, // 提取消息中所有 @id
 isDirectAtBot, getBotMentionCount, hasOtherMentions, // @bot 检测
@@ -216,7 +217,7 @@ function apply(ctx) {
         catch { /* non-critical: absence of maintenance flag is the normal path */ }
         const analyzed = analyzeIncomingMessage(session, { sanitizeUserName });
         let plain = collapseRepeatedBotCalls(stripMentions(analyzed.plain || ''));
-        const memoryText = normalizeText(stripMentions(analyzed.memory || plain));
+        const memoryText = normalizeMessageText(stripMentions(analyzed.memory || plain));
         const directAt = isDirectAtBot(session);
         const isPrivate = !!session.isDirect;
         const inGuild = !isPrivate;
@@ -450,7 +451,7 @@ function apply(ctx) {
             isRandomCandidate = false;
         }
         const willFactor = calculateWillFactor(channelKey, currentPersonaNameText, channelSharedCache, personaWillContent);
-        const userText = normalizeText(plain);
+        const userText = normalizeMessageText(plain);
         const quotedMessageNote = getQuotedMessageNote(session, { replyToId: analyzed.replyToId });
         const sharedRecordText = resolveSharedRecordText(plain, analyzed);
         // "闭嘴" 静默十分钟主动回复

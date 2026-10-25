@@ -7,7 +7,7 @@
 const fs = require('fs/promises')
 const path = require('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
-const { normalizeText, sanitizeUserName, safeChannelKey, formatShanghaiTime24h } = require('../core/utils') as typeof import('../core/utils')
+const { normalizeText, normalizeMessageText, sanitizeUserName, safeChannelKey, formatShanghaiTime24h } = require('../core/utils') as typeof import('../core/utils')
 const { redactSensitiveText } = require('../core/redactor') as typeof import('../core/redactor')
 
 const GROUP_SCENE_DIR: string = path.join(DATA_DIR, 'group-scenes')
@@ -170,8 +170,9 @@ async function waitForSceneTasks(channelKey: string): Promise<void> {
   if (pending) await pending.catch(ignoreSceneQueueFailure)
 }
 
+// 清理群聊片段中的敏感材料，保留正文分行供历史上下文使用。
 function sanitizeSceneText(text: unknown = '', maxChars: number = 180): string {
-  let value = redactSensitiveText(normalizeText(text))
+  let value = redactSensitiveText(normalizeMessageText(text))
   if (!value) return ''
   value = value
     .replace(/https?:\/\/[^\s<>"'）)】\]]{1,300}/gi, '[链接]')

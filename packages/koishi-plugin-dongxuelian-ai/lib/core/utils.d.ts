@@ -43,6 +43,7 @@ interface DnsAddress {
     family: number;
 }
 declare function normalizeText(text?: unknown): string;
+declare function normalizeMessageText(text?: unknown): string;
 declare function isRareProvocation(text?: string): boolean;
 declare function isWideRareProvocation(text?: string): boolean;
 declare function isHostileInput(text?: string): boolean;
@@ -133,6 +134,7 @@ declare const _default: {
     isWideRareProvocation: typeof isWideRareProvocation;
     isHostileInput: typeof isHostileInput;
     normalizeText: typeof normalizeText;
+    normalizeMessageText: typeof normalizeMessageText;
     isJailbreakAttempt: typeof isJailbreakAttempt;
     pickJailbreakFallbackReply: typeof pickJailbreakFallbackReply;
     isReservedCommand: typeof isReservedCommand;

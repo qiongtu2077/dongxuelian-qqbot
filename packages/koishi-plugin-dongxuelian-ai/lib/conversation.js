@@ -9,7 +9,7 @@
 const path = require('path');
 const fsp = require('fs/promises');
 const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES, CONVERSATION_EXPIRE_MS, CONVERSATION_SUMMARY_INTERVAL, MAX_REPEAT_CHECK_HISTORY, MAX_CHANNEL_SHARED_MESSAGES, MAX_REPLY_FINGERPRINT_HISTORY, MAX_CHANNEL_PROMPT_MESSAGES, MAX_THREAD_CONTEXT_MESSAGES, MAX_REPLY_CHAIN_DEPTH, SENSITIVE_CACHE_PREFIX, USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE, DATA_DIR, } = require('./core/constants');
-const { readJsonFile, writeJsonFile, sanitizeUserName, safeChannelKey, todayCst, todayCstMinusDays, formatShanghaiTime24h, normalizeText } = require('./core/utils');
+const { readJsonFile, writeJsonFile, sanitizeUserName, safeChannelKey, todayCst, todayCstMinusDays, formatShanghaiTime24h, normalizeText, normalizeMessageText } = require('./core/utils');
 const { appendGroupSceneEntry } = require('./routing/group-scene-index');
 const { redactSensitiveText } = require('./core/redactor');
 const { appendPrecomputeIndex } = require('./daily-precompute/precompute-index');
@@ -340,13 +340,14 @@ function mergeConversationMessages(diskMessages = [], cachedMessages = []) {
     }
     return disk.concat(cached.slice(overlap));
 }
+// 保存本轮对话正文及原有分行，更新历史缓存和回复指纹。
 function saveConversationTurn(session, userText, replyText) {
     const key = getConversationKey(session);
     return enqueueWrite(key, () => {
         const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] };
         diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key));
         diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length);
-        const assistantText = normalizeText(replyText);
+        const assistantText = normalizeMessageText(replyText);
         const now = Date.now();
         diskData.messages.push({ role: 'user', content: userText, messageId: String(session.messageId || ''), ts: now }, ...(assistantText ? [{ role: 'assistant', content: assistantText, ts: now }] : []));
         diskData.totalCount++;
@@ -443,11 +444,12 @@ function looksLikeShortContextFollowUp(text = '') {
         return true;
     return false;
 }
+// 构建当前显式交互提示，保留用户正文格式。
 function buildExplicitInteractionFocusNote(currentText = '', options = {}) {
     const explicit = !!(options.directAt || options.nameMentioned || options.isDirect);
     if (!explicit)
         return '';
-    const value = normalizeText(currentText);
+    const value = normalizeMessageText(currentText);
     if (!value)
         return '';
     return [
@@ -458,6 +460,7 @@ function buildExplicitInteractionFocusNote(currentText = '', options = {}) {
         '如果当前消息是在质疑或纠正你刚才的回复跑题，先处理这个纠错关系；不要继续展开那条被质疑的旧话题。',
     ].join('\n');
 }
+// 为短句追问提供近期公共话题，保留候选消息的分行。
 function buildRecentPublicTopicNote(items = [], currentUserId = '', options = {}) {
     if (!Array.isArray(items) || !items.length)
         return '';
@@ -473,7 +476,7 @@ function buildRecentPublicTopicNote(items = [], currentUserId = '', options = {}
     const candidates = [];
     for (let i = recent.length - 1; i >= 0; i -= 1) {
         const item = recent[i];
-        const content = normalizeText(item.content);
+        const content = normalizeMessageText(item.content);
         if (!content)
             continue;
         if (item.role === 'assistant') {
@@ -533,7 +536,7 @@ function loadTodayCacheFromDisk(channelKey) {
 // 保存共享聊天及日报原始索引，回复关系只来自已提供的真实元数据。
 function saveSharedChannelTurn(session, speakerName, content, role = 'user', metadata = {}) {
     const channelKey = getChannelKey(session);
-    const value = redactSensitiveText(normalizeText(content));
+    const value = redactSensitiveText(normalizeMessageText(content));
     const hasMentions = Array.isArray(metadata.mentionUserIds) && metadata.mentionUserIds.length > 0;
     if (!value && !hasMentions)
         return;

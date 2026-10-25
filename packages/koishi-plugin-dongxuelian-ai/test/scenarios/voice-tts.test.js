@@ -538,13 +538,23 @@ function buildWav() {
     { plain: '东雪莲说句话', channelKey: 'group-voice-test', currentUserId: 'user-1' },
     {}
   )
+  const firstSentCount = sent.length
+  const multilineText = ['第一行', '第二行', '', '最后一行'].join('\\n')
+  const multilineRead = await command.handleVoiceCommand(
+    { send: async msg => sent.push(msg) },
+    { plain: '东雪莲朗读 ' + multilineText, channelKey: 'group-multiline-read', currentUserId: 'user-1' },
+    {}
+  )
   console.log(JSON.stringify({
     matched: !!result.matched,
     response: result.response || '',
-    sentCount: sent.length,
+    sentCount: firstSentCount,
     voice: calls[0]?.audio?.voice || '',
     style: calls[0]?.messages?.[0]?.content || '',
     text: calls[0]?.messages?.[1]?.content || '',
+    multilineReadMatched: !!multilineRead.matched,
+    multilineReadSentCount: sent.length - firstSentCount,
+    multilineReadText: calls[1]?.messages?.[1]?.content || '',
   }))
 })().catch(error => {
   console.error(error.stack || error.message || error)
@@ -562,6 +572,8 @@ function buildWav() {
   t.check('voice command current persona child process passes', voiceCommandResult.status === 0, voiceCommandResult.stderr || voiceCommandResult.stdout)
   t.check('东雪莲说句话 uses configured current persona voice', voiceCommandSummary.matched === true && voiceCommandSummary.sentCount === 1 && voiceCommandSummary.voice === 'Mia', JSON.stringify(voiceCommandSummary))
   t.check('东雪莲说句话 uses configured current persona style', voiceCommandSummary.style === '当前人格沉稳冷静' && !voiceCommandSummary.style.includes('活泼可爱'), JSON.stringify(voiceCommandSummary))
+  t.checkEqual('东雪莲朗读 submits the complete multiline body to TTS', voiceCommandSummary.multilineReadText, '第一行\n第二行\n\n最后一行')
+  t.check('东雪莲朗读 handles multiline text', voiceCommandSummary.multilineReadMatched === true && voiceCommandSummary.multilineReadSentCount === 1, JSON.stringify(voiceCommandSummary))
   try { fs.rmSync(voiceCommandDataRoot, { recursive: true, force: true }) } catch {}
 
   t.section('scenario: rare fixed voice module')

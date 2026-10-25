@@ -41,6 +41,7 @@ async function synthesizeCommandSpeech(text, options, state, runtime, context) {
         run: () => synthesizeSpeech(text, options),
     });
 }
+// 处理语音命令，将完整多行朗读正文交给语音合成。
 async function handleVoiceCommand(session, state, runtime = {}) {
     const { plain, channelKey, currentUserId } = state;
     if (plain === '东雪莲说句话') {
@@ -61,7 +62,7 @@ async function handleVoiceCommand(session, state, runtime = {}) {
         }
         return handled('语音合成失败了，可能是服务暂时不可用。');
     }
-    const readAloudMatch = plain.match(/^东雪莲朗读\s*(.+)/);
+    const readAloudMatch = plain.match(/^东雪莲朗读\s*(.+)/s);
     if (readAloudMatch) {
         const text = readAloudMatch[1].trim();
         if (!text)

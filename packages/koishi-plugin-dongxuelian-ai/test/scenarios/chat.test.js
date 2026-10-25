@@ -141,6 +141,74 @@ async function run(t) {
     waitFor: message => String(message).includes('final-visible'),
   })
 
+  // 真实 middleware 的结构化消息和纯文本兜底都应把换行保留到请求、历史及下一轮上下文。
+  for (const incomingFormat of ['structured', 'fallback']) {
+    await withScenario({ data: { summaryWhitelist: ['10001'] } }, async ({ makeSession, run }) => {
+      const mocked = mockFetch([
+        { json: { choices: [{ message: { content: 'multiline-input-accepted' } }] } },
+        // 第二轮在正式聊天前会调用话题切换检测；NO 保持上一轮历史为活跃对话。
+        { json: { choices: [{ message: { content: 'NO' } }] } },
+        { json: { choices: [{ message: { content: 'history-followup-ready' } }] } },
+        { json: { choices: [{ message: { content: 'NO' } }] } },
+        { json: { choices: [{ message: { content: 'format-checkpoint-saved' } }] } },
+      ])
+      await withFetch(mocked, async () => {
+        const rawBody = '第一行\t苹果\r\n第二行梨\r\n\r\n最后一行桃'
+        const expectedBody = '第一行 苹果\n第二行梨\n\n最后一行桃'
+        const session = makeSession({ messageId: `multiline-${incomingFormat}-first` })
+        session.content = atBot(session, rawBody)
+        if (incomingFormat === 'structured') {
+          session.event.message = [
+            { type: 'at', data: { id: session.selfId } },
+            { type: 'text', data: { text: rawBody } },
+          ]
+        }
+        await withResourceSnapshot(async () => {
+          await run(session, { flushTicks: 120 })
+          await session.waitForSend(message => String(message).includes('multiline-input-accepted'))
+          const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
+          const firstMessages = mocked.calls[0]?.requestBody?.messages || []
+          t.check(`scenario ${incomingFormat} input request preserves line breaks and blank lines`, firstMessages.some(item => item.role === 'user' && conversation.getUserMessageContent(item.content) === expectedBody), JSON.stringify(firstMessages))
+          const history = conversation.getConversationHistory(session)
+          const userTurn = history.find(item => item.role === 'user' && item.messageId === session.messageId)
+          t.checkEqual(`scenario ${incomingFormat} user history preserves line breaks and blank lines`, userTurn && conversation.getUserMessageContent(userTurn.content), expectedBody)
+          const channelKey = conversation.getChannelKey(session)
+          const shared = conversation.channelSharedCache.get(channelKey) || []
+          const sharedTurn = shared.find(item => item.role === 'user' && item.messageId === session.messageId)
+          t.checkEqual(`scenario ${incomingFormat} group history preserves line breaks and blank lines`, sharedTurn && sharedTurn.content, expectedBody)
+          const dailyTurn = conversation.channelTodayCache.get(channelKey)?.messages.find(item => item.messageId === session.messageId)
+          t.checkEqual(`scenario ${incomingFormat} daily history preserves line breaks and blank lines`, dailyTurn && dailyTurn.content, expectedBody)
+
+          const nextSession = makeSession({
+            messageId: `multiline-${incomingFormat}-next`,
+            content: atBot(session, '然后呢'),
+          })
+          await run(nextSession, { flushTicks: 120 })
+          await nextSession.waitForSend(message => String(message).includes('history-followup-ready'))
+          const nextMessages = mocked.calls[2]?.requestBody?.messages || []
+          t.check(`scenario ${incomingFormat} next request preserves multiline user history`, nextMessages.some(item => item.role === 'user' && conversation.getUserMessageContent(item.content) === expectedBody), JSON.stringify(nextMessages))
+          t.check(`scenario ${incomingFormat} next request preserves multiline public context`, nextMessages.some(item => item.role === 'system' && String(item.content || '').includes(`tester(群友)：${expectedBody}`)), JSON.stringify(nextMessages))
+
+          // 正常聊天每三轮落盘；用第三轮触发真实保存，再清空缓存验证磁盘回读。
+          const checkpointSession = makeSession({
+            messageId: `multiline-${incomingFormat}-checkpoint`,
+            content: atBot(session, '分行内容就按这样继续吧'),
+          })
+          await run(checkpointSession, { flushTicks: 120 })
+          await checkpointSession.waitForSend(message => String(message).includes('format-checkpoint-saved'))
+          const diskHistory = conversation.readConversationDisk(conversation.getConversationKey(session))
+          const diskUserTurn = diskHistory?.messages.find(item => item.role === 'user' && item.messageId === session.messageId)
+          t.checkEqual(`scenario ${incomingFormat} conversation disk preserves line breaks and blank lines`, diskUserTurn && conversation.getUserMessageContent(diskUserTurn.content), expectedBody)
+          conversation.clearConversationHistory()
+          const reloadedUserTurn = conversation.getConversationHistory(session).find(item => item.role === 'user' && item.messageId === session.messageId)
+          t.checkEqual(`scenario ${incomingFormat} history disk reload preserves line breaks and blank lines`, reloadedUserTurn && conversation.getUserMessageContent(reloadedUserTurn.content), expectedBody)
+        })
+      })
+    }).catch(error => {
+      throw new Error(`${incomingFormat} incoming line breaks survive chat middleware: ${error && error.stack || error}`)
+    })
+  }
+
   await runChatCase(t, 'whitelist provider capability config drives chat request', [
     { json: { choices: [{ message: { content: 'whitelist-provider-ok' } }] } },
   ], async (result, mocked, session, calls) => {
@@ -1582,6 +1650,8 @@ async function run(t) {
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     const history = conversation.getConversationHistory(session)
     t.check('scenario agent bridge stores agent reply in conversation history', history.some(item => item.role === 'assistant' && item.content.includes('agent searched answer')), JSON.stringify(history))
+    t.check('scenario agent bridge preserves multiline user request in history', history.some(item => item.role === 'user' && conversation.getUserMessageContent(item.content) === '调用web_search查鸣潮最新角色\n\n保留官方来源'), JSON.stringify(history))
+    t.check('scenario agent bridge preserves multiline assistant reply in history', history.some(item => item.role === 'assistant' && item.content === 'agent searched answer\n\n第二段保留来源'), JSON.stringify(history))
   }, {
     input: '你刚刚搜到哪些东西',
     setup(session) {
@@ -1589,12 +1659,12 @@ async function run(t) {
       bridge.clearAgentChatBridge()
       bridge.recordAgentChatResult({
         session,
-        userMessage: '调用web_search查鸣潮最新角色',
+        userMessage: '调用web_search查鸣潮最新角色\r\n\r\n保留官方来源',
         userName: 'tester',
         userId: session.userId,
         channelKey: session.guildId,
         agentResult: {
-          reply: 'agent searched answer',
+          reply: 'agent searched answer\r\n\r\n第二段保留来源',
           toolCalls: 1,
           toolResults: [{ name: 'web_search', result: '已搜索：鸣潮 最新角色\n搜索结果：\n1. 官方公告\n   https://wutheringwaves.kurogames.com/news/mock\n   库洛官方公告公开新共鸣者。' }],
         },

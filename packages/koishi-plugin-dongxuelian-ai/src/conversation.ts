@@ -16,7 +16,7 @@ const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES,
   USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE,
   DATA_DIR,
 } = require('./core/constants') as typeof import('./core/constants')
-const { readJsonFile, writeJsonFile, sanitizeUserName, safeChannelKey, todayCst, todayCstMinusDays, formatShanghaiTime24h, normalizeText } = require('./core/utils') as typeof import('./core/utils')
+const { readJsonFile, writeJsonFile, sanitizeUserName, safeChannelKey, todayCst, todayCstMinusDays, formatShanghaiTime24h, normalizeText, normalizeMessageText } = require('./core/utils') as typeof import('./core/utils')
 const { appendGroupSceneEntry } = require('./routing/group-scene-index') as typeof import('./routing/group-scene-index')
 const { redactSensitiveText } = require('./core/redactor') as typeof import('./core/redactor')
 const { appendPrecomputeIndex } = require('./daily-precompute/precompute-index') as typeof import('./daily-precompute/precompute-index')
@@ -502,13 +502,14 @@ function mergeConversationMessages(diskMessages: ConversationMessage[] = [], cac
   return disk.concat(cached.slice(overlap))
 }
 
+// 保存本轮对话正文及原有分行，更新历史缓存和回复指纹。
 function saveConversationTurn(session: SessionLike, userText: string, replyText: string): Promise<void> {
   const key = getConversationKey(session)
   return enqueueWrite(key, () => {
     const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] }
     diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key))
     diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length)
-    const assistantText = normalizeText(replyText)
+    const assistantText = normalizeMessageText(replyText)
     const now = Date.now()
     diskData.messages.push(
       { role: 'user', content: userText, messageId: String(session.messageId || ''), ts: now },
@@ -599,10 +600,11 @@ function looksLikeShortContextFollowUp(text: string = ''): boolean {
   return false
 }
 
+// 构建当前显式交互提示，保留用户正文格式。
 function buildExplicitInteractionFocusNote(currentText: string = '', options: SharedContextOptions = {}): string {
   const explicit = !!(options.directAt || options.nameMentioned || options.isDirect)
   if (!explicit) return ''
-  const value = normalizeText(currentText)
+  const value = normalizeMessageText(currentText)
   if (!value) return ''
   return [
     '[当前显式交互锚点]',
@@ -613,6 +615,7 @@ function buildExplicitInteractionFocusNote(currentText: string = '', options: Sh
   ].join('\n')
 }
 
+// 为短句追问提供近期公共话题，保留候选消息的分行。
 function buildRecentPublicTopicNote(items: SharedChannelEntry[] = [], currentUserId: string = '', options: SharedContextOptions = {}): string {
   if (!Array.isArray(items) || !items.length) return ''
   const currentText = normalizeText(options.currentText || '')
@@ -625,7 +628,7 @@ function buildRecentPublicTopicNote(items: SharedChannelEntry[] = [], currentUse
   const candidates = []
   for (let i = recent.length - 1; i >= 0; i -= 1) {
     const item = recent[i]
-    const content = normalizeText(item.content)
+    const content = normalizeMessageText(item.content)
     if (!content) continue
     if (item.role === 'assistant') {
       const itemPersona = String(item.personaName || '').trim()
@@ -682,7 +685,7 @@ function loadTodayCacheFromDisk(channelKey: string): TodayCache | null {
 // 保存共享聊天及日报原始索引，回复关系只来自已提供的真实元数据。
 function saveSharedChannelTurn(session: SessionLike, speakerName: string, content: string, role: string = 'user', metadata: SharedTurnMetadata = {}): void {
   const channelKey = getChannelKey(session)
-  const value = redactSensitiveText(normalizeText(content))
+  const value = redactSensitiveText(normalizeMessageText(content))
   const hasMentions = Array.isArray(metadata.mentionUserIds) && metadata.mentionUserIds.length > 0
   if (!value && !hasMentions) return
   const userId = String(role === 'assistant' ? (session.selfId || session.bot?.selfId || 'bot') : (session.userId || session.author?.id || session.username || 'unknown'))

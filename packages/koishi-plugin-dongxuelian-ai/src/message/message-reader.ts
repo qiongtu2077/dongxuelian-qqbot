@@ -3,7 +3,7 @@
  * 职责: normalizeText / 表情提取 / 图片/文件/转发检测 / 消息段分析。
  * 边界: 纯函数，无状态，无 IO，不调 AI API。
  */
-const { normalizeText } = require('../core/utils') as typeof import('../core/utils')
+const { normalizeText, normalizeMessageText } = require('../core/utils') as typeof import('../core/utils')
 
 const QQ_FACE_NAME_MAP: Record<string, string> = {
   '0': '惊讶',
@@ -369,7 +369,7 @@ function extractSegmentText(segments: unknown, options: ExtractSegmentOptions = 
     }
   }
 
-  return normalizeText(parts.join(' '))
+  return normalizeMessageText(parts.join(' '))
 }
 
 // 从纯文本消息兜底提取可读内容，避免 CQ/HTML 样式残留污染模型输入。
@@ -391,7 +391,7 @@ function extractContentFallback(content: unknown = '', options: ExtractContentOp
     .replace(/<(?:img|image|audio|video|file|json|xml|mface)[^>]*\/?>/gi, ' ')
 
   const visible = forMemory ? stripUrls(text) : text
-  return normalizeText(visible)
+  return normalizeMessageText(visible)
 }
 
 function isOnlyForwardShellText(text: unknown = ''): boolean {
@@ -434,7 +434,7 @@ function analyzeIncomingMessage(session: ReaderSession = {}, options: AnalyzeOpt
 
   if (rawSegments.length) {
     plain = extractSegmentText(rawSegments, { includeFace: true, includeForward: true, sanitizeUserName })
-    memory = normalizeText(stripUrls(extractSegmentText(rawSegments, { includeFace: false, includeForward: true, sanitizeUserName })))
+    memory = normalizeMessageText(stripUrls(extractSegmentText(rawSegments, { includeFace: false, includeForward: true, sanitizeUserName })))
     if (!plain && !memory && rawContent) {
       plain = extractContentFallback(rawContent, { forMemory: false })
       memory = extractContentFallback(rawContent, { forMemory: true })

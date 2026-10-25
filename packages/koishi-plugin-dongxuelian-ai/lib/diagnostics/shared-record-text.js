@@ -5,9 +5,10 @@
  * 边界: 不写 conversation、不读取文件、不发送消息；只做纯文本归一。
  * 状态: 无状态。
  */
-const { normalizeText, stripMentions } = require('../core/utils');
+const { normalizeMessageText, stripMentions } = require('../core/utils');
+// 提取可保存的共享正文，保留消息分行与空行。
 function resolveSharedRecordText(plain, analyzed = {}) {
-    const text = normalizeText(stripMentions(plain || analyzed.memory || analyzed.plain || ''));
+    const text = normalizeMessageText(stripMentions(plain || analyzed.memory || analyzed.plain || ''));
     if (text)
         return text;
     if (analyzed.hasAudio)
@@ -15,7 +16,7 @@ function resolveSharedRecordText(plain, analyzed = {}) {
     if (analyzed.hasFile)
         return '[文件]';
     if (analyzed.hasMessageRecordCue)
-        return normalizeText(analyzed.plain || '');
+        return normalizeMessageText(analyzed.plain || '');
     return '';
 }
 module.exports = {

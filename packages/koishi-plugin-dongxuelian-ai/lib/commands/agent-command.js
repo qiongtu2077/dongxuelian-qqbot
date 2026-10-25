@@ -15,6 +15,7 @@ function hasAgentCommandQueueCode(error) {
     const code = error?.code;
     return code === 'AGENT_QUEUE_FULL' || code === 'AGENT_QUEUE_REJECTED';
 }
+// 处理 Agent 管理和对话命令，完整传递多行用户正文。
 async function handleAgentCommand(session, ctx, state, options = {}) {
     const { plain, channelKey, currentUserId, adminCommandMatched } = state;
     const adminSession = session;
@@ -97,7 +98,7 @@ async function handleAgentCommand(session, ctx, state, options = {}) {
     }
     if (mode === 'management')
         return notHandled();
-    const agentMatch = plain.match(/^莲莲\s*(?:工具|agent)\s+(.+)/i);
+    const agentMatch = plain.match(/^莲莲\s*(?:工具|agent)\s+(.+)/is);
     if (agentMatch && !adminCommandMatched) {
         const query = agentMatch[1].trim();
         if (isJailbreakAttempt(sanitizeUserInput(query)))

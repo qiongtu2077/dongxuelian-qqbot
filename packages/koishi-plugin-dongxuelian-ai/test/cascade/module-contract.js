@@ -269,7 +269,7 @@ async function runModuleContract(context) {
       'redactSensitiveText',
     ],
     utils: [
-      'splitSentences', 'normalizeText', 'sanitizeUserName', 'sanitizeUserInput', 'isJailbreakAttempt',
+      'splitSentences', 'normalizeText', 'normalizeMessageText', 'sanitizeUserName', 'sanitizeUserInput', 'isJailbreakAttempt',
       'isHostileInput', 'isRareProvocation', 'isWideRareProvocation', 'getSenderUserId', 'hasAdminPermission',
       'stripMentions', 'collapseRepeatedBotCalls', 'isDirectAtBot', 'getBotMentionCount',
       'hasOtherMentions', 'formatPercent', 'readTextFile', 'writeTextFile',

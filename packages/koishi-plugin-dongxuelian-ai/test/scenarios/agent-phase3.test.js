@@ -132,6 +132,33 @@ async function run(t) {
       engine.run = oldRun
     }
 
+    const planCommand = require('../../lib/commands/plan-command')
+    const multilinePlanText = '整理苹果信息\n整理梨信息\n\n汇总桃信息'
+    const multilinePlanResult = await planCommand.handlePlanCommand({
+      userId: 'multiline-plan-user',
+      author: { id: 'multiline-plan-user', name: 'tester' },
+    }, { logger: () => ({ warn() {} }) }, {
+      plain: '/plan ' + multilinePlanText,
+      channelKey: 'multiline-plan-channel',
+      currentUserId: 'multiline-plan-user',
+    })
+    const multilineTask = listAgentWorkerTasks().find(item => agentWorkerParts(item).engineInput.userMessage === multilinePlanText)
+    t.check('multiline plan command queues complete input', multilinePlanResult.matched && !!multilineTask, JSON.stringify(multilinePlanResult))
+    const multilinePlanId = multilineTask?.payload?.planId || ''
+    const multilinePlan = multilinePlanId ? await planEngine.checkPlanStatus(multilinePlanId) : {}
+    t.checkEqual('multiline plan command keeps all newline-separated tasks', JSON.stringify((multilinePlan.tasks || []).map(item => item.desc)), JSON.stringify(['整理苹果信息', '整理梨信息', '汇总桃信息']))
+    const multilineAbandonReason = '目标已变化\n等待重新安排'
+    const multilineAbandon = await planCommand.handlePlanCommand({
+      userId: 'multiline-plan-user',
+    }, { logger: () => ({ warn() {} }) }, {
+      plain: `计划放弃 ${multilinePlanId} ${multilineAbandonReason}`,
+      channelKey: 'multiline-plan-channel',
+      currentUserId: 'multiline-plan-user',
+    })
+    const abandonedMultilinePlan = multilinePlanId ? await planEngine.checkPlanStatus(multilinePlanId) : {}
+    t.check('multiline plan abandon command is handled', multilineAbandon.matched)
+    t.checkEqual('multiline plan abandon command preserves complete reason', abandonedMultilinePlan.summary, multilineAbandonReason)
+
     const commandPlan = await planEngine.createPlan({ title: 'QQ 继续计划', tasks: [{ desc: '命令恢复步骤' }], channel: 'qq', channelKey: '10001', userId: '100000000', userName: 'tester' })
     engine.run = async (opts) => ({ reply: 'command-resume-ok:' + opts.userMessage, toolCalls: 0, pendingId: null })
     try {

@@ -73,25 +73,37 @@ function parseUtilsPositiveInt(value: string | number | undefined, fallback: num
   return Math.max(min, Math.min(max, parsed))
 }
 
-// 统一压缩消息里的多余空白，避免后续匹配被格式噪音影响。
+// --- 消息文本清洗 --- //
+
+// 将文本压成单行，供命令匹配、检索和指纹比较使用。
 function normalizeText(text: unknown = ''): string {
   return String(text).replace(/\s+/g, ' ').trim()
 }
 
+// 统一消息正文的换行格式，只压缩水平空白，保留分行和空行。
+function normalizeMessageText(text: unknown = ''): string {
+  return String(text).replace(/\r\n?/g, '\n').replace(/[^\S\n]+/g, ' ').replace(/ *\n */g, '\n').trim()
+}
+
+// --- 输入意图与权限判定 --- //
+
+// 使用单行判定文本检测罕见挑衅，不改写消息正文。
 function isRareProvocation(text: string = ''): boolean {
-  const value = String(text).trim()
+  const value = normalizeText(text)
   if (!value) return false
   return RARE_PROVOCATION_RE.test(value)
 }
 
+// 使用单行判定文本检测广义挑衅，不改写消息正文。
 function isWideRareProvocation(text: string = ''): boolean {
-  const value = String(text).trim()
+  const value = normalizeText(text)
   if (!value) return false
   return WIDE_RARE_PROVOKE_RE.test(value)
 }
 
+// 使用单行判定文本识别敌意表达，保持跨行输入的既有匹配语义。
 function isHostileInput(text: string = ''): boolean {
-  const value = String(text).trim()
+  const value = normalizeText(text)
   if (!value) return false
   if (HOSTILE_INPUT_RE.test(value)) return true
   if (isRareProvocation(value)) return true
@@ -99,7 +111,8 @@ function isHostileInput(text: string = ''): boolean {
   return false
 }
 
-function isJailbreakAttempt(plain: string = ''): boolean { return JAILBREAK_INPUT_RE.test(plain) }
+// 越狱检测仍使用单行文本，防止正文保留换行后漏掉跨行指令。
+function isJailbreakAttempt(plain: string = ''): boolean { return JAILBREAK_INPUT_RE.test(normalizeText(plain)) }
 
 function pickJailbreakFallbackReply(): string {
   return JAILBREAK_FALLBACK_REPLIES[Math.floor(Math.random() * JAILBREAK_FALLBACK_REPLIES.length)]
@@ -117,30 +130,27 @@ function getSenderUserId(session: BasicSession): string { return String(session.
 
 function hasAdminPermission(session: BasicSession): boolean { return isAdminUserId(getSenderUserId(session)) }
 
+// 移除协议中的 @ 标记，同时保留消息正文的换行。
 function stripMentions(text: string = ''): string {
-  return String(text)
+  return normalizeMessageText(String(text)
     .replace(/<at(?:\s+[^>]*?)?id="(\d+)"[^>]*\/?>/gi, ' ')
-    .replace(/\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+    .replace(/\[CQ:at,[^\]]*?(?:qq|id)=(\d+)[^\]]*\]/gi, ' '))
 }
 
+// 仅折叠同一行内连续的机器人呼叫，保留跨行正文结构。
 function collapseRepeatedBotCalls(text: string = ''): string {
-  return String(text)
-    .replace(/(?:\s*@?(?:东雪莲(?:opus)?|莲莲)\s*){2,}/gi, ' @东雪莲 ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  return normalizeMessageText(String(text)
+    .replace(/(?:[^\S\r\n]*@?(?:东雪莲(?:opus)?|莲莲)[^\S\r\n]*){2,}/gi, ' @东雪莲 '))
 }
 
+// 清理输入中的伪系统标记和不可见字符，保留正文换行。
 function sanitizeUserInput(text: string = ''): string {
-  return String(text)
+  return normalizeMessageText(String(text)
     .replace(/[\u2800-\u28FF\u3164\u200B-\u200F\u2028-\u202F\uFEFF]/g, '')
     .replace(/\[SYSTEM\]|\[\/SYSTEM\]|\[INST\]|\[\/INST\]|\[SYS\]|\[\/SYS\]|\[ASSISTANT\]|\[\/ASSISTANT\]/gi, '')
     .replace(/<\|(?:system|user|assistant|begin_of_text|end_header_id|end_of_turn|im_start|im_end)\|>/gi, '')
     .replace(/^#{1,6}\s*(?:system|instruction|prompt|override|new role)[:\s]/gim, '')
-    .replace(/\n[-=]{4,}\s*\n/g, '\n')
-    .replace(/\s+/g, ' ')
-    .trim()
+    .replace(/\n[-=]{4,}\s*\n/g, '\n'))
 }
 
 function sanitizeUserName(name: string = ''): string {
@@ -863,7 +873,7 @@ function withTimeout<T>(fn: () => Promise<T> | T, timeoutMs: number, options: { 
 
 export = {
   isRareProvocation, isWideRareProvocation, isHostileInput,
-  normalizeText,
+  normalizeText, normalizeMessageText,
   isJailbreakAttempt, pickJailbreakFallbackReply,
   isReservedCommand, getSenderUserId, hasAdminPermission,
   stripMentions, collapseRepeatedBotCalls,

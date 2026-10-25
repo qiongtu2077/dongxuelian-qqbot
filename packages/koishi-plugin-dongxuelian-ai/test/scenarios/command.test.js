@@ -27,6 +27,49 @@ async function withGreenResourceSnapshot(fn) {
 async function run(t) {
   t.section('scenario: command middleware')
 
+  // 命令只剥离前缀，提交和保存的正文应包含所有分行。
+  await withScenario({}, async ({ makeSession, run }) => {
+    const multilineText = '第一行苹果\n第二行梨\n\n最后一行桃'
+    await withGreenResourceSnapshot(async () => {
+      const agentResult = await run(makeSession({ content: `莲莲 工具 ${multilineText}` }))
+      const taskStore = require('../../lib/resource-workers/task-store')
+      const agentTask = taskStore.listResourceTasks({ statuses: ['pending', 'deferred'], limit: 20 })
+        .find(item => item.payload?.entry === 'qq-agent-command')
+      t.check('scenario multiline explicit Agent command is queued', agentResult.sent.some(item => String(item).includes('Agent 已提交后台执行') || String(item).includes('Agent 已加入资源队列')), JSON.stringify(agentResult.sent))
+      t.checkEqual('scenario explicit Agent command preserves complete multiline body', agentTask?.payload?.agentWorker?.engineInput?.userMessage, multilineText)
+    })
+
+    const config = require('../../lib/agent/config')
+    const agentConfig = config.getAgentConfig()
+    agentConfig.memory.enabled = true
+    agentConfig.memory.adminOnly = false
+    await config.saveAgentConfig(agentConfig)
+    const memoryResult = await run(makeSession({ content: `莲莲记住 ${multilineText}` }))
+    const memory = require('../../lib/agent/memory')
+    const items = await memory.listMemory({ userId: '100000000' })
+    t.check('scenario multiline memory command is handled', memoryResult.sent.some(item => String(item).startsWith('已记住：')), JSON.stringify(memoryResult.sent))
+    t.checkEqual('scenario memory command persists complete multiline body', items[0]?.text, multilineText)
+    const memorySearch = await run(makeSession({ content: '莲莲回忆 苹果\n梨' }))
+    t.check('scenario multiline memory search is handled', memorySearch.sent.some(item => String(item).includes(multilineText)), JSON.stringify(memorySearch.sent))
+
+    const handler = require('../../lib/handler')
+    const originalRandom = Math.random
+    try {
+      for (const [randomValue, expected] of [[0.1, '苹果\n梨'], [0.9, '桃\n香蕉']]) {
+        Math.random = () => randomValue
+        const selected = await handler.handleCommand(makeSession({}), {}, {
+          plain: '东雪莲帮我选 苹果\n梨 还是 桃\n香蕉',
+          inGuild: true,
+          channelKey: '10001',
+          currentUserId: '100000000',
+        })
+        t.checkEqual('scenario choice command preserves selected multiline option', selected.response, `我投了个骰子……${expected}！`)
+      }
+    } finally {
+      Math.random = originalRandom
+    }
+  })
+
   await withScenario({}, async ({ data, makeSession, run }) => {
     const customId = 'custom-status123'
     data.writeJson('ai-providers-custom.json', [{

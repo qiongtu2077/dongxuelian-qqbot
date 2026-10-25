@@ -4,7 +4,7 @@
  * 职责: normalizeText / 表情提取 / 图片/文件/转发检测 / 消息段分析。
  * 边界: 纯函数，无状态，无 IO，不调 AI API。
  */
-const { normalizeText } = require('../core/utils');
+const { normalizeText, normalizeMessageText } = require('../core/utils');
 const QQ_FACE_NAME_MAP = {
     '0': '惊讶',
     '1': '撇嘴',
@@ -276,7 +276,7 @@ function extractSegmentText(segments, options = {}) {
             parts.push('【非文本消息】');
         }
     }
-    return normalizeText(parts.join(' '));
+    return normalizeMessageText(parts.join(' '));
 }
 // 从纯文本消息兜底提取可读内容，避免 CQ/HTML 样式残留污染模型输入。
 function extractContentFallback(content = '', options = {}) {
@@ -295,7 +295,7 @@ function extractContentFallback(content = '', options = {}) {
         .replace(/\[CQ:(?:image|img|mface|record|video|file|json|xml|share),[^\]]+\]/gi, ' ')
         .replace(/<(?:img|image|audio|video|file|json|xml|mface)[^>]*\/?>/gi, ' ');
     const visible = forMemory ? stripUrls(text) : text;
-    return normalizeText(visible);
+    return normalizeMessageText(visible);
 }
 function isOnlyForwardShellText(text = '') {
     const value = normalizeText(text);
@@ -333,7 +333,7 @@ function analyzeIncomingMessage(session = {}, options = {}) {
     let memory = '';
     if (rawSegments.length) {
         plain = extractSegmentText(rawSegments, { includeFace: true, includeForward: true, sanitizeUserName });
-        memory = normalizeText(stripUrls(extractSegmentText(rawSegments, { includeFace: false, includeForward: true, sanitizeUserName })));
+        memory = normalizeMessageText(stripUrls(extractSegmentText(rawSegments, { includeFace: false, includeForward: true, sanitizeUserName })));
         if (!plain && !memory && rawContent) {
             plain = extractContentFallback(rawContent, { forMemory: false });
             memory = extractContentFallback(rawContent, { forMemory: true });

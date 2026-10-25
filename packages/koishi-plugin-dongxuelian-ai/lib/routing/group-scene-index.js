@@ -8,7 +8,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const { DATA_DIR } = require('../core/constants');
-const { normalizeText, sanitizeUserName, safeChannelKey, formatShanghaiTime24h } = require('../core/utils');
+const { normalizeText, normalizeMessageText, sanitizeUserName, safeChannelKey, formatShanghaiTime24h } = require('../core/utils');
 const { redactSensitiveText } = require('../core/redactor');
 const GROUP_SCENE_DIR = path.join(DATA_DIR, 'group-scenes');
 const GROUP_SCENE_VERSION = 1;
@@ -48,8 +48,9 @@ async function waitForSceneTasks(channelKey) {
     if (pending)
         await pending.catch(ignoreSceneQueueFailure);
 }
+// 清理群聊片段中的敏感材料，保留正文分行供历史上下文使用。
 function sanitizeSceneText(text = '', maxChars = 180) {
-    let value = redactSensitiveText(normalizeText(text));
+    let value = redactSensitiveText(normalizeMessageText(text));
     if (!value)
         return '';
     value = value

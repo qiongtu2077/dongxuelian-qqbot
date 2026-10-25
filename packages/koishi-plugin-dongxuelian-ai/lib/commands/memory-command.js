@@ -11,9 +11,10 @@ const agentMemory = require('../agent/memory');
 function getMemoryCommandErrorMessage(error, fallback) {
     return error instanceof Error ? error.message : String(error?.message || fallback);
 }
+// 处理显式记忆命令，保留写入内容和查询中的完整分行。
 async function handleMemoryCommand(session, state) {
     const { plain, channelKey, currentUserId } = state;
-    const memoryRememberMatch = plain.match(/^(?:莲莲记住|\/memory\s+remember)\s+(.+)/i);
+    const memoryRememberMatch = plain.match(/^(?:莲莲记住|\/memory\s+remember)\s+(.+)/is);
     if (memoryRememberMatch) {
         const agentConfig = getAgentConfig();
         if (!agentConfig.memory?.enabled)
@@ -32,7 +33,7 @@ async function handleMemoryCommand(session, state) {
             return handled(getMemoryCommandErrorMessage(err, '记忆写入失败。'));
         }
     }
-    const memorySearchMatch = plain.match(/^(?:莲莲回忆|\/memory\s+search)\s*(.*)$/i);
+    const memorySearchMatch = plain.match(/^(?:莲莲回忆|\/memory\s+search)\s*(.*)$/is);
     if (memorySearchMatch) {
         const agentConfig = getAgentConfig();
         if (!agentConfig.memory?.enabled)

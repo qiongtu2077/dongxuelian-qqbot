@@ -21,10 +21,11 @@ function asPlanAgentResult(value) {
 function asPlanOwner(value) {
     return value && typeof value === 'object' ? value : {};
 }
+// 处理计划创建、继续和放弃，保留目标及原因中的分行。
 async function handlePlanCommand(session, ctx, state) {
     const { plain, channelKey, currentUserId } = state;
     const adminSession = session;
-    const planMatch = plain.match(/^(?:\/plan|莲莲计划)\s+(.+)/i);
+    const planMatch = plain.match(/^(?:\/plan|莲莲计划)\s+(.+)/is);
     if (planMatch) {
         const query = planMatch[1].trim();
         const planEngine = require('../agent/plan/plan-engine');
@@ -109,7 +110,7 @@ async function handlePlanCommand(session, ctx, state) {
             return handled(getPlanCommandErrorMessage(err, '计划继续失败。'));
         }
     }
-    const planAbandonMatch = plain.match(/^(?:计划放弃|\/plan-abandon)\s+(plan_[a-zA-Z0-9_-]+)(?:\s+(.+))?$/i);
+    const planAbandonMatch = plain.match(/^(?:计划放弃|\/plan-abandon)\s+(plan_[a-zA-Z0-9_-]+)(?:\s+(.+))?$/is);
     if (planAbandonMatch) {
         try {
             const planEngine = require('../agent/plan/plan-engine');
