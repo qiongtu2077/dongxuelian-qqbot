@@ -15,6 +15,7 @@ const {
   buildBiliKeys,
   extractBvId,
   extractBiliUrl,
+  extractVideoBvIds,
   isBilibiliCardInput,
   isAllowedBiliRedirectUrl,
   isPrivateIpAddress,
@@ -2311,11 +2312,15 @@ async function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url:
   }
 }
 
-// 处理独立 B 站视频输入；不匹配时继续消息链，命中时复用统一下载与准入流程。
+// 已有视频携带 BV 时仅回复编号；普通 B 站分享复用统一下载与准入流程。
 async function handleStandaloneBilibiliVideoInput(ctx: ContextLike, session: VideoSessionLike, next: () => unknown, deps: DownloadDeps = {}): Promise<unknown> {
   if (isBlacklistedGroup(session)) return next()
 
   const content = session.content || ''
+  if (/^\s*bvidl\b/i.test(content)) return next()
+  const videoBvIds = extractVideoBvIds(content)
+  if (videoBvIds.length) return videoBvIds.join('\n')
+
   const url = extractBiliUrl(content)
   if (!url) {
     if (!isBilibiliCardInput(content)) return next()
@@ -2361,6 +2366,9 @@ function apply(ctx: ContextLike): void {
 
     const content = session.content || ''
     if (/^\s*bvidl\b/i.test(content)) return next()
+
+    const videoBvIds = extractVideoBvIds(content)
+    if (videoBvIds.length) return videoBvIds.join('\n')
 
     const url = extractBiliUrl(content)
     if (!url) return next()

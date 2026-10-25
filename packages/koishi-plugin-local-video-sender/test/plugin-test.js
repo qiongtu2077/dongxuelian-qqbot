@@ -1049,6 +1049,119 @@ async function testUnifiedBilibiliInputsAndCards() {
   })
 }
 
+// 验证真实 OneBot 视频属性中的 BV 只回编号，且不会进入下载、准入或排队流程。
+async function testForwardedVideoBvReplies() {
+  section('forwarded video BV replies')
+  await withIsolatedPlugin(async ({ plugin, dataDir }) => {
+    const { OneBot } = require('koishi-plugin-adapter-onebot')
+    const secondBv = 'BV19pn86hEUJ'
+    const ctx = makeCtx()
+    plugin.apply(ctx)
+
+    // 使用当前安装的适配器生成真实的 Koishi 视频元素，不手写属性序列化格式。
+    async function adaptContent(message) {
+      const adapted = await OneBot.adaptMessage({
+        platform: 'onebot',
+        config: { advanced: { splitMixedContent: false } },
+      }, {
+        message_id: 1,
+        message_type: 'group',
+        group_id: 10001,
+        user_id: 100000000,
+        time: 1,
+        sender: { user_id: 100000000, nickname: 'video fixture' },
+        message,
+      })
+      return adapted.content
+    }
+
+    // 字母和数字通常不会被 encodeURIComponent 转义，因此显式构造百分号编码输入。
+    const encodedBv = [...TEST_BV].map(char => `%${char.charCodeAt(0).toString(16)}`).join('')
+    const fixtures = [
+      { label: 'file name', data: { file: `${TEST_BV}.mp4`, url: 'https://cdn.example.invalid/plain.mp4' }, expected: TEST_BV },
+      { label: 'media URL', data: { file: 'plain.mp4', url: `https://cdn.example.invalid/${TEST_BV}.mp4` }, expected: TEST_BV },
+      { label: 'encoded summary', data: { file: 'plain.mp4', summary: `来源 ${encodedBv}` }, expected: TEST_BV },
+      { label: 'multiple deduplicated IDs', data: { file: `${TEST_BV}.mp4`, summary: `${TEST_BV} ${secondBv} ${TEST_BV}` }, expected: `${TEST_BV}\n${secondBv}` },
+    ]
+    const counters = { probes: 0, downloads: 0, admissions: 0, gates: 0 }
+    const store = makeVideoTaskStore()
+    const admission = { decision: 'queue', reason: 'fixture busy', resourceState: 'green', memAvailableMb: 1000 }
+    const deps = makeDeps(1_000_000, 1_000_000, counters, {
+      resourceGate: undefined,
+      taskStore: store,
+      resourceModules: {
+        // 记录准入调用，发现误入搬运流程时仍返回可观察的排队结果。
+        admitTask() {
+          counters.admissions += 1
+          return admission
+        },
+        // 记录资源锁调用，确保 BV 回复不占用搬运资源。
+        async acquireResourceGate() {
+          counters.gates += 1
+          throw new Error('video BV reply reached the resource lock')
+        },
+      },
+    })
+
+    for (const fixture of fixtures) {
+      const content = await adaptContent([{ type: 'video', data: fixture.data }])
+      check(`${fixture.label} survives the installed OneBot adapter`, content.includes('<video') && plugin.extractBiliUrl(content) !== null, content)
+      for (const middleware of ctx.middlewares) {
+        const session = makeSession({ content })
+        let nextCalls = 0
+        const result = await middleware.handler(session, () => { nextCalls += 1 })
+        check(`${fixture.label} ${middleware.prepend ? 'prepended' : 'normal'} middleware returns only BV`, result === fixture.expected && nextCalls === 0 && session.sent.length === 0, JSON.stringify({ result, nextCalls, sent: session.sent }))
+      }
+
+      const session = makeSession({ content })
+      let nextCalls = 0
+      const result = await plugin.handleStandaloneBilibiliVideoInput(ctx, session, () => { nextCalls += 1 }, deps)
+      check(`${fixture.label} skips download and resource dependencies`, result === fixture.expected && nextCalls === 0 && session.sent.length === 0 && counters.probes === 0 && counters.downloads === 0 && counters.admissions === 0 && counters.gates === 0 && store.submittedTaskIds.length === 0, JSON.stringify({ result, nextCalls, counters, submitted: store.submittedTaskIds }))
+    }
+
+    const plainVideo = await adaptContent([{ type: 'video', data: { file: 'plain.mp4', url: 'https://cdn.example.invalid/plain.mp4' } }])
+    for (const middleware of ctx.middlewares) {
+      const session = makeSession({ content: plainVideo })
+      let nextCalls = 0
+      await middleware.handler(session, () => { nextCalls += 1 })
+      check(`video without BV passes ${middleware.prepend ? 'prepended' : 'normal'} middleware`, nextCalls === 1 && session.sent.length === 0)
+    }
+
+    const mixedContent = await adaptContent([
+      { type: 'text', data: { text: `看看这个 ${TEST_BV}` } },
+      { type: 'video', data: { file: 'plain.mp4', url: 'https://cdn.example.invalid/plain.mp4' } },
+    ])
+    const mixedCounters = { probes: 0, downloads: 0 }
+    const mixedSession = makeSession({ content: mixedContent })
+    let mixedNext = 0
+    const mixedResult = await plugin.handleStandaloneBilibiliVideoInput(ctx, mixedSession, () => { mixedNext += 1 }, makeDeps(1_000_000, 1_000_000, mixedCounters))
+    check('body BV beside a video without BV retains automatic transport', mixedResult === undefined && mixedNext === 0 && mixedCounters.probes === 1 && mixedCounters.downloads === 1 && mixedSession.sent.some(message => message.includes('<video')), JSON.stringify({ mixedResult, mixedNext, mixedCounters, sent: mixedSession.sent }))
+
+    const commandContent = await adaptContent([
+      { type: 'text', data: { text: `bvidl ${TEST_BV} ` } },
+      { type: 'video', data: { file: `${TEST_BV}.mp4` } },
+    ])
+    for (const middleware of ctx.middlewares) {
+      const session = makeSession({ content: commandContent })
+      let nextCalls = 0
+      await middleware.handler(session, () => { nextCalls += 1 })
+      check(`explicit bvidl with video reaches command handler through ${middleware.prepend ? 'prepended' : 'normal'} middleware`, nextCalls === 1 && session.sent.length === 0)
+    }
+
+    fs.mkdirSync(dataDir, { recursive: true })
+    fs.writeFileSync(path.join(dataDir, 'video-blacklist.json'), JSON.stringify({ groups: ['10001'], users: [] }), 'utf8')
+    plugin.loadVideoBlacklist(true)
+    const blockedContent = await adaptContent([{ type: 'video', data: { file: `${TEST_BV}.mp4` } }])
+    for (const middleware of ctx.middlewares) {
+      const session = makeSession({ content: blockedContent })
+      let nextCalls = 0
+      await middleware.handler(session, () => { nextCalls += 1 })
+      check(`blacklisted forwarded video stays silent in ${middleware.prepend ? 'prepended' : 'normal'} middleware`, nextCalls === 1 && session.sent.length === 0)
+    }
+    await ctx.dispose()
+  })
+}
+
 // 验证裸 BV 前置入口在三档边界上进入统一准入，且红档不启动探测或下载。
 async function testStandaloneMiddlewareResourceBoundaries() {
   section('standalone middleware resource boundaries')
@@ -2038,6 +2151,7 @@ async function run() {
   await testConfigAndParsing()
   await testStandaloneMiddlewareRegistration()
   await testUnifiedBilibiliInputsAndCards()
+  await testForwardedVideoBvReplies()
   await testStandaloneMiddlewareResourceBoundaries()
   await testP1NormalizationAndResponseTimeout()
   await testChineseUserErrorCatalog()

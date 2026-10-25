@@ -187,7 +187,7 @@ AI API / Agent 工具 / 群工具 / Dashboard / 日报 / 视频 / 图集
 | Agent 工具 | `packages/koishi-plugin-dongxuelian-ai/lib/agent/tools/` | 时间、计算器、网页搜索、浏览器动作、读写文件、查找文件、grep、执行 JS、Shell、日志查询、图片分析、计划和记忆工具 |
 | 帮助菜单 | `packages/koishi-plugin-dongxuelian-help/` | `help东雪莲`、`helpAI`、`help集合`、`指令速查` 等帮助入口 |
 | 昵称与集合 | `packages/koishi-plugin-group-name-at/` | 昵称绑定、集合管理、集合运算、批量 at |
-| B 站视频发送 | `packages/koishi-plugin-local-video-sender/` | 自动识别 B 站链接，或用 `bvidl` 下载并发送视频 |
+| B 站视频发送 | `packages/koishi-plugin-local-video-sender/` | 自动识别 B 站链接，或用 `bvidl` 下载并发送视频；收到的视频属性中已携带 BV 号时仅回复编号 |
 | 群聊日报 | `packages/koishi-plugin-daily-report/` | 基础日报、详细日报、HTML 模板渲染、AI 分析 |
 | GitHub 链接查询 | `packages/koishi-plugin-dongxuelian-ai/src/github-preview/` | Issue 正文卡片；PR 首图看板详情、后接原工业风正文长截图；仓库 / 用户官方信息卡片；独立群白名单默认关闭 |
 | 退群提醒 | `packages/koishi-plugin-group-leave-notice/` | 监听成员退群事件并在群里提示 |

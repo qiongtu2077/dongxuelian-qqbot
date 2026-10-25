@@ -4,6 +4,7 @@ exports.normalizeSharedText = normalizeSharedText;
 exports.uniqueStrings = uniqueStrings;
 exports.isBilibiliCardInput = isBilibiliCardInput;
 exports.extractBiliUrl = extractBiliUrl;
+exports.extractVideoBvIds = extractVideoBvIds;
 exports.buildBiliKeys = buildBiliKeys;
 exports.extractBvId = extractBvId;
 exports.normalizeBiliP1Url = normalizeBiliP1Url;
@@ -22,6 +23,7 @@ const dns = require('dns/promises');
 const http = require('http');
 const https = require('https');
 const net = require('net');
+const { h } = require('koishi');
 const SHORT_LINK_CACHE_TTL_MS = 10 * 60 * 1000;
 const SHORT_LINK_MAX_REDIRECTS = 5;
 const SHORT_LINK_TIMEOUT_MS = 5000;
@@ -171,6 +173,19 @@ function isBilibiliCardInput(input = '') {
 function extractBiliUrl(input = '') {
     const card = parseSharedCardJson(input);
     return card ? extractBiliUrlFromCardValue(card) : extractBiliUrlFromText(input);
+}
+// 仅从视频元素的属性提取 BV 号，避免把正文中的普通分享误判为已携带视频。
+function extractVideoBvIds(input = '') {
+    const ids = [];
+    // OneBot 会把视频来源、文件名等字段保留为 video 属性，按元素解析以隔离其他消息内容。
+    for (const video of h.select(input, 'video')) {
+        for (const value of Object.values(video.attrs)) {
+            if (typeof value !== 'string')
+                continue;
+            ids.push(...(normalizeSharedText(value).match(/\bBV[0-9A-Za-z]{10}\b/gi) || []));
+        }
+    }
+    return uniqueStrings(ids);
 }
 // 为去重和缓存生成 BV 键与 URL 键。
 function buildBiliKeys(input = '') {

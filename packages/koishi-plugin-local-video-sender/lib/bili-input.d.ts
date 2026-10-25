@@ -49,6 +49,7 @@ export declare function normalizeSharedText(input?: string): string;
 export declare function uniqueStrings(values?: unknown[]): string[];
 export declare function isBilibiliCardInput(input?: string): boolean;
 export declare function extractBiliUrl(input?: string): string | null;
+export declare function extractVideoBvIds(input?: string): string[];
 export declare function buildBiliKeys(input?: string): string[];
 export declare function extractBvId(input?: string): string;
 export declare function normalizeBiliP1Url(input?: string): string;
