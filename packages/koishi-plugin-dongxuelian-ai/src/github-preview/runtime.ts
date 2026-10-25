@@ -253,8 +253,8 @@ export class GithubPreviewRuntime {
       }
       // Sending stays outside processing catches: an uncertain adapter result must never cause a retry.
       if (replies.reduce((sum, reply) => sum + reply.imageCount, 0) > 3) {
-        const contents = replies.flatMap(reply => typeof reply.content === 'string' ? [h.text(reply.content)] : reply.content)
-        await this.deliver(job, h('figure', {}, contents.map(content => h('message', {}, content))), context)
+        // Each link keeps its own hint, all images and source URL together in one record entry.
+        await this.deliver(job, h('figure', {}, replies.map(reply => h('message', {}, typeof reply.content === 'string' ? h.text(reply.content) : reply.content))), context)
       } else for (const reply of replies) {
         if (!this.valid(job)) break
         await this.deliver(job, reply.content, context)

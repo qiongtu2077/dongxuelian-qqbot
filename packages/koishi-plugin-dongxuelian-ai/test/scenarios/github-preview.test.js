@@ -167,7 +167,8 @@ async function run(t) {
             assert.equal(outgoing.length, 1)
             const calls = await encodeGithubReply(outgoing[0])
             assert.equal(calls.length, 1); assert.equal(calls[0].method, count > 3 ? 'sendGroupForwardMsg' : 'sendGroupMsg')
-            const segments = count > 3 ? calls[0].nodes.flatMap(node => node.data.content) : calls[0].segments
+            if (count > 3) assert.equal(calls[0].nodes.length, 1, 'one link keeps all images and its source in one message')
+            const segments = count > 3 ? calls[0].nodes[0].data.content : calls[0].segments
             assert.deepEqual(segments.filter(item => item.type === 'image').map(item => item.data.file), images.map(image => 'base64://' + image.toString('base64')))
             assert(segments.at(-1).data.text.includes('https://github.com/owner/repo/pull/1'))
             if (guildId === '10002') assert(segments[0].data.text.includes('缓存数据'))
@@ -180,7 +181,7 @@ async function run(t) {
       const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
       const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
       for (const failure of [false, true]) {
-        const settings = new GithubPreviewSettings(data.pathFor('batch-record-' + failure)); await settings.update('10001', true)
+        const settings = new GithubPreviewSettings(data.pathFor('batch-record-' + failure)); await settings.update('10001', true); await settings.update('10002', true)
         const outgoing = []
         const runtime = new GithubPreviewRuntime(settings, { lookup: async target => { if (failure && target.number === 2) throw new GithubQueryError('资源不存在或当前不可访问', 404); return { target, url: target.url, title: 'PR', facts: [], fetchedAt: Date.now() } }, renderPull: async metadata => ({ images: [Buffer.from('board-' + metadata.target.number), Buffer.from('body-' + metadata.target.number)], capturedAt: Date.now() }), acquire: async () => () => {}, log: () => {} })
         try {
@@ -189,7 +190,23 @@ async function run(t) {
           const calls = await encodeGithubReply(outgoing[0])
           assert.equal(calls[0].method, failure ? 'sendGroupMsg' : 'sendGroupForwardMsg')
           if (failure) assert(String(outgoing[1]).includes('资源不存在'))
-          else assert.deepEqual(calls[0].nodes.flatMap(node => node.data.content).filter(item => item.type === 'image').map(item => Buffer.from(item.data.file.slice(9), 'base64').toString()), ['board-1', 'body-1', 'board-2', 'body-2'])
+          else {
+            assert.equal(calls[0].nodes.length, 2, 'two links produce two internal messages')
+            for (const [index, node] of calls[0].nodes.entries()) {
+              assert.deepEqual(node.data.content.filter(item => item.type === 'image').map(item => Buffer.from(item.data.file.slice(9), 'base64').toString()), ['board-' + (index + 1), 'body-' + (index + 1)])
+              assert.equal(node.data.content.at(-1).data.text.trim(), 'https://github.com/owner/repo/pull/' + (index + 1))
+            }
+            outgoing.length = 0
+            await runtime.handle(makeSession({ guildId: '10002', messageId: 'cached-groups', send: async content => { outgoing.push(content); return 'sent' } }), 'https://github.com/owner/repo/pull/1 https://github.com/owner/repo/pull/2')
+            assert.equal(outgoing.length, 1)
+            const cached = await encodeGithubReply(outgoing[0])
+            assert.equal(cached[0].nodes.length, 2)
+            for (const [index, node] of cached[0].nodes.entries()) {
+              assert(node.data.content[0].data.text.includes('缓存数据'))
+              assert.equal(node.data.content.filter(item => item.type === 'image').length, 2)
+              assert.equal(node.data.content.at(-1).data.text.trim(), 'https://github.com/owner/repo/pull/' + (index + 1))
+            }
+          }
           let attempts = 0
           await runtime.handle(makeSession({ messageId: 'uncertain', send: async () => { attempts++; throw new Error('adapter uncertain') } }), 'https://github.com/owner/repo/pull/3 https://github.com/owner/repo/pull/4')
           assert.equal(attempts, 1)
