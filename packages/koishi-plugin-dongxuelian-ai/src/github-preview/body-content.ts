@@ -9,9 +9,10 @@ import { escapeGithubText } from './renderer'
 const xss = require('xss') as typeof import('xss')
 const sharp = require('sharp') as typeof import('sharp')
 const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../core/utils') as typeof import('../core/utils')
-const IMAGE_HOSTS = new Set(['private-user-images.githubusercontent.com', 'user-images.githubusercontent.com', 'camo.githubusercontent.com', 'avatars.githubusercontent.com', 'github-production-user-asset-6210df.s3.amazonaws.com'])
+const IMAGE_HOSTS = new Set(['private-user-images.githubusercontent.com', 'user-images.githubusercontent.com', 'camo.githubusercontent.com', 'avatars.githubusercontent.com', 'raw.githubusercontent.com', 'github-production-user-asset-6210df.s3.amazonaws.com'])
 export interface GithubBodyImage { url: string; alt: string }
-export interface GithubPreparedBody { html: string; missing: number; animations: number }
+export interface GithubPreparedBody { html: string; missing: number; animations: number; images: Buffer[] }
+interface GithubBodyAsset { data: string; image?: Buffer; animated: boolean }
 
 // --- 正文结构 --- //
 // Decode attributes with the existing parser rather than interpreting HTML with regular expressions.
@@ -77,7 +78,7 @@ export function isGithubBodyImageUrl(raw: string): boolean {
 }
 
 // Fetch one image with validated redirects and streamed byte limits, then decode and resample it.
-async function fetchBodyImage(raw: string, signal: AbortSignal, budget: { bytes: number }, transport: typeof fetch, resolve: (url: string) => Promise<unknown>): Promise<{ data: string; animated: boolean }> {
+async function fetchBodyImage(raw: string, signal: AbortSignal, budget: { bytes: number }, transport: typeof fetch, resolve: (url: string) => Promise<unknown>, separateImages: boolean): Promise<GithubBodyAsset> {
   let url = raw
   for (let hop = 0; hop <= 3; hop++) {
     signal.throwIfAborted()
@@ -107,19 +108,23 @@ async function fetchBodyImage(raw: string, signal: AbortSignal, budget: { bytes:
     const metadata = await sharp(source, { limitInputPixels: 4000000, animated: false }).metadata()
     if (!['png', 'jpeg', 'webp', 'gif', 'heif'].includes(metadata.format || '')) throw new Error('附件图片格式不受支持')
     signal.throwIfAborted()
-    const buffer = await sharp(source, { limitInputPixels: 4000000, animated: false }).resize({ width: 776, withoutEnlargement: true }).webp({ quality: 82 }).toBuffer()
+    const pipeline = sharp(source, { limitInputPixels: 4000000, animated: false })
+    // Standalone screenshots keep their aspect ratio and text detail; they never become card slices.
+    const buffer = separateImages
+      ? await pipeline.resize({ width: 1280, height: 4000, fit: 'inside', withoutEnlargement: true }).png().toBuffer()
+      : await pipeline.resize({ width: 776, withoutEnlargement: true }).webp({ quality: 82 }).toBuffer()
     signal.throwIfAborted()
-    return { data: 'data:image/webp;base64,' + buffer.toString('base64'), animated: (metadata.pages || 1) > 1 }
+    return { data: separateImages ? '' : 'data:image/webp;base64,' + buffer.toString('base64'), image: separateImages ? buffer : undefined, animated: (metadata.pages || 1) > 1 }
   }
   throw new Error('附件跳转次数过多')
 }
 
 // Download at most eight unique images with two workers and one shared bounded asset budget.
-export async function prepareGithubBody(raw: string, base: string, context: GithubWorkContext, transport: typeof fetch = fetch, resolve: (url: string) => Promise<unknown> = resolveAndValidateHostname): Promise<GithubPreparedBody> {
+export async function prepareGithubBody(raw: string, base: string, context: GithubWorkContext, transport: typeof fetch = fetch, resolve: (url: string) => Promise<unknown> = resolveAndValidateHostname, options: { separateImages?: boolean } = {}): Promise<GithubPreparedBody> {
   assertGithubWork(context)
   const clean = cleanGithubBody(raw, base)
   const urls = [...new Set(clean.images.map(image => image.url))].filter(isGithubBodyImageUrl).slice(0, 8)
-  const assets = new Map<string, { data: string; animated: boolean }>()
+  const assets = new Map<string, GithubBodyAsset>()
   const controller = new AbortController(), budget = { bytes: 0 }
   // Forward the caller's cancellation to this batch's shared download controller.
   const cancelGithubBodyAssets = (): void => controller.abort(context.signal.reason)
@@ -131,7 +136,7 @@ export async function prepareGithubBody(raw: string, base: string, context: Gith
   const downloadGithubBodyAssets = async (): Promise<void> => {
     while (next < urls.length && !controller.signal.aborted && remaining > 0) {
       const url = urls[next++]
-      try { assets.set(url, await fetchBodyImage(url, controller.signal, budget, transport, resolve)) }
+      try { assets.set(url, await fetchBodyImage(url, controller.signal, budget, transport, resolve, Boolean(options.separateImages))) }
       catch (error) {
         const known = ['附件来源不受支持', '附件不是可用图片', '附件超过大小限制', '附件图片格式不受支持', '附件跳转次数过多']
         const reason = controller.signal.aborted ? '附件下载到期或取消' : error instanceof Error && known.includes(error.message) ? error.message : '附件网络或解码失败'
@@ -142,9 +147,20 @@ export async function prepareGithubBody(raw: string, base: string, context: Gith
   try { await Promise.all([downloadGithubBodyAssets(), downloadGithubBodyAssets()]) }
   finally { clearTimeout(timer); controller.abort(); context.signal.removeEventListener('abort', cancelGithubBodyAssets) }
   assertGithubWork(context)
-  let missing = 0, animations = 0, embeddedBytes = Buffer.byteLength(clean.html, 'utf8')
+  let missing = 0, animations = 0, embeddedBytes = Buffer.byteLength(clean.html, 'utf8'), imageBytes = 0
+  const images: Buffer[] = [], emitted = new Set<string>()
   const html = clean.html.replace(/<!--github-asset:(\d+)-->/g, (_marker, index: string) => {
     const image = clean.images[Number(index)], asset = assets.get(image.url)
+    if (options.separateImages) {
+      // Iterate source placeholders, not download completion order; duplicate URLs are emitted once.
+      if (emitted.has(image.url)) return ''
+      emitted.add(image.url)
+      if (asset?.image && imageBytes + asset.image.length <= GITHUB_LIMITS.imageBytes - GITHUB_LIMITS.htmlBytes) {
+        images.push(asset.image); imageBytes += asset.image.length
+        if (asset.animated) animations++
+      } else missing++
+      return ''
+    }
     // Leave room for the fixed header/footer and avatar inside the shared renderer's HTML cap.
     if (asset && embeddedBytes + asset.data.length < GITHUB_LIMITS.htmlBytes - 48 * 1024) {
       embeddedBytes += asset.data.length
@@ -154,5 +170,5 @@ export async function prepareGithubBody(raw: string, base: string, context: Gith
     missing++
     return `<span class="image-missing">图片未载入，请查看原文 · ${escapeGithubText(image.alt)}</span>`
   })
-  return { html, missing, animations }
+  return { html, missing, animations, images }
 }

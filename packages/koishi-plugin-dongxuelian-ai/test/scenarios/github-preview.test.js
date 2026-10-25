@@ -116,7 +116,45 @@ async function run(t) {
     assert.deepEqual(anomalousMetadata.pull.reviews.map(review => review.login), ['alice', 'bob'])
   })
 
+  await githubCase(t, 'pull checks include failures beyond row 30 and reject incomplete pagination', async () => {
+    const runs = Array.from({ length: 31 }, (_, index) => ({ name: 'check-' + index, status: 'completed', conclusion: index === 30 ? 'failure' : 'success', html_url: 'https://github.com/owner/repo/actions/runs/' + index }))
+    for (const total of [31, 101]) {
+      const client = new GithubPreviewClient(async url => {
+        const route = String(url)
+        if (route.endsWith('/repos/owner/repo')) return githubResponse(githubFixture('repository'))
+        if (route.includes('/reviews?')) return githubResponse([])
+        if (route.includes('/check-runs?')) return githubResponse({ total_count: total, check_runs: runs })
+        return githubResponse(githubFixture('pull', { head: { ref: 'feature', sha: 'abc123' } }))
+      })
+      const result = await client.lookup(parseGithubTarget('https://github.com/owner/repo/pull/1'), githubContext())
+      if (total === 31) {
+        assert.equal(result.pull.checks.overall, 'failure'); assert.equal(result.pull.checks.total, 31)
+        assert.equal(result.pull.checks.counts.failure, 1); assert.equal(result.pull.checks.runs[0].name, 'check-30')
+      } else { assert.equal(result.pull.checks, undefined); assert.deepEqual(result.pull.partial, ['检查']) }
+    }
+  })
+
   await withScenario({}, async ({ data, makeSession }) => {
+    await githubCase(t, 'pull sends one board then screenshots in renderer order, including cached sends', async () => {
+      const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
+      const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
+      const settings = new GithubPreviewSettings(data.pathFor('pull-images')); await settings.update('10001', true); await settings.update('10002', true)
+      const images = ['board-card', 'bot-screen-one', 'bot-screen-two'].map(text => Buffer.from(text))
+      let renders = 0
+      const runtime = new GithubPreviewRuntime(settings, { lookup: async target => ({ target, url: target.url, title: 'PR', facts: [], fetchedAt: Date.now() }), renderPull: async () => { renders++; return { images, capturedAt: Date.now() } }, acquire: async () => () => {}, log: () => {} })
+      try {
+        for (const group of ['10001', '10002']) {
+          const session = makeSession({ guildId: group, messageId: 'screens-' + group })
+          await runtime.handle(session, 'https://github.com/owner/repo/pull/1')
+          assert.equal(session.sent.length, 1)
+          const message = session.sent[0]
+          const positions = images.map(image => message.indexOf(image.toString('base64')))
+          assert(positions[0] >= 0 && positions[0] < positions[1] && positions[1] < positions[2])
+          assert(message.indexOf('https://github.com/owner/repo/pull/1') > positions[2])
+        }
+        assert.equal(renders, 1, 'cached messages preserve the same board and screenshot order')
+      } finally { runtime.dispose() }
+    })
     await githubCase(t, 'per-group board theme persists and threads into pull rendering', async () => {
       const { GithubPreviewSettings } = require(path.join(AI_ROOT, 'lib/github-preview/settings'))
       const { GithubPreviewRuntime } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))

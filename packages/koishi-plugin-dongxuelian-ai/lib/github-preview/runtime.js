@@ -244,7 +244,7 @@ class GithubPreviewRuntime {
                     break;
                 }
                 const theme = this.themes.theme(job.group);
-                const cacheKey = target.key + (target.kind === 'pull' ? `:pull-compare-v1:${theme}:` : ['issue'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + models_1.GITHUB_LIMITS.padding;
+                const cacheKey = target.key + (target.kind === 'pull' ? `:pull-board-attachments-v2:${theme}:` : ['issue'].includes(target.kind) ? ':body-industrial-v2:' : ':card-industrial-v2:') + 'padding-' + models_1.GITHUB_LIMITS.padding;
                 const cached = this.images.get(cacheKey);
                 let metadata, result, note = '', text = '';
                 if (cached && Date.now() - cached.result.capturedAt < models_1.GITHUB_LIMITS.cacheMs) {

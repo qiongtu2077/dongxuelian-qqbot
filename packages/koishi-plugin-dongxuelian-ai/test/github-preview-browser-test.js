@@ -1,6 +1,7 @@
 'use strict'
 const assert = require('node:assert/strict')
 const fs = require('fs'), os = require('os'), path = require('path')
+const dns = require('node:dns')
 const browserData = fs.mkdtempSync(path.join(os.tmpdir(), 'github-preview-browser-'))
 process.env.DONGXUELIAN_AI_DATA_DIR = browserData
 const puppeteer = require('puppeteer-core'), sharp = require('sharp')
@@ -23,7 +24,7 @@ function metadata(kind = 'issue', bodyHtml = '<p>发起者原文，保留内容�
   }
   const url = `https://github.com/owner/repo/${kind === 'pull' ? 'pull' : 'issues'}/1`
   const data = { target: { kind, owner: 'owner', repo: 'repo', number: 1, url }, url, title: '原文标题与黄色编号', state: kind === 'pull' ? '已合并' : '开启中', author: 'author', createdAt: '2026-10-21T00:00:00Z', fetchedAt: Date.now(), labels: [{ name: 'bug', color: 'f5d531' }], facts: [], bodyHtml }
-  if (kind === 'pull') data.pull = { stats: { commits: 3, additions: 120, deletions: 40, changedFiles: 6, comments: 5, reviewComments: 8, headRef: 'feature', baseRef: 'main', headSha: 'abc123def4567890', mergeableState: 'clean', updatedAt: '2026-10-22T00:00:00Z', mergedAt: '2026-10-23T00:00:00Z', mergedBy: 'maintainer', assignees: ['dev1'], requestedReviewers: ['reviewer2'], milestone: 'v2' }, reviews: [{ login: 'reviewer1', state: 'APPROVED', submittedAt: '2026-10-21T01:00:00Z' }, { login: 'reviewer2', state: 'CHANGES_REQUESTED', submittedAt: '2026-10-21T03:00:00Z' }], reviewTotal: 2, checks: { overall: 'success', total: 3, counts: { failure: 0, pending: 1, success: 2, neutral: 0, skipped: 0 }, runs: [{ name: 'lint', status: 'completed', conclusion: 'success', bucket: 'success' }, { name: 'build', status: 'in_progress', bucket: 'pending' }, { name: 'audit', status: 'completed', conclusion: 'success', bucket: 'success' }] }, partial: [] }
+  if (kind === 'pull') data.pull = { stats: { commits: 3, additions: 120, deletions: 40, changedFiles: 6, comments: 5, reviewComments: 8, headRef: 'feature', baseRef: 'main', headSha: 'abc123def4567890', mergeableState: 'clean', updatedAt: '2026-10-22T00:00:00Z', mergedAt: '2026-10-23T00:00:00Z', mergedBy: 'maintainer', assignees: ['dev1'], requestedReviewers: ['reviewer2'], milestone: 'v2' }, reviews: [{ login: 'reviewer1', state: 'APPROVED', submittedAt: '2026-10-21T01:00:00Z' }, { login: 'reviewer2', state: 'CHANGES_REQUESTED', submittedAt: '2026-10-21T03:00:00Z' }], reviewTotal: 2, checks: { overall: 'pending', total: 3, counts: { failure: 0, pending: 1, success: 2, neutral: 0, skipped: 0 }, runs: [{ name: 'lint', status: 'completed', conclusion: 'success', bucket: 'success' }, { name: 'build', status: 'in_progress', bucket: 'pending' }, { name: 'audit', status: 'completed', conclusion: 'success', bucket: 'success' }] }, partial: [] }
   return data
 }
 
@@ -50,6 +51,8 @@ async function verifyBody() {
   assert(clean.html.includes('<details open>')); assert(clean.html.includes('☑')); assert(clean.html.includes('保留表格'))
   assert.equal(clean.images.length, 1)
   for (const url of ['http://127.0.0.1/x', 'https://user-images.githubusercontent.com.evil/x', 'data:image/png;base64,a', 'https://github.com/login', 'https://example.org/x']) assert.equal(isGithubBodyImageUrl(url), false)
+  assert.equal(isGithubBodyImageUrl('https://raw.githubusercontent.com/owner/repo/main/bot.png'), true)
+  assert.equal(isGithubBodyImageUrl('https://raw.githubusercontent.com.evil/owner/repo/main/bot.png'), false)
   const png = await sharp({ create: { width: 50, height: 50, channels: 3, background: '#f5d531' } }).png().toBuffer()
   let calls = 0
   const url = 'https://user-images.githubusercontent.com/a.png'
@@ -66,6 +69,10 @@ async function verifyBody() {
   assert.equal(dns.missing, 1); assert(performance.now() - dnsStart < 1000)
   const oversized = await prepareGithubBody(`<img src="${url}">`, metadata().url, context(), async () => new Response(Buffer.alloc(2 * 1024 * 1024 + 1), { headers: { 'content-type': 'image/png' } }), async () => [])
   assert.equal(oversized.missing, 1)
+  const screenshots = await prepareGithubBody(`<p>描述保留</p><img src="${url}"><img src="${url}"><img src="https://example.org/no.png">`, metadata('pull').url, context(), async () => new Response(png, { headers: { 'content-type': 'image/png' } }), async () => [], { separateImages: true })
+  assert.equal(screenshots.images.length, 1); assert.equal(screenshots.missing, 1)
+  assert(!screenshots.html.includes('<img')); assert(screenshots.html.includes('描述保留'))
+  assert.equal((await sharp(screenshots.images[0]).metadata()).format, 'png')
   console.log('PASS official HTML structure, task state, expanded details, deduplicated assets, redirects, DNS cancellation and byte caps')
 }
 
@@ -73,12 +80,10 @@ async function verifyBody() {
 async function verifyRender(kind, options = {}) {
   const originalLaunch = puppeteer.launch
   const originalFetch = global.fetch
+  const originalLookup = dns.lookup
   const avatarPng = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#f5d531' } }).png().toBuffer()
-  global.fetch = async (url, requestOptions) => {
-    assert.equal(new URL(url).origin, 'https://avatars.githubusercontent.com')
-    assert.equal(requestOptions.headers, undefined)
-    return options.avatarFailure ? new Response(null, { status: 503 }) : new Response(avatarPng)
-  }
+  const screenshotPng = [await sharp({ create: { width: 900, height: 2200, channels: 3, background: '#1177cc' } }).png().toBuffer(), await sharp({ create: { width: 600, height: 450, channels: 3, background: '#cc5511' } }).png().toBuffer()]
+  const assetCalls = []
   let owned, closeOwned, cleanupStarted, requests = 0, screenshotStarted = false
   const layouts = []
   const controller = new AbortController()
@@ -93,7 +98,7 @@ async function verifyRender(kind, options = {}) {
       page.on('request', request => { if (/^https?:/.test(request.url())) requests++ })
       const screenshot = page.screenshot.bind(page)
       page.screenshot = async (...args) => {
-        layouts.push(await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', tile: document.querySelector('.stat') ? getComputedStyle(document.querySelector('.stat')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')) })))
+        layouts.push(await page.evaluate(() => ({ yellow: document.querySelector('.masthead') ? getComputedStyle(document.querySelector('.masthead')).borderBottomColor : '', dark: document.querySelector('#github-preview') ? getComputedStyle(document.querySelector('#github-preview')).backgroundColor : '', tile: document.querySelector('.stat') ? getComputedStyle(document.querySelector('.stat')).backgroundColor : '', pills: document.querySelectorAll('.state').length, avatar: document.querySelector('img.avatar, .user img')?.naturalWidth || 0, placeholder: Boolean(document.querySelector('.avatar-placeholder')), bodyImages: document.querySelectorAll('.body img').length, footerBottom: document.querySelector('footer').getBoundingClientRect().bottom, cardBottom: document.querySelector('#github-preview').getBoundingClientRect().bottom })))
         return screenshot(...args)
       }
       if (options.stall) page.screenshot = () => { screenshotStarted = true; return new Promise(() => {}) }
@@ -105,7 +110,28 @@ async function verifyRender(kind, options = {}) {
   }
   const started = performance.now(), work = { ...context(), signal: controller.signal }
   try {
+    // Mock only external DNS/HTTP; parsing, image decoding and the owned browser stay real.
+    dns.lookup = function fixtureDnsLookup(hostname, ...args) {
+      if (hostname === 'raw.githubusercontent.com') return args[1](null, [{ address: '185.199.108.133', family: 4 }])
+      return originalLookup.call(this, hostname, ...args)
+    }
+    global.fetch = async (url, requestOptions) => {
+      assert.equal(requestOptions.headers, undefined)
+      const parsed = new URL(url)
+      if (parsed.hostname === 'raw.githubusercontent.com') {
+        const index = parsed.pathname.endsWith('one.png') ? 0 : 1
+        assetCalls.push(index)
+        if (options.assetFailure && index === 1) return new Response(null, { status: 503 })
+        // Complete the second download first to prove source ordering is preserved.
+        if (index === 0) await new Promise(resolve => setTimeout(resolve, 30))
+        return new Response(screenshotPng[index], { headers: { 'content-type': 'image/png' } })
+      }
+      assert.equal(parsed.origin, 'https://avatars.githubusercontent.com')
+      return options.avatarFailure ? new Response(null, { status: 503 }) : new Response(avatarPng)
+    }
     const data = metadata(kind)
+    if (options.screenshots) data.bodyHtml = '<p>Bot 效果截图</p><img src="https://raw.githubusercontent.com/owner/repo/main/one.png"><img src="https://raw.githubusercontent.com/owner/repo/main/two.png"><img src="https://raw.githubusercontent.com/owner/repo/main/one.png">'
+    if (options.longBody) { data.bodyHtml = '<p>完整正文保留在原文</p>'.repeat(300); data.title = '很长的标题'.repeat(100) }
     data.avatar = 'https://avatars.githubusercontent.com/u/browser-' + kind + (options.avatarFailure ? '-failed' : '-ok')
     const promise = ['repository', 'user'].includes(kind) ? renderGithubCard(data, work) : kind === 'pull' ? renderGithubPullCard(data, work, options.light ? 'light' : 'dark') : renderGithubIssue(data, work)
     if (options.stall) {
@@ -117,15 +143,25 @@ async function verifyRender(kind, options = {}) {
     else if (options.guardFailure) await assert.rejects(promise, /guard setup failed/)
     else {
       const result = await promise
-      assert.equal(result.incomplete, Boolean(options.avatarFailure)); assert(result.images.length >= (kind === 'pull' ? 2 : 1) && result.images.length <= 6)
+      assert.equal(result.incomplete, Boolean(options.avatarFailure || options.assetFailure))
+      assert.equal(result.images.length, options.screenshots ? options.assetFailure ? 2 : 3 : 1)
       if (kind === 'pull') {
-        assert.equal(layouts.length, 2)
-        assert.equal(layouts[0].yellow, 'rgb(245, 213, 49)', 'first image keeps the industrial before-card')
-        assert.equal(layouts[1].dark, options.light ? 'rgb(255, 255, 255)' : 'rgb(23, 26, 33)', 'second image is the board after-card')
-        assert.equal(layouts[1].tile, options.light ? 'rgb(232, 237, 245)' : 'rgb(30, 35, 48)', 'board skin follows the group theme')
-        assert(layouts[1].pills >= 2, 'board card carries state pills')
+        assert.equal(layouts.length, 1, 'capture the board exactly once')
+        assert.equal(layouts[0].yellow, '', 'no industrial comparison card')
+        assert.equal(layouts[0].dark, options.light ? 'rgb(255, 255, 255)' : 'rgb(23, 26, 33)', 'first image is the board card')
+        assert.equal(layouts[0].tile, options.light ? 'rgb(232, 237, 245)' : 'rgb(30, 35, 48)', 'board skin follows the group theme')
+        assert(layouts[0].pills >= 2, 'board card carries state pills')
+        assert.equal(layouts[0].bodyImages, 0, 'screenshots are not embedded into the board')
+        assert(layouts[0].footerBottom <= layouts[0].cardBottom, 'source footer remains visible')
         assert(layouts.every(item => !item.placeholder))
         assert(layouts.some(item => item.avatar === (options.avatarFailure ? 0 : 64)))
+        if (options.screenshots) {
+          assert.deepEqual(assetCalls.sort(), [0, 1], 'duplicate image is downloaded once')
+          for (let index = 1; index < result.images.length; index++) {
+            assert.deepEqual(await sharp(result.images[index]).raw().toBuffer(), await sharp(screenshotPng[index - 1]).raw().toBuffer(), 'screenshots preserve source order and pixels without splitting')
+          }
+        }
+        if (options.assetFailure) assert.match(result.note, /1 张图片未载入/)
       }
       else {
         assert.equal(layouts[0].yellow, 'rgb(245, 213, 49)'); assert.equal(layouts[0].placeholder, Boolean(options.avatarFailure))
@@ -134,14 +170,14 @@ async function verifyRender(kind, options = {}) {
       if (options.avatarFailure) assert.match(result.note, /头像暂未载入/)
       const dimensions = await sharp(result.images[0]).metadata()
       assert.equal(dimensions.width, 928); assert(dimensions.height < (kind === 'pull' ? 2000 : 800))
-      await verifyPadding(result.images)
+      await verifyPadding([result.images[0]])
     }
     if (options.stuckClose) await new Promise(resolve => setTimeout(resolve, 150))
     assert.equal(requests, 0); assert.equal(owned.connected, false)
     assert.equal(readResourceActivityLease('render_active'), null)
     if (options.stuckClose) assert(performance.now() - cleanupStarted < 4500)
     console.log(`PASS ${kind} local rendering ${JSON.stringify(options)}: elapsed=${Math.round(performance.now() - started)}ms, offline and reclaimed`)
-  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; global.fetch = originalFetch; if (owned?.connected) await closeOwned() }
+  } finally { clearTimeout(abortTimer); puppeteer.launch = originalLaunch; global.fetch = originalFetch; dns.lookup = originalLookup; if (owned?.connected) await closeOwned() }
 }
 
 // Validate real layout, external-resource blocking, clipping and the hard timeout without GitHub access.
@@ -149,6 +185,10 @@ async function main() {
   await verifyBody()
   for (const kind of ['issue', 'pull', 'repository', 'user']) await verifyRender(kind)
   await verifyRender('pull', { light: true })
+  await verifyRender('pull', { screenshots: true })
+  await verifyRender('pull', { screenshots: true, assetFailure: true })
+  await verifyRender('pull', { longBody: true })
+  await verifyRender('pull', { avatarFailure: true })
   await verifyRender('repository', { avatarFailure: true })
   await verifyRender('issue', { avatarFailure: true })
   const raw = await sharp({ create: { width: 100, height: 4500, channels: 3, background: '#f5d531' } }).png().toBuffer()

@@ -120,8 +120,9 @@ function latestGithubReviews(shaped: { login: string; state: string; submitted_a
 // Validate the official check-runs payload into bounded display records.
 function selectGithubCheckRuns(payload: unknown): GithubObject {
   const data = githubObject(payload, 'check-runs')
-  if (!Array.isArray(data.check_runs) || data.check_runs.length > 100) throw new GithubQueryError('官方检查字段异常：check_runs')
-  return { check_runs: data.check_runs.slice(0, 30).map(item => { const run = githubObject(item, 'check_run'); return { name: githubString(run, 'name'), status: githubString(run, 'status'), conclusion: githubString(run, 'conclusion', true), html_url: githubString(run, 'html_url', true) } }) }
+  if (!Array.isArray(data.check_runs) || data.check_runs.length > 100 || githubMetric(data, 'total_count') !== data.check_runs.length) throw new GithubQueryError('官方检查列表不完整，请查看原文')
+  // Summarize every returned check before limiting visible rows; incomplete pages cannot imply success.
+  return { check_runs: data.check_runs.map(item => { const run = githubObject(item, 'check_run'); return { name: githubString(run, 'name'), status: githubString(run, 'status'), conclusion: githubString(run, 'conclusion', true), html_url: githubString(run, 'html_url', true) } }) }
 }
 
 // Bucket and rank official check runs exactly like the progress board's summary.

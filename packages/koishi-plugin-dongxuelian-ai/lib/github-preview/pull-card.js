@@ -5,7 +5,6 @@ exports.renderGithubPullCard = renderGithubPullCard;
 const models_1 = require("./models");
 const renderer_1 = require("./renderer");
 const body_content_1 = require("./body-content");
-const { buildGithubIssueHtml } = require('./issue-renderer');
 const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer');
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot');
 // --- 固定模板（看板详情两套皮肤令牌） --- //
@@ -26,6 +25,7 @@ const GITHUB_PULL_THEMES = {
         noteBg: '#fdf6e3', noteBorder: '#b8860b', noteText: '#7a5a08',
     },
 };
+// Render the official PR lifecycle as a state pill.
 function githubPullStateHtml(metadata) {
     const cls = metadata.state === '已合并' ? 'is-merged' : metadata.state === '已关闭' ? 'is-closed' : metadata.state === '草稿' ? 'is-draft' : 'is-open';
     return `<span class="state ${cls}"><i></i>${(0, renderer_1.escapeGithubText)(metadata.state || '未知')}</span>`;
@@ -43,18 +43,22 @@ function githubPullChecksPill(metadata) {
         return '<span class="state"><i></i>检查不可用</span>';
     return '<span class="state"><i></i>无检查</span>';
 }
+// Omit unavailable counts instead of inventing zero values.
 function githubPullStatTile(value, label, prefix = '', cls = '') {
     if (value === undefined)
         return '';
     return `<div class="stat"><b${cls ? ` class="${cls}"` : ''}>${(0, renderer_1.escapeGithubText)(prefix + value)}</b><span>${(0, renderer_1.escapeGithubText)(label)}</span></div>`;
 }
+// Keep only populated metadata rows.
 function githubPullMetaRow(label, html) {
     return html ? `<dt>${(0, renderer_1.escapeGithubText)(label)}</dt><dd>${html}</dd>` : '';
 }
+// Escape account names and optionally embed the downloaded avatar.
 function githubPullUserChip(login, avatar) {
     const image = avatar ? `<img src="data:image/png;base64,${avatar.toString('base64')}" alt="">` : '';
     return `<span class="user">${image}<span class="login">${(0, renderer_1.escapeGithubText)(login)}</span></span>`;
 }
+// Format official timestamps in Beijing time.
 function githubPullTime(value) {
     if (!value)
         return '';
@@ -64,16 +68,16 @@ function githubPullTime(value) {
 // Interpolate the board detail skin from theme tokens; structure stays identical across skins.
 function githubPullStyles(t) {
     return `  *{box-sizing:border-box}body{margin:0;background:${t.page};color:${t.text};font-family:"Microsoft YaHei","Noto Sans CJK SC",sans-serif}
-  #github-preview{width:880px;background:${t.root};border:1px solid ${t.border};padding:24px 26px}
+  #github-preview{width:880px;max-height:${models_1.GITHUB_LIMITS.imageHeight - models_1.GITHUB_LIMITS.padding * 2}px;display:flex;flex-direction:column;background:${t.root};border:1px solid ${t.border};padding:24px 26px;overflow:hidden}#github-preview>*{flex-shrink:0}
   .kicker{display:flex;flex-wrap:wrap;align-items:center;gap:10px;font-size:14px;color:${t.muted}}.kind{font-weight:650;padding:3px 12px;border-radius:999px;border:1px solid ${t.border};background:${t.tile};color:${t.accent};letter-spacing:.5px}.repo{font-family:Consolas,monospace;overflow-wrap:anywhere}.num{color:${t.muted}}
-  h1{font-size:26px;line-height:1.45;margin:12px 0 0;color:${t.text};overflow-wrap:anywhere;letter-spacing:.2px}
+  h1{font-size:26px;line-height:1.45;margin:12px 0 0;color:${t.text};overflow-wrap:anywhere;letter-spacing:.2px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
   .states{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:12px}
   .state{display:inline-flex;align-items:center;gap:7px;padding:4px 12px;border-radius:999px;border:1px solid ${t.border};background:${t.tile};color:${t.muted};font-size:14px}.state i{width:8px;height:8px;border-radius:50%;background:currentColor}
   .state.is-open{color:${t.green};border-color:${t.openBorder};background:${t.openBg}}.state.is-merged{color:${t.purple};border-color:${t.mergedBorder};background:${t.mergedBg}}.state.is-closed{color:${t.red};border-color:${t.closedBorder};background:${t.closedBg}}.state.is-draft{color:${t.amber};border-color:${t.draftBorder};background:${t.draftBg}}
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin-top:18px}
   .stat{border:1px solid ${t.border};border-radius:10px;background:${t.tile};padding:9px 11px;min-width:0}.stat b{display:block;font-size:19px;line-height:1.25;font-variant-numeric:tabular-nums;color:${t.text};overflow-wrap:anywhere}.stat span{color:${t.muted};font-size:12px}.stat .add{color:${t.green}}.stat .del{color:${t.red}}
   .meta{display:grid;grid-template-columns:104px minmax(0,1fr);gap:8px 14px;margin-top:18px;font-size:15px}
-  .meta dt{color:${t.muted};margin:0}.meta dd{margin:0;min-width:0;word-break:break-word;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
+  .meta dt{color:${t.muted};margin:0}.meta dd{margin:0;min-width:0;max-height:58px;overflow:hidden;word-break:break-word;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center}
   .user{display:inline-flex;align-items:center;gap:7px;color:${t.text}}.user img{width:20px;height:20px;border-radius:50%;border:1px solid ${t.border}}.user .login{overflow-wrap:anywhere}
   .chip{display:inline-flex;align-items:center;padding:2px 10px;border-radius:999px;border:1px solid ${t.border};background:${t.tile};color:${t.chipText};font-size:13px;overflow-wrap:anywhere;max-width:100%}
   .tag{display:inline-flex;align-items:center;padding:1px 8px;border-radius:6px;border:1px solid ${t.border};background:${t.root};color:${t.muted};font-size:12.5px}
@@ -82,8 +86,8 @@ function githubPullStyles(t) {
   .checks{list-style:none;margin:0;padding:0;border:1px solid ${t.border};border-radius:10px;overflow:hidden}
   .checks li{display:flex;align-items:center;gap:9px;padding:8px 13px;font-size:14px;border-top:1px solid ${t.border};background:${t.tile}}.checks li:first-child{border-top:0}
   .checks li>i{width:8px;height:8px;border-radius:50%;flex:0 0 8px;background:${t.muted}}.checks li.b-success>i{background:${t.green}}.checks li.b-failure>i{background:${t.red}}.checks li.b-pending>i{background:${t.amber}}
-  .checks .nm{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;color:${t.text}}.checks .cc{color:${t.muted};font-size:12.5px;white-space:nowrap}
-  .body{border-top:1px solid ${t.border};padding-top:10px;font-size:17px;line-height:1.7;overflow-wrap:anywhere}
+  .checks .nm{flex:1 1 auto;min-width:0;overflow-wrap:anywhere;color:${t.text};display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.checks .cc{color:${t.muted};font-size:12.5px;white-space:nowrap}
+  #github-preview>.description{flex-shrink:1;min-height:0;overflow:hidden}.body{max-height:300px;overflow:hidden;border-top:1px solid ${t.border};padding-top:10px;font-size:17px;line-height:1.7;overflow-wrap:anywhere}
   .body h1,.body h2,.body h3{font-size:21px;margin:22px 0 10px;padding-bottom:5px;border-bottom:1px solid ${t.border}}.body h4,.body h5,.body h6{font-size:18px;margin:18px 0 8px}.body p{margin:11px 0}.body a{color:${t.accent};text-decoration:underline;text-underline-offset:3px}
   .body blockquote{margin:14px 0;border-left:4px solid ${t.accent};background:${t.quote};padding:8px 16px;color:${t.quoteText}}.body ul,.body ol{padding-left:26px}
   .body pre{padding:14px;background:${t.code};border:1px solid ${t.border};white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;line-height:1.55;font-size:14px;color:${t.text}}.body code,.body kbd{font-family:Consolas,monospace;font-size:.88em;background:${t.code};padding:2px 4px;color:${t.text}}.body pre code{padding:0;background:none}
@@ -129,7 +133,7 @@ function buildGithubPullHtml(metadata, body, avatar, note = '', theme = 'dark') 
     const partial = pull?.partial?.length ? `<div class="warn">部分数据获取失败：${(0, renderer_1.escapeGithubText)(pull.partial.join('、'))}，请查看原文。</div>` : '';
     return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"><style>
 ${githubPullStyles(t)}
-  </style></head><body><main id="github-preview"><div class="kicker"><span class="kind">PULL REQUEST</span><span class="repo">${(0, renderer_1.escapeGithubText)(metadata.target.owner + '/' + metadata.target.repo)}</span><span class="num">#${(0, renderer_1.escapeGithubText)(String(metadata.target.number ?? ''))}</span></div><h1>${(0, renderer_1.escapeGithubText)(metadata.title)}</h1><div class="states">${githubPullStateHtml(metadata)}${githubPullChecksPill(metadata)}</div>${statsHtml ? `<section class="stats">${statsHtml}</section>` : ''}${meta ? `<dl class="meta">${meta}</dl>` : ''}${checksList}<section class="sec"><div class="h-label">描述 · 发起者原文</div><article class="body">${body || '<p class="empty">作者未填写正文</p>'}</article></section><footer>${partial}${note ? `<div class="warn">${(0, renderer_1.escapeGithubText)(note)}</div>` : ''}<div class="source">${(0, renderer_1.escapeGithubText)(metadata.url)}</div><div>官方公开数据 · ${(0, renderer_1.escapeGithubText)(new Date(metadata.fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}（北京时间）</div></footer></main></body></html>`;
+  </style></head><body><main id="github-preview"><div class="kicker"><span class="kind">PULL REQUEST</span><span class="repo">${(0, renderer_1.escapeGithubText)(metadata.target.owner + '/' + metadata.target.repo)}</span><span class="num">#${(0, renderer_1.escapeGithubText)(String(metadata.target.number ?? ''))}</span></div><h1>${(0, renderer_1.escapeGithubText)(metadata.title)}</h1><div class="states">${githubPullStateHtml(metadata)}${githubPullChecksPill(metadata)}</div>${statsHtml ? `<section class="stats">${statsHtml}</section>` : ''}${meta ? `<dl class="meta">${meta}</dl>` : ''}${checksList}<section class="sec description"><div class="h-label">描述摘要 · 完整内容请查看原文</div><article class="body">${body || '<p class="empty">作者未填写正文</p>'}</article></section><footer>${partial}${note ? `<div class="warn">${(0, renderer_1.escapeGithubText)(note)}</div>` : ''}<div>卡片展示详情摘要；正文截图按原文顺序附后，完整信息请查看来源。</div><div class="source">${(0, renderer_1.escapeGithubText)(metadata.url)}</div><div>官方公开数据 · ${(0, renderer_1.escapeGithubText)(new Date(metadata.fetchedAt).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }))}（北京时间）</div></footer></main></body></html>`;
 }
 // Render through the existing browser lifecycle while preserving cancellation and memory protection.
 async function renderGithubPullCard(metadata, context, theme = 'dark') {
@@ -150,20 +154,22 @@ async function renderGithubPullCard(metadata, context, theme = 'dark') {
             controller.abort(new Error('可用内存过低，已停止正文渲染'));
     }, 500);
     try {
-        const [body, avatar] = await Promise.all([(0, body_content_1.prepareGithubBody)(metadata.bodyHtml, metadata.url, work), metadata.avatar ? (0, renderer_1.loadGithubAvatar)(metadata.avatar, work) : Promise.resolve(null)]);
+        const [body, avatar] = await Promise.all([(0, body_content_1.prepareGithubBody)(metadata.bodyHtml, metadata.url, work, undefined, undefined, { separateImages: true }), metadata.avatar ? (0, renderer_1.loadGithubAvatar)(metadata.avatar, work) : Promise.resolve(null)]);
         (0, models_1.assertGithubWork)(work);
         const avatarMissing = Boolean(metadata.avatar && !avatar);
-        const note = [body.missing ? `正文附件未完整载入：${body.missing} 处图片未载入，请查看原文。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ');
-        const classicHtml = buildGithubIssueHtml(metadata, body.html, avatar, note);
+        const note = [body.missing ? `正文附件未完整载入：${body.missing} 张图片未载入，请查看原文。` : '', body.animations ? `${body.animations} 张动画仅展示首帧。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ');
         const boardHtml = buildGithubPullHtml(metadata, body.html, avatar, note, theme);
-        if ([classicHtml, boardHtml].some(html => Buffer.byteLength(html, 'utf8') > models_1.GITHUB_LIMITS.htmlBytes))
+        if (Buffer.byteLength(boardHtml, 'utf8') > models_1.GITHUB_LIMITS.htmlBytes)
             throw new Error('正文模板超过大小限制，请查看原文');
         const render = { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' };
-        // Sequential captures keep at most one owned browser alive at a time; both cards ship as separate images.
-        const before = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(classicHtml, render), work);
+        // Capture only the bounded board; screenshots remain independent PNGs after the first image.
+        const card = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(boardHtml, render), work);
+        if (card.length !== 1)
+            throw new Error('看板详情卡片超过单图限制，请查看原文');
         (0, models_1.assertGithubWork)(work);
-        const after = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(boardHtml, render), work);
-        const images = [...before, ...after];
+        const images = [...card, ...body.images];
+        if (images.reduce((sum, image) => sum + image.length, 0) > models_1.GITHUB_LIMITS.imageBytes)
+            throw new Error('正文图片超过大小限制，请查看原文');
         (0, models_1.assertGithubWork)(work);
         return { images, capturedAt: Date.now(), incomplete: body.missing > 0 || avatarMissing, note };
     }
