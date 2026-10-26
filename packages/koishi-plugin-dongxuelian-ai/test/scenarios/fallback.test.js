@@ -95,7 +95,7 @@ async function runRetryableFailureCases(t) {
     ['HTTP 429', { status: 429, text: 'secret rate body' }],
     ['HTTP 500', { status: 500, text: 'secret server body' }],
     ['network', { error: new Error('network detail') }],
-    ['timeout', { abortError: true }],
+    ['network AbortError without aborted signal', { abortError: true }],
     ['invalid JSON', { invalidJson: true, text: '<html>secret</html>' }],
     ['empty result', { json: { choices: [{ message: { content: '', reasoning_content: 'private reasoning' } }] } }],
   ]
@@ -113,6 +113,142 @@ async function runRetryableFailureCases(t) {
     })
   }
 }
+
+// --- 真实计时器超时与主动取消 ---
+
+// 等待真实信号取消；指定成功延迟时及时解除监听，避免测试本身泄漏计时器。
+function waitForFetchSignal(signal, completeAfterMs = 0) {
+  return new Promise((resolve, reject) => {
+    let timer
+    const onAbort = () => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      const error = new Error('The operation was aborted')
+      error.name = 'AbortError'
+      reject(error)
+    }
+    if (signal.aborted) return onAbort()
+    signal.addEventListener('abort', onAbort, { once: true })
+    if (completeAfterMs > 0) {
+      timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }, completeAfterMs)
+    }
+  })
+}
+
+// 前几个请求仅在实际 AbortSignal 触发后失败，其余请求沿用现有响应队列。
+function installSignalAwareFetch(mocked, timeoutCount, successDelayMs = 0) {
+  let attempt = 0
+  global.fetch = async (url, options) => {
+    const current = attempt++
+    if (current < timeoutCount) {
+      mocked.calls.push({ url: String(url), options, requestBody: JSON.parse(options.body) })
+      return waitForFetchSignal(options.signal)
+    }
+    if (successDelayMs > 0) await waitForFetchSignal(options.signal, successDelayMs)
+    return mocked.fetch(url, options)
+  }
+}
+
+// 真实节点超时后逐项回退，每项取得独立信号与完整时限，成功后清理最后的计时器。
+async function runRealTimeoutFallbackCases(t) {
+  await withManagedApi([
+    { json: { choices: [{ message: { content: 'real-timeout-backup-ok' } }] } },
+  ], { text: TEXT_CHAIN }, async (api, mocked) => {
+    installSignalAwareFetch(mocked, 1)
+    const result = await requestManagedText(api, { _timeoutMs: 1000 })
+    t.checkEqual('real timer timeout reaches backup', readResultText(result), 'real-timeout-backup-ok')
+    t.checkEqual('real timer timeout attempts exactly two nodes', mocked.calls.length, 2)
+    t.check('timed-out primary signal is aborted', mocked.calls[0]?.options.signal.aborted)
+    t.check('backup has a fresh active signal', mocked.calls[1]?.options.signal !== mocked.calls[0]?.options.signal && !mocked.calls[1]?.options.signal.aborted)
+    checkOpenAiCall(t, 'real timeout first step', mocked.calls[0], TEXT_CHAIN[0], 'https://api.deepseek.com')
+    checkOpenAiCall(t, 'real timeout second step', mocked.calls[1], TEXT_CHAIN[1], 'https://api.openai.com/v1')
+  })
+
+  const threeNodes = [...TEXT_CHAIN, { provider: 'glm', model: 'glm-5.3-flash' }]
+  await withManagedApi([
+    { json: { choices: [{ message: { content: 'third-node-ok' } }] } },
+  ], { text: threeNodes }, async (api, mocked) => {
+    installSignalAwareFetch(mocked, 2, 150)
+    const startedAt = Date.now()
+    const result = await requestManagedText(api, { _timeoutMs: 1000 })
+    t.checkEqual('two real timeouts reach third node', readResultText(result), 'third-node-ok')
+    t.checkEqual('three-node timeout chain calls every node once', mocked.calls.length, 3)
+    t.checkEqual('three-node timeout chain preserves priority order', mocked.calls.map(call => call.requestBody.model).join(','), threeNodes.map(step => step.model).join(','))
+    t.check('each node receives an independent signal', new Set(mocked.calls.map(call => call.options.signal)).size === 3)
+    t.check('first two nodes consume separate real timeout periods', Date.now() - startedAt >= 1900)
+    t.check('only timed-out node signals are aborted', mocked.calls[0]?.options.signal.aborted && mocked.calls[1]?.options.signal.aborted && !mocked.calls[2]?.options.signal.aborted)
+    await new Promise(resolve => setTimeout(resolve, 1050))
+    t.check('successful third node timeout is cleared', !mocked.calls[2]?.options.signal.aborted)
+  })
+}
+
+// 全部节点实际超时后只返回最后的 TIMEOUT，不跳回已失败节点或调用方直连配置。
+async function runRealTimeoutTerminalCase(t) {
+  await withManagedApi([], { text: TEXT_CHAIN }, async (api, mocked) => {
+    installSignalAwareFetch(mocked, TEXT_CHAIN.length)
+    let error
+    try { await requestManagedText(api, { _timeoutMs: 1000 }) } catch (caught) { error = caught }
+    t.checkEqual('all real timeouts return TIMEOUT', error?.code, 'TIMEOUT')
+    t.checkEqual('all real timeouts preserve sanitized message', error?.message, 'AI 上游请求超时')
+    t.checkEqual('all real timeouts attempt each node once', mocked.calls.length, TEXT_CHAIN.length)
+    t.check('all terminal timeout signals were actually aborted', mocked.calls.every(call => call.options.signal.aborted))
+    t.check('terminal timeout never retries caller model', mocked.calls.every(call => call.requestBody.model !== 'must-not-be-retried'))
+  })
+}
+
+// 请求中取消不记为上游故障；已有故障通知期间取消也不得再调用或告警后继模型。
+async function runExternalCancellationCases(t) {
+  for (const phase of ['request', 'notification']) {
+    await withManagedApi([
+      { status: 429, text: 'private first-node failure' },
+      { json: { choices: [{ message: { content: 'must-not-run' } }] } },
+    ], { text: TEXT_CHAIN }, async (api, mocked) => {
+      const external = new AbortController()
+      const notifier = require(path.join(AI_ROOT, 'lib', 'core', 'capability-failure-notifier.js'))
+      const runtime = require(path.join(AI_ROOT, 'lib', 'core', 'runtime-config.js'))
+      const notifications = []
+      let cancelTimer, error
+      notifier.setCapabilityFailureSender(async (adminId, message) => {
+        notifications.push({ adminId, message })
+        if (phase === 'notification') external.abort()
+      })
+      if (phase === 'request') {
+        installSignalAwareFetch(mocked, 1)
+        cancelTimer = setTimeout(() => external.abort(), 30)
+      }
+      try {
+        await requestManagedText(api, { _timeoutMs: 1000, signal: external.signal })
+      } catch (caught) {
+        error = caught
+      } finally {
+        clearTimeout(cancelTimer)
+        notifier.resetCapabilityFailureNotifier()
+      }
+      t.check(`${phase} cancellation rejects request`, !!error && external.signal.aborted, error?.message)
+      t.checkEqual(`${phase} cancellation never starts backup`, mocked.calls.length, 1)
+      t.checkEqual(`${phase} cancellation adds no extra failure notification`, notifications.length, phase === 'request' ? 0 : runtime.getAdminUserIds(true).size)
+      t.check(`${phase} cancellation never notifies backup failure`, notifications.every(item => !item.message.includes(`模型：${TEXT_CHAIN[1].model}`)), JSON.stringify(notifications))
+    })
+  }
+}
+
+// 常规失败回退与成功返回后，先前节点的计时器均不得在请求结束后取消信号。
+async function runAttemptTimerCleanup(t) {
+  await withManagedApi([
+    { status: 429, text: 'private first-node failure' },
+    { json: { choices: [{ message: { content: 'timer-cleanup-ok' } }] } },
+  ], { text: TEXT_CHAIN }, async (api, mocked) => {
+    const result = await requestManagedText(api, { _timeoutMs: 1000 })
+    t.checkEqual('non-timeout failure still reaches backup', readResultText(result), 'timer-cleanup-ok')
+    await new Promise(resolve => setTimeout(resolve, 1050))
+    t.check('failed and successful attempt timers are both cleared', mocked.calls.length === 2 && mocked.calls.every(call => !call.options.signal.aborted))
+  })
+}
+
+// --- HTTP 策略与能力链边界 ---
 
 // 验证非重试错误立即终止，并且异常不包含 Key 或上游正文。
 async function runNonRetryableFailureCase(t) {
@@ -506,6 +642,10 @@ async function run(t) {
   t.section('scenario: managed capability fallback')
   await runRoundExhaustionSynthesis(t)
   await runRetryableFailureCases(t)
+  await runRealTimeoutFallbackCases(t)
+  await runRealTimeoutTerminalCase(t)
+  await runExternalCancellationCases(t)
+  await runAttemptTimerCleanup(t)
   await runNonRetryableFailureCase(t)
   await runTerminalFailureCases(t)
   await runCapabilityIsolation(t)

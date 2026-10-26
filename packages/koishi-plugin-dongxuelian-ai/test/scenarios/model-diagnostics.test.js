@@ -74,7 +74,7 @@ async function runEvidenceCases(t) {
   })
 }
 
-// 截断仅共享一次扩容，所有节点预算总和与整次判断期限均有界。
+// 每个辅助判断节点仅恢复一次，恢复共享节点期限，后继节点独立分配预算。
 async function runJudgmentCases(t) {
   await withApi([TRUNCATED, OK], async ({ api, mocked, notifications, data }) => {
     const result = await api.requestChatCompletions([], CONFIG, { _purpose: 'topic_switch' })
@@ -87,18 +87,78 @@ async function runJudgmentCases(t) {
     t.check('failed truncation records actual output usage', day.capabilities.text.models[CHAIN[0].model].total === 278, JSON.stringify(day.capabilities.text))
   })
   await withApi([TRUNCATED, TRUNCATED, TRUNCATED, OK], async ({ api, mocked }) => {
-    try { await api.requestChatCompletions([], CONFIG, { _purpose: 'identity_judge' }) } catch { /* 无可见判断时整体失败。 */ }
-    t.checkEqual('whole chain allows only one expansion', mocked.calls.map(call => call.requestBody.max_tokens).join(','), '256,512,256')
-    t.checkEqual('whole chain reserves at most 1024 requested output tokens', mocked.calls.reduce((sum, call) => sum + call.requestBody.max_tokens, 0), 1024)
+    const result = await api.requestChatCompletions([], CONFIG, { _purpose: 'identity_judge' })
+    t.checkEqual('judgment backup recovers using its own output budget', result.content, 'NO')
+    t.checkEqual('each judgment node permits one expansion', mocked.calls.map(call => call.requestBody.max_tokens).join(','), '256,512,256,512')
+    t.checkEqual('judgment recovery stays on its actual priority node', mocked.calls.map(call => call.requestBody.model).join(','), [CHAIN[0].model, CHAIN[0].model, CHAIN[1].model, CHAIN[1].model].join(','))
     t.check('judgment internal purpose never enters HTTP body', mocked.calls.every(call => !('_purpose' in call.requestBody)))
   })
   await withApi([TRUNCATED, OK], async ({ api, mocked }) => {
     const now = Date.now, start = now()
     Date.now = () => start
+    // 首节点返回截断时耗尽其八秒期限，下一节点必须从当前时刻重新计时。
     global.fetch = async (...args) => { const result = await mocked.fetch(...args); Date.now = () => start + 8001; return result }
-    try { await api.requestChatCompletions([], CONFIG, { _purpose: 'topic_switch' }) } catch { /* 总期限已耗尽。 */ }
+    let result
+    try { result = await api.requestChatCompletions([], CONFIG, { _purpose: 'topic_switch' }) }
     finally { Date.now = now }
-    t.checkEqual('judgment total deadline stops recovery and backup', mocked.calls.length, 1)
+    t.checkEqual('expired judgment node does not block successful backup', result.content, 'NO')
+    t.checkEqual('expired judgment skips same-node recovery and calls next priority', mocked.calls.map(call => call.requestBody.model).join(','), CHAIN.map(step => step.model).join(','))
+    t.checkEqual('new judgment node starts with its initial output budget', mocked.calls.map(call => call.requestBody.max_tokens).join(','), '256,256')
+  })
+  await withApi([TRUNCATED, TRUNCATED, OK], async ({ api, mocked }) => {
+    const now = Date.now, start = now()
+    const setTimer = global.setTimeout, scheduledTimeouts = []
+    let elapsed = 0
+    Date.now = () => start + elapsed
+    // 记录真实计时器期限；排除通知 1500ms 和 Token 用量延迟冲盘 5000ms。
+    global.setTimeout = (callback, timeout, ...args) => {
+      scheduledTimeouts.push(timeout)
+      return setTimer(callback, timeout, ...args)
+    }
+    // 首轮消耗 7.5 秒，恢复只能用剩余 500ms，超时后再进入新节点。
+    global.fetch = async (url, options) => {
+      const response = await mocked.fetch(url, options)
+      if (mocked.calls.length === 1) elapsed = 7500
+      if (mocked.calls.length === 2) return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })
+      })
+      return response
+    }
+    let result
+    try { result = await api.requestChatCompletions([], CONFIG, { _purpose: 'identity_judge' }) }
+    finally { Date.now = now; global.setTimeout = setTimer }
+    t.checkEqual('judgment backup succeeds after previous recovery exhausts node deadline', result.content, 'NO')
+    t.checkEqual('same-node recovery shares deadline and runs only once', mocked.calls.map(call => call.requestBody.max_tokens).join(','), '256,512,256')
+    t.checkEqual('judgment recovery retains only the remaining time while next node resets deadline', scheduledTimeouts.filter(timeout => ![1500, 5000].includes(timeout)).join(','), '8000,500,8000')
+    t.checkEqual('deadline-exhausted recovery moves to the next actual model', mocked.calls.map(call => call.requestBody.model).join(','), [CHAIN[0].model, CHAIN[0].model, CHAIN[1].model].join(','))
+  })
+  await withApi([TRUNCATED, OK], async ({ api, mocked, notifications }) => {
+    // 只由真实请求定时器中止首节点，不能用独立 AbortError 冒充超时。
+    global.fetch = async (url, options) => {
+      const response = await mocked.fetch(url, options)
+      if (mocked.calls.length !== 1) return response
+      return new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })
+      })
+    }
+    const result = await api.requestChatCompletions([], CONFIG, { _purpose: 'topic_switch', _timeoutMs: 1000 })
+    t.checkEqual('judgment real timeout continues to a successful backup', result.content, 'NO')
+    t.checkEqual('judgment real timeout calls each priority once', mocked.calls.map(call => call.requestBody.model).join(','), CHAIN.map(step => step.model).join(','))
+    const [first, second] = mocked.calls.map(call => call.options.signal)
+    t.check('judgment backup gets a fresh non-aborted controller', first.aborted && !second.aborted && first !== second)
+    t.check('judgment real timeout is classified and notified accurately', notifications.length > 0 && notifications.every(item => item.message.includes('用途：话题判断') && item.message.includes('原因：请求超时') && item.message.includes('TIMEOUT')))
+  })
+  await withApi([...Array(8).fill(TRUNCATED), OK], async ({ api, mocked, data }) => {
+    const extendedChain = [...CHAIN,
+      { provider: 'mimorium', model: 'mimo-v2.5-pro' },
+      { provider: 'deepseek', model: 'deepseek-v4-pro' },
+      { provider: 'opencode', model: 'deepseek-v4-flash' },
+    ]
+    seedCapabilityConfig(data, { text: extendedChain })
+    const result = await api.requestChatCompletions([], CONFIG, { _purpose: 'identity_judge' })
+    t.checkEqual('judgment reaches the fifth model after four failed nodes and recoveries', result.content, 'NO')
+    t.checkEqual('judgment traverses every configured priority without a global output cutoff', mocked.calls.map(call => call.requestBody.model).join(','), extendedChain.flatMap((step, index) => index < 4 ? [step.model, step.model] : [step.model]).join(','))
+    t.checkEqual('each of five judgment nodes owns its output budget', mocked.calls.map(call => call.requestBody.max_tokens).join(','), '256,512,256,512,256,512,256,512,256')
   })
 }
 

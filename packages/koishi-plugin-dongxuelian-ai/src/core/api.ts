@@ -779,16 +779,20 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
   const imageRequest = readImageRequestDiagnostic(extraBody._imageRequest)
   const imageDiagnostic = imageRequest ? { imageSource: imageRequest.source, imageTarget: imageRequest.target, imageDemandId: imageRequest.demandId } : {}
   const judgment = purpose === 'topic_switch' || purpose === 'identity_judge'
-  const deadline = judgment ? Date.now() + 8000 : Infinity
   const requestId = createDiagnosticRequestId()
+  let deadline = Infinity, budgetStepIndex = -1
   let remainingOutput = 1024, recoveryUsed = false, recoveryNext = false, attemptNumber = 0
 
   for (let index = startIndex; index < attempts.length; index += 1) {
     const attempt = attempts[index]
+    // 每个备用节点独立计时和分配输出预算；同节点截断恢复继续共享本节点预算。
+    if (index !== budgetStepIndex) {
+      budgetStepIndex = index
+      deadline = judgment ? Date.now() + 8000 : Infinity
+      remainingOutput = 1024; recoveryUsed = false; recoveryNext = false
+    }
     const maxTokens = judgment ? recoveryNext ? 512 : 256 : Number(filtered.max_tokens) || 1500
     const diagnosticMaxTokens = structuredFields?.[index]?._nativeStructuredOutput ? undefined : maxTokens
-    // 辅助链总时限与最坏请求输出预算共享，不能对每个备用节点重新放大。
-    if (judgment && (Date.now() >= deadline || remainingOutput < maxTokens)) throw new CapabilityUpstreamError('辅助判断总时限或输出预算已耗尽', 'JUDGMENT_BUDGET_EXHAUSTED', false)
     recoveryNext = false
     const attemptStartedAt = Date.now()
     attemptNumber += 1
@@ -818,6 +822,7 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
       if (judgment) remainingOutput -= maxTokens
       const response = await requestProtocolAttempt(messages, attempt, judgment ? { ...filtered, max_tokens: maxTokens } : structuredFields?.[index] || filtered, tools, controller.signal)
       protocolCompleted = true
+      clearTimeout(timer)
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(response.usage), {
         capability,
         model: attempt.model,
@@ -838,6 +843,8 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
         usage: { readable: response.usageReadable, promptTokens: usage.input, completionTokens: usage.output, totalTokens: getUsageTotal(response.usage) } })
       return response.result
     } catch (error) {
+      // 节点请求已结束，通知与后继模型不能再被旧计时器取消。
+      clearTimeout(timer)
       // 诊断回调失败不是供应商故障，不能触发备用模型或管理员上游告警。
       if (externalSignal?.aborted || !protocolStarted || protocolCompleted) throw error
       const failure = error instanceof CapabilityUpstreamError
@@ -857,8 +864,9 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
       console.warn(`[ai-api] capability_step_failed capability=${capability} provider=${attempt.provider || 'unknown'} model=${attempt.model} code=${failure.code}`)
       await notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model, capability,
         { requestId, purpose, reason, status: failure.status, code: failure.code, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId }).catch(() => false)
-      if (controller.signal.aborted || Date.now() >= deadline) throw failure
-      if (judgment && failure.code === 'OUTPUT_TRUNCATED' && !recoveryUsed && remainingOutput >= 512) {
+      if (externalSignal?.aborted) throw externalSignal.reason
+      // 节点超时只跳过当前模型；主动取消仍终止整链，截断恢复不得重新扩大本节点期限。
+      if (judgment && failure.code === 'OUTPUT_TRUNCATED' && !recoveryUsed && remainingOutput >= 512 && !controller.signal.aborted && Date.now() < deadline) {
         recoveryUsed = true; recoveryNext = true; index -= 1
         continue
       }
