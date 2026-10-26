@@ -14,7 +14,7 @@ function buildCoverageMap(AI_ROOT) {
   {
     behavior: 'model failure evidence Chinese notification bounded judgment and failed media usage',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'model-diagnostics.test.js'),
-    needles: ['HTTP code includes Chinese status', 'whole chain allows only one expansion', 'in-flight cancel makes no notification', 'TTS invalid audio preserves actual failed-call usage'],
+    needles: ['HTTP code includes Chinese status', 'each judgment node permits one expansion', 'judgment real timeout continues to a successful backup', 'in-flight cancel makes no notification', 'TTS invalid audio preserves actual failed-call usage'],
   },
   {
     behavior: 'AI status merged records shared cooldown and fallback',
