@@ -138,8 +138,8 @@ function buildCoverageMap(AI_ROOT) {
   },
   {
     behavior: 'retaliation score calculation',
-    file: path.join(AI_ROOT, 'lib', 'behavior', 'retaliation.js'),
-    needles: [],
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'retaliation.test.js'),
+    needles: ['scenario: retaliation output budget and fallback', 'retaliation actual first request uses 1024 instead of ten', 'retaliation reaches fourth model after three failed nodes and recoveries', 'retaliation real timer timeout switches model and refreshes controller', 'retaliation all nodes exhausted returns zero'],
   },
 ]
 }

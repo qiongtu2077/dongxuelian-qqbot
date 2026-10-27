@@ -57,9 +57,9 @@ async function notifyCapabilityStepFailure(providerId: string, model: string, ca
   const providerName = provider?.name || String(providerId || 'unknown')
   const modelName = String(model || 'unknown')
   const admins = [...getAdminUserIds(true)]
-  const purposes: Record<string, string> = { chat: '聊天', vision: '识图', topic_switch: '话题判断', identity_judge: '身份判断', 'voice-asr': '语音识别', 'voice-tts': '语音合成' }
+  const purposes: Record<string, string> = { chat: '聊天', vision: '识图', topic_switch: '话题判断', identity_judge: '身份判断', retaliation_score: '敌意评分', 'voice-asr': '语音识别', 'voice-tts': '语音合成' }
   const message = [
-    `${CAPABILITY_LABELS[capability]}模型调用失败`,
+    details.purpose === 'retaliation_score' ? '敌意评分节点调用失败' : `${CAPABILITY_LABELS[capability]}模型调用失败`,
     `用途：${purposes[details.purpose || ''] || details.purpose || CAPABILITY_LABELS[capability]}`,
     `供应商：${sanitizeDiagnosticText(providerName)}`, `模型：${sanitizeDiagnosticText(modelName)}`,
     `时间：${new Date().toISOString()}`, `原因：${sanitizeDiagnosticText(details.reason || '原因未明')}`,

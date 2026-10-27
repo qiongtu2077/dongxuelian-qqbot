@@ -1,6 +1,7 @@
 const command = require('./command.test')
 const statusConnectivity = require('./status-connectivity.test')
 const modelDiagnostics = require('./model-diagnostics.test')
+const retaliation = require('./retaliation.test')
 const githubPreview = require('./github-preview.test')
 const essence = require('./essence.test')
 const chat = require('./chat.test')
@@ -31,6 +32,7 @@ const SCENARIOS = [
   command,
   statusConnectivity,
   modelDiagnostics,
+  retaliation,
   githubPreview,
   essence,
   chat,

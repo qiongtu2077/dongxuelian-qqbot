@@ -191,6 +191,7 @@ function formatRecentModelDiagnostic(): string {
     const success = records.map(item => item.lastSuccessAt || '').sort().pop()
     const failure = records.filter(item => item.lastFailureAt).sort((a, b) => b.lastFailureAt!.localeCompare(a.lastFailureAt!))[0]
     return [`最近文字调用：${latest.status === 'success' ? (latest.fallback ? '备用接手成功' : '成功') : latest.reason || '失败'}｜${latest.createdAt}`,
+      ...(latest.purpose === 'retaliation_score' ? ['用途：敌意评分'] : []),
       `最近成功：${success || '暂无记录'}`, `最近失败：${failure ? `${failure.lastFailureReason || '原因未明'}｜${failure.lastFailureAt}` : '暂无记录'}`].join('\n')
   } catch { return '最近文字调用：暂无记录' }
 }
