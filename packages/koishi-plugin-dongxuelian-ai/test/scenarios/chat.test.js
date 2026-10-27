@@ -141,6 +141,31 @@ async function run(t) {
     waitFor: message => String(message).includes('final-visible'),
   })
 
+  // 非测试人格的真实聊天流程：两个评分节点都截断耗尽后，正文仍独立生成。
+  await runChatCase(t, 'retaliation failure continues main chat middleware', [
+    ...Array.from({ length: 4 }, () => ({ json: { choices: [{ message: { content: '', reasoning_content: 'private-retaliation-reasoning' }, finish_reason: 'length' }] } })),
+    { json: { choices: [{ message: { content: '正文仍然正常回复' }, finish_reason: 'stop' }] } },
+  ], async (result, _mocked, _session, calls, data) => {
+    checkSentIncludes(t, 'scenario chat retaliation exhausted still sends main answer', result, '正文仍然正常回复')
+    checkSentExcludes(t, 'scenario chat retaliation failure never becomes connection failure reply', result, '东雪莲暂时无法连接')
+    checkSentExcludes(t, 'scenario chat retaliation reasoning never reaches user', result, 'private-retaliation-reasoning')
+    t.checkEqual('scenario chat retaliation and main answer use separate budgets', calls.map(call => call.requestBody.max_tokens).join(','), '1024,2048,1024,2048,1500')
+    t.check('scenario chat really invoked scoring before main response', calls.slice(0, 4).every(call => call.requestBody.messages[0].content.includes('对话氛围分析器'))
+      && !calls[4].requestBody.messages[0].content.includes('对话氛围分析器'))
+    const recent = Object.values(data.readJson('ai-call-diagnostics/recent.json'))
+    t.check('scenario chat main success remains independent of scoring failure', recent.some(event => event.purpose === 'retaliation_score' && event.status === 'failure')
+      && recent.some(event => event.purpose === 'chat' && event.status === 'success'))
+  }, {
+    input: '你这个废物，回答一下',
+    waitFor: message => String(message).includes('正文仍然正常回复'),
+    setup: (_session, { data }) => {
+      data.writeJson('ai-capability-config.json', createCapabilityConfig({ text: [
+        { provider: 'opencode', model: 'deepseek-v4-flash' },
+        { provider: 'deepseek', model: 'deepseek-v4-pro' },
+      ] }))
+    },
+  })
+
   // 真实 middleware 的结构化消息和纯文本兜底都应把换行保留到请求、历史及下一轮上下文。
   for (const incomingFormat of ['structured', 'fallback']) {
     await withScenario({ data: { summaryWhitelist: ['10001'] } }, async ({ makeSession, run }) => {

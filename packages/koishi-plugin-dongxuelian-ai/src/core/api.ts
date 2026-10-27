@@ -27,6 +27,10 @@ const MAX_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_IMAGE_BY
 const MAX_REMOTE_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_REMOTE_IMAGE_BYTES, MAX_IMAGE_BYTES, 128 * 1024, 16 * 1024 * 1024)
 const REQUEST_TIMEOUT_CAP = parseApiPositiveInt(process.env.AI_REQUEST_TIMEOUT_CAP_MS, 300000, 5000, 600000)
 
+// 辅助判断按节点预留输出额度；恢复与首轮共用本节点期限。
+const JUDGMENT_BUDGET = { initial: 256, recovery: 512, total: 1024, timeoutMs: 8000 } as const
+const RETALIATION_BUDGET = { initial: 1024, recovery: 2048, total: 3072, timeoutMs: 8000 } as const
+
 interface ChatMessage {
   role?: string
   content?: unknown
@@ -46,7 +50,7 @@ interface ApiConfig {
 }
 
 interface RequestExtraBody {
-  _purpose?: 'chat' | 'topic_switch' | 'identity_judge'
+  _purpose?: 'chat' | 'topic_switch' | 'identity_judge' | 'retaliation_score'
   _imageRequest?: { source: 'explicit-image' | 'random-image' | 'history-tool'; target: string; demandId: string }
   reasoning_effort?: 'low' | 'high' | 'max'
   _timeoutMs?: number | string
@@ -778,20 +782,24 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
   const purpose = extraBody._purpose || (capability === 'vision' ? 'vision' : 'chat')
   const imageRequest = readImageRequestDiagnostic(extraBody._imageRequest)
   const imageDiagnostic = imageRequest ? { imageSource: imageRequest.source, imageTarget: imageRequest.target, imageDemandId: imageRequest.demandId } : {}
-  const judgment = purpose === 'topic_switch' || purpose === 'identity_judge'
+  const budget = purpose === 'retaliation_score' ? RETALIATION_BUDGET
+    : purpose === 'topic_switch' || purpose === 'identity_judge' ? JUDGMENT_BUDGET : null
   const requestId = createDiagnosticRequestId()
   let deadline = Infinity, budgetStepIndex = -1
-  let remainingOutput = 1024, recoveryUsed = false, recoveryNext = false, attemptNumber = 0
+  let remainingOutput = budget?.total || 0, recoveryUsed = false, recoveryNext = false, attemptNumber = 0
+  let lastFailure: InstanceType<typeof CapabilityUpstreamError> | null = null
 
   for (let index = startIndex; index < attempts.length; index += 1) {
     const attempt = attempts[index]
     // 每个备用节点独立计时和分配输出预算；同节点截断恢复继续共享本节点预算。
     if (index !== budgetStepIndex) {
       budgetStepIndex = index
-      deadline = judgment ? Date.now() + 8000 : Infinity
-      remainingOutput = 1024; recoveryUsed = false; recoveryNext = false
+      deadline = budget ? Date.now() + budget.timeoutMs : Infinity
+      remainingOutput = budget?.total || 0; recoveryUsed = false; recoveryNext = false
     }
-    const maxTokens = judgment ? recoveryNext ? 512 : 256 : Number(filtered.max_tokens) || 1500
+    // 恢复排队期间也可能耗尽期限；不提交已过期请求，继续下一节点。
+    if (budget && Date.now() >= deadline) continue
+    const maxTokens = budget ? recoveryNext ? budget.recovery : budget.initial : Number(filtered.max_tokens) || 1500
     const diagnosticMaxTokens = structuredFields?.[index]?._nativeStructuredOutput ? undefined : maxTokens
     recoveryNext = false
     const attemptStartedAt = Date.now()
@@ -819,8 +827,8 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
         protocol: attempt.chatProtocol || getProviderCatalogEntry(attempt.provider)?.chatProtocol || 'openai-chat', configurationIdentity: chatStepIdentity(attempt, true) }
       extraBody._onRequestAttempt?.(execution)
       protocolStarted = true
-      if (judgment) remainingOutput -= maxTokens
-      const response = await requestProtocolAttempt(messages, attempt, judgment ? { ...filtered, max_tokens: maxTokens } : structuredFields?.[index] || filtered, tools, controller.signal)
+      if (budget) remainingOutput -= maxTokens
+      const response = await requestProtocolAttempt(messages, attempt, budget ? { ...filtered, max_tokens: maxTokens } : structuredFields?.[index] || filtered, tools, controller.signal)
       protocolCompleted = true
       clearTimeout(timer)
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(response.usage), {
@@ -850,6 +858,7 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
       const failure = error instanceof CapabilityUpstreamError
         ? error
         : new CapabilityUpstreamError(controller.signal.aborted ? 'AI 上游请求超时' : 'AI 上游网络请求失败', controller.signal.aborted ? 'TIMEOUT' : 'NETWORK_ERROR', true)
+      lastFailure = failure
       const readable = hasReadableTokenUsage(failure.details.usage)
       const failedUsage = readUsageDetails(failure.details.usage)
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(failure.details.usage), { capability, model: attempt.model, usage: failure.details.usage, readable })
@@ -866,7 +875,7 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
         { requestId, purpose, reason, status: failure.status, code: failure.code, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId }).catch(() => false)
       if (externalSignal?.aborted) throw externalSignal.reason
       // 节点超时只跳过当前模型；主动取消仍终止整链，截断恢复不得重新扩大本节点期限。
-      if (judgment && failure.code === 'OUTPUT_TRUNCATED' && !recoveryUsed && remainingOutput >= 512 && !controller.signal.aborted && Date.now() < deadline) {
+      if (budget && failure.code === 'OUTPUT_TRUNCATED' && !recoveryUsed && remainingOutput >= budget.recovery && !controller.signal.aborted && Date.now() < deadline) {
         recoveryUsed = true; recoveryNext = true; index -= 1
         continue
       }
@@ -876,6 +885,8 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
       try { cleanupExternalSignal?.() } catch { /* non-critical: abort listener cleanup can race with cancellation */ }
     }
   }
+  // 最后一个节点在恢复提交前过期时，保留已记录的上游错误。
+  if (lastFailure) throw lastFailure
   throw new Error('该能力未配置模型')
 }
 

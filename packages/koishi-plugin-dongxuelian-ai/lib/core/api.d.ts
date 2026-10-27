@@ -15,7 +15,7 @@ interface ApiConfig {
     searchEnabled?: boolean;
 }
 interface RequestExtraBody {
-    _purpose?: 'chat' | 'topic_switch' | 'identity_judge';
+    _purpose?: 'chat' | 'topic_switch' | 'identity_judge' | 'retaliation_score';
     _imageRequest?: {
         source: 'explicit-image' | 'random-image' | 'history-tool';
         target: string;
