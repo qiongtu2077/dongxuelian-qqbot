@@ -198,7 +198,8 @@ export async function repairNpmProxyAndInstall() { return post('/deploy/npm-repa
 export async function npmInstallStatus() { return get('/deploy/npm-install-status') }
 export async function startNapcat() { return post('/deploy/napcat-start', {}, true, 10000) }
 export async function napcatDeployStatus() { return get('/deploy/napcat-status') }
-export async function restartNapcat() { return post('/napcat/restart', {}, true, 15000) }
+// 等待服务重启及 WebUI 健康检查完成，避免前端提前取消仍在进行的重启。
+export async function restartNapcat() { return post('/napcat/restart', {}, true, 60000) }
 export async function startKoishiLocal() { return post('/deploy/koishi-start', {}, true, 10000) }
 export async function koishiDeployStatus() { return get('/deploy/koishi-status') }
 export async function localReadyCheck() { return get('/deploy/local-ready-check') }

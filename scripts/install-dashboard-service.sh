@@ -22,6 +22,14 @@ if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --version >/dev/null 2>
   exit 0
 fi
 
+# QQ 启动依赖 HOME；从服务用户的系统账户记录确定主目录。
+SERVICE_USER="$(id -un)"
+SERVICE_HOME="$(getent passwd "$SERVICE_USER" | cut -d: -f6)"
+if [ -z "$SERVICE_HOME" ]; then
+  echo "[install-dashboard-service] 无法读取服务用户的主目录: $SERVICE_USER" >&2
+  exit 1
+fi
+
 echo "[install-dashboard-service] 写入启动器 $LAUNCHER"
 cat > "$LAUNCHER" <<EOF
 #!/bin/bash
@@ -52,11 +60,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=$SERVICE_USER
 WorkingDirectory=$APP_DIR
 ExecStart=$LAUNCHER
 Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
+Environment=HOME=$SERVICE_HOME
 
 [Install]
 WantedBy=multi-user.target

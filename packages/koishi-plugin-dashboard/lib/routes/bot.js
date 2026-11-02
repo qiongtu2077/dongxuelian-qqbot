@@ -10,6 +10,7 @@ const { resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort, getLinuxNap
 const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require('../logging');
 const { resolveKoishiListenPort } = require('../tools');
 const { waitKoishiPortFree } = require('../deploy-state');
+const { restartNapcatService } = require('../napcat-service');
 function parseJsonObject(body) {
     const data = JSON.parse(body || '{}');
     return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
@@ -287,6 +288,7 @@ function handleGetNapcatStatus(req, res) {
         return;
     return json(res, getLegacyNapcatStatus());
 }
+// 按已配置的服务管理方式重启 NapCat；受托管实例必须通过 WebUI 健康检查。
 function handlePostNapcatRestart(req, res) {
     if (!requireAdmin(req, res))
         return;
@@ -296,6 +298,15 @@ function handlePostNapcatRestart(req, res) {
     const qqExecutable = getLinuxNapcatQQExecutable();
     const logFile = process.env.NAPCAT_LOG_FILE || '/root/napcat.log';
     const args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '-q', qq];
+    const serviceName = process.env.NAPCAT_SERVICE_NAME;
+    if (serviceName) {
+        restartNapcatService(serviceName, resolveNapcatWebuiListenPort()).then(() => {
+            json(res, { ok: true, message: 'NapCat 已重启，WebUI 健康检查通过', qqExecutable, args });
+        }).catch((error) => {
+            json(res, { ok: false, code: 'NAPCAT_RESTART_FAILED', message: 'NapCat 重启失败', detail: getErrorMessage(error) }, 500);
+        });
+        return;
+    }
     const inner = ['xvfb-run', '-a', qqExecutable].concat(args).map(shellQuote).join(' ') + ' >> ' + shellQuote(logFile) + ' 2>&1';
     const command = [
         'screen -S napcat -X quit 2>/dev/null || true',
