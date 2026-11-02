@@ -896,6 +896,7 @@ KOISHI_DIR=<YOUR_APP_DIR> DONGXUELIAN_AI_DATA_DIR=<YOUR_DATA_DIR> sh scripts/sea
 | `NAPCAT_HOST` | `127.0.0.1` | Dashboard 代理 NapCat 的地址 |
 | `NAPCAT_PORT` | `6099` | NapCat WebUI 端口 |
 | `NAPCAT_TOKEN` | 从数据或配置读取 | NapCat WebUI token |
+| `NAPCAT_SERVICE_NAME` | 空 | 已安装的 NapCat systemd unit，例如 `lian-napcat.service`；配置后重启整个服务进程组，并等待 WebUI 健康检查 |
 | `BILI_YTDLP` | `/usr/local/bin/yt-dlp` | 视频下载工具路径 |
 | `BILI_COOKIES_FILE` | `${DONGXUELIAN_AI_DATA_DIR}/bilibili-cookies.txt` | B 站 cookies；生产标准为 `/root/koishi-app/data/bilibili-cookies.txt` |
 | `BILI_WORKDIR` | `/root/koishi-bili-downloads` | 视频临时下载目录 |
