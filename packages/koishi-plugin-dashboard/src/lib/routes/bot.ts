@@ -33,7 +33,7 @@ const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require
 const { resolveKoishiListenPort } = require('../tools') as { resolveKoishiListenPort(): number }
 const { waitKoishiPortFree } = require('../deploy-state') as { waitKoishiPortFree(): void }
 const { restartNapcatService } = require('../napcat-service') as {
-  restartNapcatService(serviceName: string, port: number): Promise<void>
+  restartNapcatService(serviceName: string, port: number, koishiDir: string, onebotPort: number): Promise<{ botReconnected: boolean }>
 }
 
 interface PortState {
@@ -299,7 +299,7 @@ function handleGetNapcatStatus(req: IncomingMessage, res: ServerResponse): void 
   return json(res, getLegacyNapcatStatus())
 }
 
-// 按已配置的服务管理方式重启 NapCat；受托管实例必须通过 WebUI 健康检查。
+// 重启受托管 NapCat，并恢复原本运行的机器人的实际 OneBot 连接。
 function handlePostNapcatRestart(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   const qq = resolveNapcatRestartQq()
@@ -309,8 +309,8 @@ function handlePostNapcatRestart(req: IncomingMessage, res: ServerResponse): voi
   const args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '-q', qq]
   const serviceName = process.env.NAPCAT_SERVICE_NAME
   if (serviceName) {
-    restartNapcatService(serviceName, resolveNapcatWebuiListenPort()).then(() => {
-      json(res, { ok: true, message: 'NapCat 已重启，WebUI 健康检查通过', qqExecutable, args })
+    restartNapcatService(serviceName, resolveNapcatWebuiListenPort(), KOISHI_DIR, resolveNapcatOnebotListenPort()).then(({ botReconnected }) => {
+      json(res, { ok: true, message: botReconnected ? 'NapCat 已重启，机器人 OneBot 连接已恢复' : 'NapCat 已重启，WebUI 健康检查通过（机器人保持停止）', botReconnected, qqExecutable, args })
     }).catch((error: unknown) => {
       json(res, { ok: false, code: 'NAPCAT_RESTART_FAILED', message: 'NapCat 重启失败', detail: getErrorMessage(error) }, 500)
     })
