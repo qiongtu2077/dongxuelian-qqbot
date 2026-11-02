@@ -288,7 +288,7 @@ function handleGetNapcatStatus(req, res) {
         return;
     return json(res, getLegacyNapcatStatus());
 }
-// 按已配置的服务管理方式重启 NapCat；受托管实例必须通过 WebUI 健康检查。
+// 重启受托管 NapCat，并恢复原本运行的机器人的实际 OneBot 连接。
 function handlePostNapcatRestart(req, res) {
     if (!requireAdmin(req, res))
         return;
@@ -300,8 +300,8 @@ function handlePostNapcatRestart(req, res) {
     const args = ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '-q', qq];
     const serviceName = process.env.NAPCAT_SERVICE_NAME;
     if (serviceName) {
-        restartNapcatService(serviceName, resolveNapcatWebuiListenPort()).then(() => {
-            json(res, { ok: true, message: 'NapCat 已重启，WebUI 健康检查通过', qqExecutable, args });
+        restartNapcatService(serviceName, resolveNapcatWebuiListenPort(), KOISHI_DIR, resolveNapcatOnebotListenPort()).then(({ botReconnected }) => {
+            json(res, { ok: true, message: botReconnected ? 'NapCat 已重启，机器人 OneBot 连接已恢复' : 'NapCat 已重启，WebUI 健康检查通过（机器人保持停止）', botReconnected, qqExecutable, args });
         }).catch((error) => {
             json(res, { ok: false, code: 'NAPCAT_RESTART_FAILED', message: 'NapCat 重启失败', detail: getErrorMessage(error) }, 500);
         });

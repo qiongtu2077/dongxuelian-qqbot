@@ -69,7 +69,7 @@
             </div>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-            <button class="btn btn-sm" type="button" @click="doRestartNapcat" :disabled="restartingNapcat">{{ restartingNapcat ? '重启中...' : '重启 NapCat' }}</button>
+            <button class="btn btn-sm" type="button" @click="doRestartNapcat" :disabled="restartingNapcat" title="机器人运行时会同步重启并恢复其 OneBot 连接">{{ restartingNapcat ? '恢复连接中...' : '重启 NapCat' }}</button>
             <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-ghost btn-sm" style="text-decoration:none">→ 打开 WebUI 控制台扫码</a>
           </div>
           <div v-if="napcatRestartMsg" style="margin-top:8px;font-size:13px" :style="{color: napcatRestartMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ napcatRestartMsg.text }}</div>
