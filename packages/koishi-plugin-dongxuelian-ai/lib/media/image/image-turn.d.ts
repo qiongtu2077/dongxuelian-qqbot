@@ -13,7 +13,6 @@ interface ImageSession {
 interface ImageTurnBase {
     targetMessageId: string;
     targetChannelKey: string;
-    candidateMessageIds?: string[];
 }
 interface ImageTurnDiagnostic {
     source: 'explicit-image' | 'random-image' | 'history-tool';
@@ -21,7 +20,7 @@ interface ImageTurnDiagnostic {
     demandId: string;
 }
 type ImageTurnResult = ImageTurnBase & ({
-    status: 'none' | 'pending' | 'unavailable' | 'selection';
+    status: 'none' | 'pending' | 'unavailable';
 } | {
     status: 'reused';
     diagnostic: ImageTurnDiagnostic;

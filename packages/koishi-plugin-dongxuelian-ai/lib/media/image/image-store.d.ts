@@ -1,4 +1,12 @@
 interface ImageEntry {
+    imageId?: string;
+    originalMessageId?: string;
+    mediaIndex?: number;
+    sourceKind?: 'image' | 'attachment';
+    fileName?: string;
+    declaredSize?: number | null;
+    declaredMime?: string;
+    activeOwners?: Record<string, number>;
     url: string;
     file: string | null;
     conversationKey: string;
@@ -29,7 +37,12 @@ interface StorageCleanupResult {
     removedFiles: number;
 }
 declare function storeImageUrl(channelKey: string, messageId: string, url: unknown, file: unknown, meta?: ImageMeta): Promise<boolean>;
+declare function storeImageTargets(channelKey: string, targets: Array<ReturnType<typeof import('./image-manifest').collectImageManifest>[number]>, active?: boolean): Promise<() => Promise<void>>;
+declare function getImagesForMessage(channelKey: string, originalMessageId: string): Promise<RecentImage[]>;
+declare function getImagesForSource(channelKey: string, file: string, sourceKind: 'image' | 'attachment'): Promise<RecentImage[]>;
 declare function getImageEntry(channelKey: string, messageId: string): Promise<ImageEntry | null>;
+declare function getImageEntryCached(channelKey: string, messageId: string): ImageEntry | null;
+declare function markImageReadCompleted(channelKey: string, imageId: string): Promise<void>;
 declare function getRecentImages(channelKey: string, limit?: number): Promise<RecentImage[]>;
 declare function getRecentImagesCached(channelKey: string, limit?: number): RecentImage[];
 declare function markAnalyzed(channelKey: string, messageId: string, analysis: unknown): Promise<boolean>;
@@ -46,7 +59,12 @@ declare function enforceChannelCacheLimit(channelKey: string): Promise<void>;
 declare function cleanupImageStorage(): Promise<StorageCleanupResult>;
 declare const _default: {
     storeImageUrl: typeof storeImageUrl;
+    storeImageTargets: typeof storeImageTargets;
+    getImagesForMessage: typeof getImagesForMessage;
+    getImagesForSource: typeof getImagesForSource;
+    markImageReadCompleted: typeof markImageReadCompleted;
     getImageEntry: typeof getImageEntry;
+    getImageEntryCached: typeof getImageEntryCached;
     getRecentImages: typeof getRecentImages;
     getRecentImagesCached: typeof getRecentImagesCached;
     finishImageAnalysisStatus: typeof finishImageAnalysisStatus;

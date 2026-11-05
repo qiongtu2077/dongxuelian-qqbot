@@ -43,6 +43,7 @@ declare const _default: {
     RANDOM_TRIGGER_RAMP: number;
     DEFAULT_GROUP_RANDOM_WHITELIST: Set<string>;
     REQUEST_TIMEOUT: number;
+    MAX_IMAGE_BYTES: number;
     MAX_OUTPUT_CHARS_FRIENDLY: number;
     MAX_OUTPUT_CHARS_YINYANG: number;
     MAX_OUTPUT_CHARS_ABUSIVE: number;

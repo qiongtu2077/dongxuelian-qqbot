@@ -66,7 +66,7 @@ const { handleCommand } = require('./handler') as typeof import('./handler') // 
 const { flushTokenUsage } = require('./core/api') as typeof import('./core/api')
 const { analyzeIncomingMessage, normalizeText } = require('./message/message-reader') as typeof import('./message/message-reader')
 const { resolveForwardSummary } = require('./message/forward') as typeof import('./message/forward')
-const { prepareVisionRequest, isVisionSession, getVisionPayload, markSessionForVision } = require('./media/image/vision') as typeof import('./media/image/vision') // 图片消息构建 + 视觉会话判断
+const { prepareVisionRequest, prepareExplicitVisionRequest, isVisionSession, getVisionPayload, markSessionForVision } = require('./media/image/vision') as typeof import('./media/image/vision') // 图片消息构建 + 视觉会话判断
 const {
   handleIncomingMessageArtifacts,
 } = require('./message/incoming-message-flow') as typeof import('./message/incoming-message-flow') // 入站图片/文件/语音材料处理
@@ -993,13 +993,11 @@ function apply(ctx: IndexContext): void {
       }
     }
 
-    if (explicitBotInteraction && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed)) {
-      if (analyzed.hasFile && !analyzed.hasVisual && !analyzed.hasEmbed && !analyzed.hasUsableText) return
-      // 有图片 → 尝试识图
-      const preparedVision = prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false })
-      // 多图共用一个消息编号，即使没有正文也必须先澄清唯一目标。
-      if (session._visionAmbiguous) return '这条消息有多张图片，请单独发送需要查看的那一张。'
+    if (explicitBotInteraction) {
+      // 明确交互后的当前图、直接引用图和图片附件全部进入程序读取链。
+      const preparedVision = await prepareExplicitVisionRequest(session)
       if (!preparedVision && !analyzed.hasUsableText) {
+        if (analyzed.hasLink) return next()
         return
       }
     } else if ((directAt || nameMentioned || quotedBotSelf) && !analyzed.hasUsableText) {
@@ -1026,7 +1024,7 @@ function apply(ctx: IndexContext): void {
     })
     const maxDepth = inGuild ? 4 : 2
 
-    if (isFileQuickReadIntent(userText)) {
+    if (isFileQuickReadIntent(userText) && !isVisionSession(session)) {
       const liveSession = withCurrentBot(session, resolveBot()) as IndexSession
       const reply = await resolveFileQuickReadReply(channelKey)
       await safeSendReplyWithFreshness(ctx, liveSession, reply, randomTriggered, resolveBot, randomSendOptions)
@@ -1039,7 +1037,7 @@ function apply(ctx: IndexContext): void {
         try {
           const recentUserMessages = getRecentUserMessages(liveSession, 4)
           const searchContext = buildPrivateSearchContext(liveSession, getRecentUserMessageRecords(liveSession, 8), { currentText: userText })
-          const autoRouteResult = await handleAgentAutoRoute({
+          const autoRouteResult = explicitBotInteraction && isVisionSession(liveSession) ? { handled: false, reply: '' } : await handleAgentAutoRoute({
             ctx,
             liveSession,
             channelKey,

@@ -216,6 +216,9 @@ async function runModuleContract(context) {
     imageSource: path.join(LIB, 'media', 'image', 'image-source'),
     imageRequest: path.join(LIB, 'media', 'image', 'image-request'),
     imageTurn: path.join(LIB, 'media', 'image', 'image-turn'),
+    imageManifest: path.join(LIB, 'media', 'image', 'image-manifest'),
+    imageContent: path.join(LIB, 'core', 'image-content'),
+    imageBatch: path.join(LIB, 'media', 'image', 'image-batch'),
     imageRandomDemand: path.join(LIB, 'media', 'image', 'image-random-demand'),
     mediaQueue: path.join(LIB, 'media', 'backpressure', 'media-queue'),
     imageAnalyzer: path.join(LIB, 'media', 'image', 'image-analyzer'),
@@ -602,6 +605,7 @@ async function runModuleContract(context) {
       'resolveForwardSummary',
     ],
     vision: [
+      'prepareExplicitVisionRequest',
       'markSessionForVision', 'isVisionSession', 'getVisionPayload',
       'clearVisionSession', 'prepareVisionRequest', 'appendVisionMessage',
       'isVisionBlindnessReply', 'downgradeVisionMessageToText',
@@ -793,13 +797,17 @@ async function runModuleContract(context) {
       'updateVoiceAssetMetadata', 'deleteVoiceAsset', 'resolveVoiceSampleFile',
     ],
     imageStore: [
+      'storeImageTargets', 'getImagesForMessage', 'getImagesForSource', 'markImageReadCompleted', 'getImageEntryCached',
       'storeImageUrl', 'getImageEntry', 'getRecentImages', 'getRecentImagesCached', 'markAnalyzed',
       'markAnalysisUnavailable', 'markAnalysisPending', 'finishImageAnalysisStatus', 'storeAssistantImageAnchor',
       'isAlreadyAnalyzed', 'getCachedAnalysis', 'replaceImagePlaceholder',
       'cacheImageFile', 'readCachedImage', 'enforceChannelCacheLimit',
       'cleanupImageStorage',
     ],
-    imageSource: ['readImageSource', 'cleanupImageSourceLocks'],
+    imageSource: ['readImageSource', 'readImageSourceResult', 'cleanupImageSourceLocks'],
+    imageManifest: ['parseImageMediaSegments', 'collectMessageImageTargets', 'collectImageManifest'],
+    imageContent: ['validateImageContent'],
+    imageBatch: ['getVisionInputLimits', 'partitionImageTargets', 'imageTargetLabel', 'collectExplicitImageTargets', 'readExplicitImageEvidence'],
     imageRequest: ['acquireImageRequest', 'cleanupImageRequests', 'hasActiveImageRequest'],
     imageTurn: ['prepareImageTurn', 'messagesContainImage'],
     imageRandomDemand: ['createRandomImageDemand', 'readRandomImageAuthorization', 'isRandomImageDemandValid', 'revokeRandomImageDemand', 'clearRandomImageDemands', 'cleanupRandomImageDemands'],
@@ -870,7 +878,8 @@ async function runModuleContract(context) {
   check('handler.handleCommand exported', typeof handler.handleCommand === 'function')
   check('repeat candidate builder exported', typeof index.buildRepeatCandidate === 'function')
   check('repeat checker exported', typeof index.checkGroupRepeat === 'function')
-  check('vision session key list exports source and target identity keys', Array.isArray(modules.vision.VISION_SESSION_KEYS) && JSON.stringify(modules.vision.VISION_SESSION_KEYS) === JSON.stringify(['_visionUrls', '_visionFile', '_isVisionRequest', '_visionTargetMessageId', '_visionTargetChannelKey']))
+  check('vision session key list exports source and target identity keys', Array.isArray(modules.vision.VISION_SESSION_KEYS) && JSON.stringify(modules.vision.VISION_SESSION_KEYS) === JSON.stringify(['_visionUrls', '_visionFile', '_isVisionRequest', '_visionTargetMessageId', '_visionTargetChannelKey', '_explicitImagesPending', '_visionAmbiguous']))
+  check('all image layers share the ten MiB business limit', modules.imageContent.MAX_IMAGE_BYTES === c.MAX_IMAGE_BYTES && c.MAX_IMAGE_BYTES === 10 * 1024 * 1024)
   check('jailbreak pattern groups exported', modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERN_GROUPS && typeof modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERN_GROUPS === 'object')
   check('jailbreak pattern list exported', Array.isArray(modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERNS) && modules.jailbreakRuleset.JAILBREAK_INPUT_PATTERNS.length > 0)
   check('jailbreak combined regexp exported', modules.jailbreakRuleset.JAILBREAK_INPUT_RE instanceof RegExp)

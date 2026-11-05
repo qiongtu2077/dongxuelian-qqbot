@@ -14,10 +14,8 @@ interface ChatToolOptions {
     currentText?: string;
     selectedImageMessageId?: string;
     quotedImageMessageId?: string;
-    imageTargetSelection?: {
-        candidateMessageIds: string[];
-        selectedMessageId: string;
-    };
+    preparedImageMessageIds?: string[];
+    preparedImageEvidence?: string;
 }
 interface ChatToolCall {
     id?: string;

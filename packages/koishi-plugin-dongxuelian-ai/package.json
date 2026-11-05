@@ -10,6 +10,7 @@
     "test:resource": "npm run test:resource-scheduler && npm run test:resource-system && npm run test:resource-flow && npm run test:resource-regression && npm run test:resource-cleanup && npm run test:image-storage && npm run test:image-request && npm run test:image-random-demand",
     "test:resource-media": "npm run test:resource-scheduler && npm run test:resource-system && npm run test:resource-flow && node test/resource-regression-test.js --media && npm run test:resource-cleanup && npm run test:image-storage && npm run test:image-request && npm run test:image-random-demand",
     "test:image-storage": "node test/image-storage-test.js",
+    "test:image-manifest": "node test/image-manifest-test.js && node test/image-download-test.js",
     "test:image-request": "node test/image-request-test.js",
     "test:image-random-demand": "node test/image-random-demand-test.js",
     "test:resource-cleanup": "node test/resource-cleanup-test.js",

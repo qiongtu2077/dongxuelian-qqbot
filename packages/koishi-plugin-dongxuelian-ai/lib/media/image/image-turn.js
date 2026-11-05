@@ -7,7 +7,6 @@
  */
 const { acquireImageRequest } = require('./image-request');
 const { getVisionPayload, isVisionSession, clearVisionSession } = require('./vision');
-const { getImageEntry } = require('./image-store');
 // 获得原图识别权，或复用已完成事实；等待中的任务不能假装已有结果。
 async function prepareImageTurn(session, options) {
     if (!isVisionSession(session))
@@ -15,16 +14,10 @@ async function prepareImageTurn(session, options) {
     const payload = getVisionPayload(session);
     const targetMessageId = payload.targetMessageId || '';
     const targetChannelKey = payload.targetChannelKey || '';
-    const quotedMessageId = String(session.quote?.messageId || '');
-    // 当前图与有效引用图是两个不同候选时，由获准聊天本身选择，不能先识别当前图。
-    if (!options.randomTriggered && quotedMessageId && quotedMessageId !== targetMessageId && await getImageEntry(targetChannelKey, quotedMessageId)) {
-        clearVisionSession(session);
-        return { status: 'selection', targetMessageId: '', targetChannelKey, candidateMessageIds: [targetMessageId, quotedMessageId] };
-    }
     const result = await acquireImageRequest(targetChannelKey, targetMessageId, {
         source: options.randomTriggered ? 'random-image' : 'explicit-image',
         question: options.question,
-        force: false,
+        force: !options.randomTriggered,
     });
     if (result.status !== 'owned')
         clearVisionSession(session);

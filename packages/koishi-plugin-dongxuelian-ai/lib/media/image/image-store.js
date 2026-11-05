@@ -14,17 +14,33 @@ const IMAGE_HISTORY_DIR = path.join(DATA_DIR, 'image-history');
 const IMAGE_CACHE_DIR = path.join(DATA_DIR, 'image-cache');
 const IMAGE_EXPIRE_MS = 2 * 60 * 60 * 1000;
 const MAX_IMAGES_PER_CHANNEL = 10;
-const MAX_FILE_BYTES = 128 * 1024;
+// 活动整组会超过历史十条；元数据保留有界十六兆，不能仍按十条时代的128KiB裁掉整轮。
+const MAX_FILE_BYTES = 16 * 1024 * 1024;
 const MAX_CACHED_IMAGE_BYTES = 10 * 1024 * 1024;
 const imageHistoryCache = new Map();
 const imageStoreQueues = new Map();
 // --- 记录规范化与保留规则 --- //
+// 原消息唯一匹配时映射到逐图编号；多图只允许整组查询，不默认首图。
+function resolveImageRecordKey(data, messageId) {
+    if (data.images[messageId])
+        return messageId;
+    const matches = Object.keys(data.images).filter(id => data.images[id].originalMessageId === messageId);
+    return matches.length === 1 ? matches[0] : '';
+}
 // 将磁盘中的既有记录转换为统一结构，未分析记录默认仅表示已记录。
 function normalizeImageEntry(entry) {
     if (!entry || typeof entry !== 'object')
         return null;
     const data = entry;
     return {
+        originalMessageId: String(data.originalMessageId || ''),
+        mediaIndex: Number.isInteger(data.mediaIndex) ? Number(data.mediaIndex) : 0,
+        sourceKind: data.sourceKind === 'attachment' ? 'attachment' : 'image',
+        fileName: String(data.fileName || ''),
+        declaredSize: typeof data.declaredSize === 'number' && Number.isFinite(data.declaredSize) && data.declaredSize >= 0 ? data.declaredSize : null,
+        declaredMime: String(data.declaredMime || ''),
+        activeOwners: Object.fromEntries(Object.entries((data.activeOwners && typeof data.activeOwners === 'object' ? data.activeOwners : {}))
+            .filter((owner) => typeof owner[1] === 'number' && isProcessAlive(owner[1]))),
         url: String(data.url || ''),
         file: data.file ? String(data.file) : null,
         conversationKey: String(data.conversationKey || ''),
@@ -46,9 +62,9 @@ function normalizeImageHistoryData(value) {
     for (const [id, entry] of Object.entries(source)) {
         const normalized = normalizeImageEntry(entry);
         if (normalized)
-            images[id] = normalized;
+            images[id] = { ...normalized, originalMessageId: normalized.originalMessageId || id };
     }
-    return { images };
+    return { version: 2, images };
 }
 // 原图片时间决定有效性；访问和重试均不延长窗口。
 function cleanExpired(data) {
@@ -57,6 +73,29 @@ function cleanExpired(data) {
         .filter(id => data.images[id].ts > 0 && now - data.images[id].ts < IMAGE_EXPIRE_MS)
         .sort((a, b) => data.images[b].ts - data.images[a].ts);
     const retained = new Set(ids.slice(0, MAX_IMAGES_PER_CHANNEL));
+    const groups = new Map();
+    for (const id of ids) {
+        const messageId = data.images[id].originalMessageId || id;
+        const group = groups.get(messageId) || [];
+        group.push(id);
+        groups.set(messageId, group);
+    }
+    // 历史数量边界不能留下半条多图消息，否则消息级查询会把剩余单图误认为整组。
+    for (const group of groups.values())
+        if (group.some(id => retained.has(id)) && group.some(id => !retained.has(id))) {
+            for (const id of group)
+                retained.delete(id);
+        }
+    // 活动轮次的全部目标独立于历史十条上限；死亡进程与两小时过期记录不会被保活。
+    for (const group of groups.values()) {
+        for (const id of group) {
+            const entry = data.images[id];
+            entry.activeOwners = Object.fromEntries(Object.entries(entry.activeOwners || {}).filter(([, pid]) => isProcessAlive(pid)));
+        }
+        if (group.some(id => Object.keys(data.images[id].activeOwners || {}).length))
+            for (const id of group)
+                retained.add(id);
+    }
     let removed = 0;
     for (const id of Object.keys(data.images)) {
         if (!retained.has(id)) {
@@ -137,12 +176,18 @@ async function readImageHistory(channelKey) {
         }
         if (!stat.isFile() || stat.size > MAX_FILE_BYTES)
             return { images: {} };
-        const data = normalizeImageHistoryData(JSON.parse(await fs.readFile(file, 'utf8')));
+        const raw = JSON.parse(await fs.readFile(file, 'utf8'));
+        // 只支持已核实的无版本单图结构与本次v2，未知版本不能按空历史覆盖。
+        if (raw.version !== undefined && raw.version !== 2)
+            throw Object.assign(new Error('image_history_version_unsupported'), { code: 'IMAGE_HISTORY_VERSION_UNSUPPORTED' });
+        const data = normalizeImageHistoryData(raw);
         if (file !== safeFile && await writeImageHistory(channelKey, data))
             await fs.unlink(file);
         return data;
     }
     catch (error) {
+        if (error.code === 'IMAGE_HISTORY_VERSION_UNSUPPORTED')
+            throw error;
         imageHistoryCache.delete(getSafeKey(channelKey));
         if (error.code !== 'ENOENT')
             console.warn(`[image-store] read failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -154,8 +199,11 @@ async function writeImageHistory(channelKey, data) {
     const file = getMediaHistoryFilePath(IMAGE_HISTORY_DIR, channelKey);
     const temp = `${file}.${process.pid}.${randomUUID()}.tmp`;
     try {
+        const serialized = JSON.stringify(data);
+        if (Buffer.byteLength(serialized) > MAX_FILE_BYTES)
+            throw new Error('image_history_metadata_too_large');
         await fs.mkdir(IMAGE_HISTORY_DIR, { recursive: true });
-        await fs.writeFile(temp, JSON.stringify(data), { encoding: 'utf8', flag: 'wx' });
+        await fs.writeFile(temp, serialized, { encoding: 'utf8', flag: 'wx' });
         await fs.rename(temp, file);
         imageHistoryCache.set(getSafeKey(channelKey), normalizeImageHistoryData(data));
         return true;
@@ -241,13 +289,116 @@ async function storeImageUrl(channelKey, messageId, url, file, meta = {}) {
         return written;
     });
 }
+// 原子保存整条消息的逐图记录；活动引用先于保留裁剪生效，清单超过十张也不会丢图。
+async function storeImageTargets(channelKey, targets, active = false) {
+    const token = randomUUID();
+    await enqueueImageStoreTask(channelKey, async () => {
+        const data = await readRetainedHistory(channelKey);
+        const recordedAt = Date.now();
+        for (const target of targets) {
+            if (target.channelKey !== channelKey)
+                throw new Error('image_target_channel_mismatch');
+            const previous = data.images[target.id];
+            const legacy = data.images[target.originalMessageId];
+            const matchingLegacy = legacy && !legacy.originalMessageId?.startsWith('im2-')
+                && ((target.file && legacy.file === target.file) || (target.url && legacy.url === target.url)) ? legacy : null;
+            data.images[target.id] = {
+                url: target.url || previous?.url || '', file: target.file || previous?.file || null,
+                conversationKey: target.conversationKey, userId: previous?.userId || '',
+                originalMessageId: target.originalMessageId, mediaIndex: target.mediaIndex, sourceKind: target.sourceKind,
+                fileName: target.fileName, declaredSize: target.declaredSize, declaredMime: target.declaredMime,
+                ts: previous?.ts || target.timestamp || legacy?.ts || recordedAt, analyzed: !!previous?.analyzed, analysis: previous?.analysis || null,
+                sourceRole: previous?.sourceRole || 'user', sentByBot: !!previous?.sentByBot,
+                analysisStatus: previous?.analysisStatus || 'recorded', analysisKind: previous?.analysisKind || '',
+                activeOwners: { ...previous?.activeOwners, ...(active ? { [token]: process.pid } : {}) },
+            };
+            // 只迁移与真实来源匹配的旧原图；不把旧首图复用到同消息的其他媒体位置。
+            if (!previous && matchingLegacy && target.id !== target.originalMessageId) {
+                const dir = getChannelCacheDir(channelKey);
+                for (const name of await fs.readdir(dir).catch(() => [])) {
+                    if (path.parse(name).name !== getSafeKey(target.originalMessageId))
+                        continue;
+                    const file = path.join(dir, name);
+                    const stat = await fs.stat(file).catch(() => null);
+                    if (stat?.isFile() && stat.size > 0 && stat.size <= MAX_CACHED_IMAGE_BYTES)
+                        await fs.copyFile(file, path.join(dir, getSafeKey(target.id) + path.extname(name)));
+                }
+            }
+            // 只有真实消息段已补全来源后，才替代已经确认存在的旧单图记录。
+            if (target.id !== target.originalMessageId)
+                delete data.images[target.originalMessageId];
+        }
+        data.version = 2;
+        cleanExpired(data);
+        if (!await writeImageHistory(channelKey, data))
+            throw new Error('image_target_store_failed');
+        await cleanupChannelFiles(channelKey, data);
+    });
+    let released = false;
+    // 成功、失败或取消由同一所有者释放引用，之后立即恢复通常保留规则。
+    return async () => {
+        if (released || !active)
+            return;
+        released = true;
+        await enqueueImageStoreTask(channelKey, async () => {
+            const data = await readImageHistory(channelKey);
+            for (const target of targets)
+                if (data.images[target.id]?.activeOwners)
+                    delete data.images[target.id].activeOwners[token];
+            cleanExpired(data);
+            await writeImageHistory(channelKey, data);
+            await cleanupChannelFiles(channelKey, data);
+        });
+    };
+}
+// 消息级历史查询返回整组；调用方必须使用返回的逐图编号读原图，不能默认首张。
+async function getImagesForMessage(channelKey, originalMessageId) {
+    if (!channelKey || !originalMessageId)
+        return [];
+    return enqueueImageStoreTask(channelKey, async () => Object.entries((await readRetainedHistory(channelKey)).images)
+        .filter(([id, entry]) => (entry.originalMessageId || id) === originalMessageId)
+        .map(([messageId, entry]) => ({ ...entry, messageId }))
+        .sort((a, b) => (a.mediaIndex || 0) - (b.mediaIndex || 0)));
+}
+// 相同频道、来源类型与平台资源编号才允许复用原图，不比较易过期的签名 URL。
+async function getImagesForSource(channelKey, file, sourceKind) {
+    if (!file)
+        return [];
+    return enqueueImageStoreTask(channelKey, async () => Object.entries((await readRetainedHistory(channelKey)).images)
+        .filter(([, entry]) => entry.file === file && (entry.sourceKind || 'image') === sourceKind)
+        .map(([messageId, entry]) => ({ ...entry, messageId })));
+}
 // 按原消息编号读取仍在保留窗口内的记录。
 async function getImageEntry(channelKey, messageId) {
     if (!channelKey || !messageId)
         return null;
     return enqueueImageStoreTask(channelKey, async () => {
-        const entry = (await readRetainedHistory(channelKey)).images[messageId];
-        return entry ? { ...entry } : null;
+        const data = await readRetainedHistory(channelKey);
+        const imageId = resolveImageRecordKey(data, messageId);
+        return imageId ? { ...data.images[imageId], imageId } : null;
+    });
+}
+// 同步所有权检查只读取已有热缓存并拒绝过期记录，不能复活缺失或多义的原编号。
+function getImageEntryCached(channelKey, messageId) {
+    const cached = imageHistoryCache.get(getSafeKey(channelKey));
+    if (!cached)
+        return null;
+    const imageId = resolveImageRecordKey(cached, messageId);
+    const entry = cached.images[imageId];
+    return entry && Date.now() - entry.ts < IMAGE_EXPIRE_MS ? { ...entry, imageId } : null;
+}
+// 实际视觉请求成功后结算读取状态；没有逐图客观事实时不伪造单图摘要。
+async function markImageReadCompleted(channelKey, imageId) {
+    await enqueueImageStoreTask(channelKey, async () => {
+        const data = await readRetainedHistory(channelKey);
+        const entry = data.images[imageId];
+        if (!entry)
+            return;
+        if (!entry.analyzed) {
+            entry.analysisStatus = 'completed';
+            entry.analysisKind = 'set-evidence';
+        }
+        await writeImageHistory(channelKey, data);
     });
 }
 // 读取有限候选并同步回收失效记录及原图。
@@ -277,6 +428,7 @@ async function markAnalyzed(channelKey, messageId, analysis) {
         return markAnalysisUnavailable(channelKey, messageId);
     return enqueueImageStoreTask(channelKey, async () => {
         const data = await readRetainedHistory(channelKey);
+        messageId = resolveImageRecordKey(data, messageId);
         const entry = data.images[messageId];
         if (!entry)
             return false;
@@ -290,6 +442,7 @@ async function markAnalysisUnavailable(channelKey, messageId, status = 'unavaila
         return false;
     return enqueueImageStoreTask(channelKey, async () => {
         const data = await readRetainedHistory(channelKey);
+        messageId = resolveImageRecordKey(data, messageId);
         const entry = data.images[messageId];
         if (!entry)
             return false;
@@ -306,6 +459,7 @@ async function markAnalysisPending(channelKey, messageId, isStillQueued) {
         return false;
     return enqueueImageStoreTask(channelKey, async () => {
         const data = await readRetainedHistory(channelKey);
+        messageId = resolveImageRecordKey(data, messageId);
         if (!data.images[messageId])
             return false;
         if (isStillQueued && !isStillQueued())
@@ -320,6 +474,7 @@ async function finishImageAnalysisStatus(channelKey, messageId, status, canFinis
         return false;
     return enqueueImageStoreTask(channelKey, async () => {
         const data = await readRetainedHistory(channelKey);
+        messageId = resolveImageRecordKey(data, messageId);
         const entry = data.images[messageId];
         // 队列和识别持有者在存储锁内复核，新的 pending 写入会按同一锁顺序生效。
         if (!entry || entry.analysisStatus !== 'pending' || !canFinish())
@@ -364,11 +519,13 @@ async function replaceImagePlaceholder(channelKey, messageId, analysis) {
     if (!channelKey || !messageId)
         return false;
     return enqueueImageStoreTask(channelKey, async () => {
-        const entry = (await readRetainedHistory(channelKey)).images[messageId];
+        const data = await readRetainedHistory(channelKey);
+        messageId = resolveImageRecordKey(data, messageId);
+        const entry = data.images[messageId];
         if (!entry)
             return false;
         const { replaceImagePlaceholderInConversation } = require('../../conversation');
-        return replaceImagePlaceholderInConversation(entry.conversationKey || channelKey, messageId, analysis);
+        return replaceImagePlaceholderInConversation(entry.conversationKey || channelKey, entry.originalMessageId || messageId, analysis);
     });
 }
 // --- 原图文件与全局维护 --- //
@@ -378,6 +535,7 @@ async function cacheImageFile(channelKey, messageId, buffer) {
         return null;
     return enqueueImageStoreTask(channelKey, async () => {
         const data = await readRetainedHistory(channelKey);
+        messageId = resolveImageRecordKey(data, messageId);
         if (!data.images[messageId])
             return null;
         const dir = getChannelCacheDir(channelKey);
@@ -418,6 +576,7 @@ async function readCachedImage(channelKey, messageId) {
         return null;
     return enqueueImageStoreTask(channelKey, async () => {
         const data = await readRetainedHistory(channelKey);
+        messageId = resolveImageRecordKey(data, messageId);
         if (!data.images[messageId])
             return null;
         const dir = getChannelCacheDir(channelKey);
@@ -426,12 +585,27 @@ async function readCachedImage(channelKey, messageId) {
                 continue;
             const file = path.join(dir, name);
             try {
-                const buffer = await fs.readFile(file);
+                // 读取旧缓存前先检查实际大小，防止一次性把超限文件载入内存。
+                const stat = await fs.stat(file);
+                if (!stat.isFile() || !stat.size || stat.size > MAX_CACHED_IMAGE_BYTES)
+                    return null;
+                const chunks = [];
+                let size = 0;
+                for await (const chunk of (await fs.open(file, 'r')).createReadStream()) {
+                    size += chunk.length;
+                    if (size > MAX_CACHED_IMAGE_BYTES)
+                        return null;
+                    chunks.push(chunk);
+                }
+                const buffer = Buffer.concat(chunks);
                 if (!buffer.length || buffer.length > MAX_CACHED_IMAGE_BYTES)
                     return null;
                 if (Date.now() - data.images[messageId].ts >= IMAGE_EXPIRE_MS)
                     return null;
-                return `data:${mimeFromExt(path.extname(file))};base64,${buffer.toString('base64')}`;
+                const dataUrl = `data:${mimeFromExt(path.extname(file))};base64,${buffer.toString('base64')}`;
+                const { validateImageContent } = require('../../core/image-content');
+                await validateImageContent(dataUrl);
+                return dataUrl;
             }
             catch {
                 return null;
@@ -512,7 +686,7 @@ function mimeFromExt(ext) {
     return 'image/jpeg';
 }
 module.exports = {
-    storeImageUrl, getImageEntry, getRecentImages, getRecentImagesCached, finishImageAnalysisStatus,
+    storeImageUrl, storeImageTargets, getImagesForMessage, getImagesForSource, markImageReadCompleted, getImageEntry, getImageEntryCached, getRecentImages, getRecentImagesCached, finishImageAnalysisStatus,
     markAnalyzed, markAnalysisUnavailable, markAnalysisPending, storeAssistantImageAnchor,
     isAlreadyAnalyzed, getCachedAnalysis, replaceImagePlaceholder,
     cacheImageFile, readCachedImage, enforceChannelCacheLimit, cleanupImageStorage,

@@ -6,7 +6,6 @@
  */
 const { acquireImageRequest } = require('./image-request') as typeof import('./image-request')
 const { getVisionPayload, isVisionSession, clearVisionSession } = require('./vision') as typeof import('./vision')
-const { getImageEntry } = require('./image-store') as typeof import('./image-store')
 
 interface ImageSession {
   content?: string
@@ -18,10 +17,10 @@ interface ImageSession {
   quote?: { messageId?: string }
   [key: string]: unknown
 }
-interface ImageTurnBase { targetMessageId: string; targetChannelKey: string; candidateMessageIds?: string[] }
+interface ImageTurnBase { targetMessageId: string; targetChannelKey: string }
 interface ImageTurnDiagnostic { source: 'explicit-image' | 'random-image' | 'history-tool'; target: string; demandId: string }
 type ImageTurnResult = ImageTurnBase & (
-  | { status: 'none' | 'pending' | 'unavailable' | 'selection' }
+  | { status: 'none' | 'pending' | 'unavailable' }
   | { status: 'reused'; diagnostic: ImageTurnDiagnostic; analysis: string }
   | { status: 'owned'; diagnostic: ImageTurnDiagnostic; complete(analysis: string): Promise<void>; release(): Promise<void> }
 )
@@ -32,16 +31,10 @@ async function prepareImageTurn(session: ImageSession, options: { question: stri
   const payload = getVisionPayload(session)
   const targetMessageId = payload.targetMessageId || ''
   const targetChannelKey = payload.targetChannelKey || ''
-  const quotedMessageId = String(session.quote?.messageId || '')
-  // 当前图与有效引用图是两个不同候选时，由获准聊天本身选择，不能先识别当前图。
-  if (!options.randomTriggered && quotedMessageId && quotedMessageId !== targetMessageId && await getImageEntry(targetChannelKey, quotedMessageId)) {
-    clearVisionSession(session)
-    return { status: 'selection', targetMessageId: '', targetChannelKey, candidateMessageIds: [targetMessageId, quotedMessageId] }
-  }
   const result = await acquireImageRequest(targetChannelKey, targetMessageId, {
     source: options.randomTriggered ? 'random-image' : 'explicit-image',
     question: options.question,
-    force: false,
+    force: !options.randomTriggered,
   })
   if (result.status !== 'owned') clearVisionSession(session)
   return { ...result, targetMessageId, targetChannelKey }

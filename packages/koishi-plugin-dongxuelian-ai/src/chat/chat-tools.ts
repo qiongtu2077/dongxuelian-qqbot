@@ -36,7 +36,8 @@ interface ChatToolOptions {
   currentText?: string
   selectedImageMessageId?: string
   quotedImageMessageId?: string
-  imageTargetSelection?: { candidateMessageIds: string[]; selectedMessageId: string }
+  preparedImageMessageIds?: string[]
+  preparedImageEvidence?: string
 }
 
 interface ChatToolCall {
@@ -206,7 +207,7 @@ function getChatToolDefinitions(options: ChatToolOptions = {}): ChatToolDefiniti
       type: 'function',
       function: {
         name: 'analyze_historical_image',
-        description: '按当前问题读取选定图片。先复用已有摘要；摘要不足以回答小字、完整文字或其他细节时设置 force=true 重新读取原图。历史或引用图由当前问题的语义决定目标，目标不唯一时先澄清；随机回复仅能处理当前选定的图片。',
+        description: '按当前问题读取本轮清单以外的历史图片。传入原消息编号时读取该消息全部图片；需要新细节时设置 force=true。明确交互关联的当前图及直接引用图已由程序固定读取，无需工具决定；随机回复仅能处理当前选定图片。',
         parameters: {
           type: 'object',
           properties: {
@@ -498,18 +499,13 @@ async function executeChatTool(toolCall: ChatToolCall, context: ChatToolContext 
     }
     case 'analyze_historical_image': {
       const msgId = getArgString(args, 'messageId').trim()
+      if (!context.randomTriggered && context.preparedImageMessageIds?.includes(msgId)) return context.preparedImageEvidence || '本轮关联图片已经完成程序读取，请依据现有证据回答。'
       if (context.randomTriggered && (!context.selectedImageMessageId || msgId !== context.selectedImageMessageId)) return '随机回复只能读取当前选定的图片，不能读取其他历史图片。'
       let randomAuthorization: ReturnType<typeof createRandomImageDemand> = null
       if (context.randomTriggered) {
         if (!context.isImageReplyFresh?.()) return '本轮随机图片话题已经过时，未安排新的识图。'
         randomAuthorization = createRandomImageDemand(context.channelKey || '', msgId, Number(context.randomImageExpiresAt))
         if (!randomAuthorization) return '本轮随机图片话题已经过时，未安排新的识图。'
-      }
-      if (context.imageTargetSelection) {
-        const selection = context.imageTargetSelection
-        if (!selection.candidateMessageIds.includes(msgId)) return '本轮只能选择当前图或被引用图；目标不明确时请先澄清。'
-        if (selection.selectedMessageId && selection.selectedMessageId !== msgId) return '本轮已经选定一张图片，不能继续识别另一张图片。'
-        selection.selectedMessageId = msgId
       }
       const analyzeImage = require('../agent/tools/analyze-image') as typeof import('../agent/tools/analyze-image')
       return analyzeImage.execute(args, { channelKey: context.channelKey, userId: context.userId, source: context.randomTriggered ? 'random-image' : 'history-tool', entry: 'chat-tool-analyze-historical-image', randomAuthorization })
@@ -623,9 +619,8 @@ function getChatToolSystemHint(channelKey?: string, options: ChatToolOptions = {
   }
   if (can('read_group_context')) hintParts.push('read_group_context 只能查当前群公开旧片段，适合当前短句或追问接不上时理解“刚才/之前/那个/这张图/那个文件”等指代；工具结果是旧背景，不代表当前话题，不能主动翻旧账。')
   if (can('read_image_history')) hintParts.push('历史图片只在本轮问题需要时查看，先复用已有摘要；需要摘要之外的细节时用 analyze_historical_image 传入当前问题并设置 force=true。没有结果不能声称已看过图片。')
-  if (options.quotedImageMessageId && !options.randomTriggered) hintParts.push(`本轮引用消息编号为 ${options.quotedImageMessageId}；只有语义上确实追问被引用图片时，才将该编号作为图片目标，独立文字问题不自动读引用图。`)
+  if (options.preparedImageMessageIds?.length) hintParts.push('本轮当前消息和直接引用消息中的全部图片、图片附件已由程序处理，依据逐目标状态与视觉证据回答；不要重复读取这些目标。历史图片工具仅用于清单之外的后续查询。')
   if (options.randomTriggered && options.selectedImageMessageId) hintParts.push(`本轮已获准接图片话题，唯一允许图片目标为 ${options.selectedImageMessageId}，可围绕该图自然回应；不能查看其他图片。`)
-  if (options.imageTargetSelection) hintParts.push(`本轮当前图片编号为 ${options.imageTargetSelection.candidateMessageIds[0]}，引用图片编号为 ${options.imageTargetSelection.candidateMessageIds[1]}。根据本轮问题只选择其中一张并调用 analyze_historical_image；目标不清楚时先询问具体哪张，不能先识当前图或逐张识别。`)
   if (can('create_reminder')) hintParts.push('用户明确要求“几分钟后提醒我/明天提醒/到点叫我”时必须调用 create_reminder。')
   if (can('create_scheduled_task')) hintParts.push('用户要求周期性执行、每天/每周/每隔一段时间说话、总结、分析、运行 agent 时，调用 create_scheduled_task。')
   if (can('list_scheduled_tasks') || can('pause_scheduled_task') || can('resume_scheduled_task') || can('delete_scheduled_task') || can('run_scheduled_task_now')) hintParts.push('用户要求查看/暂停/恢复/取消/删除/试跑定时任务时调用对应 scheduled task 工具。')

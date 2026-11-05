@@ -480,7 +480,7 @@ async function runMessageCommandContracts(context) {
     check('image-store cached hint reads memory snapshot synchronously', isolatedImageStore.getRecentImagesCached('g1', 5).length === 2)
     await isolatedImageStore.markAnalyzed('g1', 'm1', 'analysis-ok')
     checkEqual('image-store async cached analysis', await isolatedImageStore.getCachedAnalysis('g1', 'm1'), 'analysis-ok')
-    const cachedPath = await isolatedImageStore.cacheImageFile('g1', 'm1', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]))
+    const cachedPath = await isolatedImageStore.cacheImageFile('g1', 'm1', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64'))
     const cachedImage = await isolatedImageStore.readCachedImage('g1', 'm1')
     check('image-store async image cache roundtrip', typeof cachedPath === 'string' && cachedImage && cachedImage.startsWith('data:image/png;base64,'), cachedImage)
     await isolatedImageStore.cacheImageFile('g1', 'm10', Buffer.from([0xff, 0xd8, 0xff, 0xe0]))

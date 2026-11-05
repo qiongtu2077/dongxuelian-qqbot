@@ -9,12 +9,12 @@ const {
   extractImageRefFromContent,
   getMessageSegments,
   getCurrentImageSegments,
-  hasAmbiguousImageMessage,
   normalizeSegmentData,
   getFileSegmentData,
   getVoiceSegmentData,
 } = require('./message-segment') as typeof import('./message-segment')
-const { storeImageUrl, getImageEntry } = require('../media/image/image-store') as typeof import('../media/image/image-store')
+const { storeImageUrl, storeImageTargets, getImageEntry } = require('../media/image/image-store') as typeof import('../media/image/image-store')
+const { collectImageManifest } = require('../media/image/image-manifest') as typeof import('../media/image/image-manifest')
 const { storeFile } = require('../media/file/file-store') as typeof import('../media/file/file-store')
 const { checkFile, getExtension, sanitizeFileName } = require('../media/file/file-safety') as typeof import('../media/file/file-safety')
 const { storeVoice, getCachedTranscript } = require('../media/voice/voice-store') as typeof import('../media/voice/voice-store')
@@ -115,12 +115,14 @@ function shouldEnqueuePassiveMedia(admission: MediaAdmissionDecisionLike | null 
 
 // 入站只保存图片引用并安排原图缓存，不创建模型分析需求。
 async function handleIncomingImage({ ctx, session, analyzed, plain, content, channelKey, cacheImages = true }: ImageArtifactOptions): Promise<string> {
-  if (!analyzed.hasVisual || !channelKey || !session.messageId) return plain
-  if (hasAmbiguousImageMessage(session, content)) {
-    const { writeMediaEvent } = require('../media/backpressure/media-queue') as typeof import('../media/backpressure/media-queue')
-    writeMediaEvent('image_ingest_ambiguous', { channelKey, messageId: session.messageId, reason: 'multiple_images_in_message' })
+  if ((!analyzed.hasVisual && !analyzed.hasFile) || !channelKey || !session.messageId) return plain
+  const targets = collectImageManifest({ ...session, content }, channelKey, getConversationKey(session), false)
+  if (targets.length > 1 || targets.some(target => target.sourceKind === 'attachment')) {
+    await storeImageTargets(channelKey, targets)
+    // 入站只保留完整来源；前台获准轮次自行固定活动引用，不创建后台重复识图任务。
     return plain.includes('[图片]') ? plain : (plain ? plain + ' ' : '') + '[图片]'
   }
+  if (!analyzed.hasVisual) return plain
   const segments = getMessageSegments(session)
   const imgSeg = getCurrentImageSegments(session)[0]
   const imgData = normalizeSegmentData(imgSeg)
@@ -177,7 +179,7 @@ async function handleIncomingFile({ session, analyzed, plain, channelKey, queueM
   const fileIdValue = fileData.file || fileData.id || fileData.fileId || fileData.file_id || null
   const fileId = fileIdValue === null || fileIdValue === undefined || fileIdValue === '' ? null : String(fileIdValue)
   const ext = getExtension(fileName)
-  const safety = checkFile(fileName, fileSize)
+  const safety = checkFile(fileName, fileSize, fileData.mime || fileData.mimeType, fileUrl)
   const safeName = sanitizeFileName(fileName)
   const fileMeta = {
     fileName: safeName,
@@ -188,10 +190,11 @@ async function handleIncomingFile({ session, analyzed, plain, channelKey, queueM
     fileId,
     conversationKey: getConversationKey(session),
     userId: getIncomingUserId(session),
-    skipped: !safety.allowed,
-    skipReason: safety.reason || null,
+    skipped: !safety.allowed || safety.category === 'image',
+    skipReason: safety.category === 'image' ? 'image_attachment' : safety.reason || null,
   }
   await storeFile(channelKey, session.messageId, fileMeta)
+  if (safety.category === 'image') return (plain ? plain + ' ' : '') + `[图片附件: ${safeName}]`
   if (plain.includes('[文件]')) return plain
   if (safety.allowed) {
     if (queueMedia) {
