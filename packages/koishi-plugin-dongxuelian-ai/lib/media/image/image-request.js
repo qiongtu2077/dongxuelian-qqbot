@@ -10,7 +10,7 @@ const path = require('path');
 const { createHash, randomUUID } = require('crypto');
 const { DATA_DIR } = require('../../core/constants');
 const { readJsonFile, writeJsonAtomic, isProcessAlive } = require('../../resource-common/files');
-const { getImageEntry, finishImageAnalysisStatus } = require('./image-store');
+const { getImageEntry, getImageEntryCached, finishImageAnalysisStatus } = require('./image-store');
 const { recordImageRequestEvent } = require('../../core/request-diagnostics');
 const REQUEST_ROOT = path.join(DATA_DIR, 'image-analysis-requests');
 const IMAGE_WINDOW_MS = 2 * 60 * 60 * 1000;
@@ -20,7 +20,7 @@ const MAX_RESULTS = 8;
 function imageRequestHash(value) { return createHash('sha256').update(value).digest('hex'); }
 // 把提问与强制原图区分为等价需求，不用关键词推断自然语言意图。
 function imageQuestionKey(options) {
-    return imageRequestHash(JSON.stringify([!!options.force, String(options.question || '').trim()]));
+    return imageRequestHash(JSON.stringify([!!options.force, String(options.question || '').trim(), options.sourceIdentity || '']));
 }
 // 只读取对应有效图片、同一问题的细节结果；摘要由图片存储统一管理。
 function readQuestionResult(file, key) {
@@ -39,6 +39,7 @@ async function releaseImageOwner(lockFile, token) {
 // --- 跨进程识别协调 --- //
 // 为队列状态结算读取实际持有者，不把等待超时误当成识图已结束。
 function hasActiveImageRequest(channelKey, messageId) {
+    messageId = getImageEntryCached(channelKey, messageId)?.imageId || messageId;
     const target = imageRequestHash(JSON.stringify([channelKey, messageId]));
     const owner = readJsonFile(path.join(REQUEST_ROOT, imageRequestHash(channelKey), target + '.lock'));
     return !!owner && owner.channelKey === channelKey && owner.messageId === messageId && isProcessAlive(owner.pid);
@@ -47,7 +48,15 @@ function hasActiveImageRequest(channelKey, messageId) {
 async function acquireImageRequest(channelKey, messageId, options) {
     if (!channelKey || !messageId || !['explicit-image', 'random-image', 'history-tool'].includes(options.source))
         return { status: 'unavailable' };
-    const target = imageRequestHash(JSON.stringify([channelKey, messageId]));
+    if (!options.targetIds) {
+        const resolved = await getImageEntry(channelKey, messageId);
+        if (!resolved)
+            return { status: 'unavailable' };
+        messageId = resolved.imageId || messageId;
+    }
+    // 整组只领取一个集合所有权，不按部分图片依次持锁，倒序图片集合不会形成死锁。
+    const targetIds = options.targetIds?.length ? [...options.targetIds] : [messageId];
+    const target = imageRequestHash(JSON.stringify(options.targetIds ? [channelKey, targetIds] : [channelKey, messageId]));
     const dir = path.join(REQUEST_ROOT, imageRequestHash(channelKey));
     const lockFile = path.join(dir, target + '.lock');
     const resultFile = path.join(dir, target + '.json');
@@ -62,7 +71,9 @@ async function acquireImageRequest(channelKey, messageId, options) {
             recordImageRequestEvent({ ...diagnostic, event: 'unavailable' });
             return { status: 'unavailable' };
         }
-        const cached = readQuestionResult(resultFile, key) || (!options.force && entry.analyzed && entry.analysis);
+        if (options.targetIds && (await Promise.all(targetIds.map(id => getImageEntry(channelKey, id)))).some(item => !item))
+            return { status: 'unavailable' };
+        const cached = readQuestionResult(resultFile, key) || (!options.targetIds && !options.force && entry.analyzed && entry.analysis);
         if (cached) {
             recordImageRequestEvent({ ...diagnostic, event: 'reused', cache: options.force ? 'detail' : 'summary' });
             return { status: 'reused', diagnostic, analysis: cached };
@@ -101,7 +112,7 @@ async function acquireImageRequest(channelKey, messageId, options) {
             recordImageRequestEvent({ ...diagnostic, event: 'failed' });
             throw error;
         }
-        const ready = readQuestionResult(resultFile, key) || (!options.force && fresh?.analyzed && fresh.analysis);
+        const ready = readQuestionResult(resultFile, key) || (!options.targetIds && !options.force && fresh?.analyzed && fresh.analysis);
         if (!fresh || ready) {
             await releaseImageOwner(lockFile, token);
             if (ready) {
@@ -123,14 +134,25 @@ async function acquireImageRequest(channelKey, messageId, options) {
                 const valid = await getImageEntry(channelKey, messageId);
                 if (!valid)
                     return;
-                const result = String(analysis || '').trim().slice(0, 8000);
+                const fullResult = String(analysis || '').trim();
+                // 集合证据不能截断后复用成“完整读取”；过长结果只记完成，不写问题缓存。
+                if (options.targetIds && fullResult.length > 8000) {
+                    finished = true;
+                    recordImageRequestEvent({ ...diagnostic, event: 'completed' });
+                    return;
+                }
+                const result = fullResult.slice(0, 8000);
                 if (!result)
                     return;
                 const previous = readJsonFile(resultFile, null, 128 * 1024);
                 const values = previous && previous.expiresAt > Date.now() ? previous.values : {};
                 values[key] = { analysis: result, createdAt: Date.now() };
                 const ordered = Object.entries(values).sort((a, b) => b[1].createdAt - a[1].createdAt).slice(0, MAX_RESULTS);
-                writeJsonAtomic(resultFile, { channelKey, messageId, expiresAt: valid.ts + IMAGE_WINDOW_MS, values: Object.fromEntries(ordered) });
+                const members = await Promise.all(targetIds.map(id => getImageEntry(channelKey, id)));
+                if (members.some(member => !member))
+                    return;
+                writeJsonAtomic(resultFile, { channelKey, messageId, targetIds: options.targetIds,
+                    expiresAt: Math.min(...members.map(member => member.ts)) + IMAGE_WINDOW_MS, values: Object.fromEntries(ordered) });
                 finished = true;
                 recordImageRequestEvent({ ...diagnostic, event: 'completed' });
             },

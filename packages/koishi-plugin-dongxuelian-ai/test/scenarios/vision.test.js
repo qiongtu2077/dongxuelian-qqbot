@@ -19,6 +19,7 @@ async function withFetch(mocked, fn) {
   }
 }
 
+// 验证单图会话、缓存、事实回写与来源协议。
 async function run(t) {
   t.section('scenario: vision session helpers')
 
@@ -63,6 +64,7 @@ async function run(t) {
         }],
       },
     }])
+    mocked.push({ json: { choices: [{ message: { content: '哎呀，网页炸掉了嘛，过一会儿再刷新试试看！' } }] } })
     await withFetch(mocked, async () => {
       delete require.cache[require.resolve(chatPath)]
       delete require.cache[require.resolve(visionPath)]
@@ -141,6 +143,7 @@ async function run(t) {
         }],
       },
     }])
+    mocked.push({ json: { choices: [{ message: { content: '哎呀，网页炸掉了嘛，过一会儿再刷新试试看！' } }] } })
     await withFetch(mocked, async () => {
       delete require.cache[require.resolve(chatPath)]
       delete require.cache[require.resolve(visionPath)]
@@ -216,6 +219,7 @@ async function run(t) {
     const session = makeSession({
       content: '这张图是什么',
       quote: {
+        messageId: 'quoted-image-source',
         message: [{ type: 'image', data: { file: 'quoted.jpg', url: 'http://example.test/quoted.jpg' } }],
       },
     })
@@ -226,7 +230,7 @@ async function run(t) {
     })
     const payload = vision.getVisionPayload(session)
     t.check('scenario vision quoted image marks session', marked && vision.isVisionSession(session), JSON.stringify(payload))
-    t.check('scenario vision quoted image captures file', payload.file === 'quoted.jpg', JSON.stringify(payload))
+    t.check('scenario vision quoted image prepares complete explicit reading', session._explicitImagesPending === true, JSON.stringify(payload))
   })
 
   await withScenario({}, async ({ makeSession }) => {
@@ -445,6 +449,7 @@ async function run(t) {
 async function runAllowedImageInvitations(t) {
   for (const scenario of [
     { label: 'explicit image with unrelated text', random: false, private: false, text: '今天星期几' },
+    { label: 'file quick read with associated image', random: false, private: false, text: '读文件' },
     { label: 'private image invitation', random: false, private: true, text: '' },
     { label: 'random selected image topic', random: true, private: false, text: '今天随手拍的' },
   ]) {
@@ -461,11 +466,12 @@ async function runAllowedImageInvitations(t) {
       await store.storeImageUrl(channelKey, session.messageId, 'https://example.test/allowed.jpg', 'allowed-file')
       await store.cacheImageFile(channelKey, session.messageId, ONE_PIXEL_PNG)
       const mocked = mockFetch([{ json: { choices: [{ message: { content: '<image_fact>图片中是一只猫。</image_fact>看着挺精神。' } }] } }])
+      if (!scenario.random) mocked.push({ json: { choices: [{ message: { content: '看着挺精神。' } }] } })
       await withFetch(mocked, async () => {
         await run(session, { flushTicks: 120 })
         await session.waitForSend(() => true)
         const body = mocked.calls[0]?.requestBody || {}
-        t.check(`scenario ${scenario.label} performs one actual vision request`, mocked.calls.length === 1 && body.model === 'glm-4.6v-flash', JSON.stringify(mocked.calls))
+        t.check(`scenario ${scenario.label} performs one actual vision request`, mocked.calls.length === (scenario.random ? 1 : 2) && mocked.calls.filter(call => call.requestBody.model === 'glm-4.6v-flash').length === 1 && body.model === 'glm-4.6v-flash', JSON.stringify(mocked.calls))
         t.check(`scenario ${scenario.label} carries selected original image`, (body.messages || []).some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url')), JSON.stringify(body))
         t.check(`scenario ${scenario.label} strips image request diagnostic before upstream`, !Object.hasOwn(body, '_imageRequest'), JSON.stringify(body))
         const entry = await store.getImageEntry(channelKey, session.messageId)
@@ -475,7 +481,7 @@ async function runAllowedImageInvitations(t) {
   }
 }
 
-// 当前图和引用图同时存在时，模拟获准聊天选择目标，验证不先看图也不双识。
+// 验证明确关联整组读取、带证据的工具续轮及后续历史细节查询。
 async function runImageTargetSelection(t) {
   await withScenario({}, async ({ makeSession, harness }) => {
     const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
@@ -495,7 +501,7 @@ async function runImageTargetSelection(t) {
       t.check('scenario random no_send retains already recognized objective fact', reply === '' && entry?.analysis?.includes('猫'), JSON.stringify({ reply, entry }))
       vision.prepareVisionRequest(session, { hasVisual: true }, { allowCurrentMessage: true })
       await chat.chat(session, '图里是什么', harness.ctx)
-      t.check('scenario fact from unsent reply is reused without another vision request', mocked.calls.length === 2 && mocked.calls[1].requestBody.model === 'deepseek-v4-flash', JSON.stringify(mocked.calls))
+      t.check('scenario new explicit question rereads original after unsent random fact', mocked.calls.length === 3 && mocked.calls[1].requestBody.model === 'glm-4.6v-flash' && mocked.calls[2].requestBody.model === 'deepseek-v4-flash', JSON.stringify(mocked.calls))
     })
   })
 
@@ -510,51 +516,38 @@ async function runImageTargetSelection(t) {
       vision.prepareVisionRequest(session, { hasVisual: true }, { allowCurrentMessage: true })
       const initial = recovery ? { content: '<tool_call>{}</tool_call>' } : { content: null, tool_calls: [{ id: 'time-check', type: 'function', function: { name: 'get_current_time', arguments: '{}' } }] }
       const mocked = mockFetch([
+        { json: { choices: [{ message: { content: '<image_fact>图片中是一只猫。</image_fact>猫。' } }] } },
         { json: { choices: [{ message: initial }] } },
         { json: { choices: [{ message: { content: '<image_fact>图片中是一只猫。</image_fact>这是一只猫。' } }] } },
       ])
       await withFetch(mocked, async () => {
         await chat.chat(session, '请看图回答', harness.ctx)
-        t.check(`scenario raw image ${recovery ? 'recovery' : 'tool continuation'} keeps vision routing`, mocked.calls.length === 2 && mocked.calls.every(call => call.requestBody?.model === 'glm-4.6v-flash'), JSON.stringify(mocked.calls))
+        t.check(`scenario raw image ${recovery ? 'recovery' : 'tool continuation'} keeps vision routing`, mocked.calls.length === 3 && mocked.calls[0].requestBody?.model === 'glm-4.6v-flash' && mocked.calls.slice(1).every(call => call.requestBody?.model === 'deepseek-v4-flash' && JSON.stringify(call.requestBody.messages).includes('视觉批次')), JSON.stringify(mocked.calls))
       })
     })
   }
 
-  for (const chosen of ['current', 'quoted']) {
+  for (const unrelated of [false, true]) {
     await withScenario({}, async ({ makeSession, run }) => {
-      const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
-      const queue = require(path.join(AI_ROOT, 'lib', 'media', 'backpressure', 'media-queue.js'))
-      for (const id of ['current', 'quoted']) await store.storeImageUrl('10001', id, `https://example.test/${id}.jpg`, `${id}-file`)
+      const store = require(path.join(AI_ROOT, 'lib/media/image/image-store.js'))
+      const session = makeSession({ messageId: 'current', content: '<at id="90000"/> ' + (unrelated ? '今天星期几' : '比较这两张图') + (unrelated ? '' : '<img src="https://example.test/current.jpg" file="current-file"/>'), quote: { messageId: 'quoted', content: '<img src="https://example.test/quoted.jpg" file="quoted-file"/>' }, event: { message: unrelated ? [] : [{ type: 'image', data: { url: 'https://example.test/current.jpg', file: 'current-file' } }] } })
+      for (const [index, id] of ['current', 'quoted'].entries()) {
+        await store.storeImageUrl('10001', id, 'https://example.test/' + id + '.jpg', id + '-file')
+        await store.cacheImageFile('10001', id, Buffer.concat([ONE_PIXEL_PNG, Buffer.from([index])]))
+      }
       const mocked = mockFetch([
-        { json: { choices: [{ message: { content: null, tool_calls: [{ id: 'choose-image', type: 'function', function: { name: 'analyze_historical_image', arguments: JSON.stringify({ messageId: chosen, question: '请读选定图片的文字', force: true }) } }] } }] } },
-        { json: { choices: [{ message: { content: '正在查看你指的那张图片，稍后再问。' } }] } },
+        { json: { choices: [{ message: { content: '两张图片均为猫，姿态不同。' } }] } },
+        { json: { choices: [{ message: { content: unrelated ? '今天是星期四。' : '两张图里的猫姿态不同。' } }] } },
       ])
-      const session = makeSession({ messageId: 'current', content: '<at id="90000"/> 请看我指的那一张 <img src="https://example.test/current.jpg" file="current-file"/>', quote: { messageId: 'quoted', content: '<img src="https://example.test/quoted.jpg"/>' }, event: { message: [{ type: 'image', data: { url: 'https://example.test/current.jpg', file: 'current-file' } }] } })
       await withFetch(mocked, async () => {
         await run(session, { flushTicks: 120 })
         await session.waitForSend(() => true)
-        const tasks = queue.listPendingMediaTasks('media_image_analysis', 10)
-        t.check(`scenario simultaneous images selects ${chosen} original ID only`, tasks.length === 1 && tasks[0].messageId === chosen, JSON.stringify(tasks))
-        t.check(`scenario simultaneous images never recognizes current image before selecting ${chosen}`, mocked.calls.every(call => call.requestBody?.model !== 'glm-4.6v-flash' && !(call.requestBody?.messages || []).some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))), JSON.stringify(mocked.calls))
-        const prompt = JSON.stringify(mocked.calls[0]?.requestBody?.messages || [])
-        t.check(`scenario simultaneous images exposes both stable candidates for ${chosen}`, prompt.includes('当前图片编号为 current') && prompt.includes('引用图片编号为 quoted'), prompt)
+        const content = mocked.calls[0]?.requestBody?.messages?.[0]?.content || []
+        t.check('scenario associated image request covers all actual originals ' + unrelated, mocked.calls[0]?.requestBody?.model === 'glm-4.6v-flash' && content.filter(p => p.type === 'image_url').length === (unrelated ? 1 : 2), JSON.stringify({ count: mocked.calls.length }))
+        t.check('scenario associated image labels preserve quote before current ' + unrelated, content[1]?.text === '引用第1张' && (unrelated || content[3]?.text === '当前第1张'), JSON.stringify(content.filter(p => p.type === 'text')))
       })
     })
   }
-
-  await withScenario({}, async ({ makeSession, run }) => {
-    const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
-    await store.storeImageUrl('10001', 'quoted-old', 'https://example.test/old.jpg', 'old-file')
-    const mocked = mockFetch([{ json: { choices: [{ message: { content: '现在回答你的文字问题。' } }] } }])
-    await withFetch(mocked, async () => {
-      const session = makeSession({ content: '<at id="90000"/> 今天星期几', quote: { messageId: 'quoted-old', content: '<img src="https://example.test/old.jpg"/>' } })
-      await run(session, { flushTicks: 120 })
-      await session.waitForSend(() => true)
-      t.check('scenario unrelated text with quoted image never auto attaches original', mocked.calls.length === 1 && mocked.calls[0].requestBody.model === 'deepseek-v4-flash', JSON.stringify(mocked.calls))
-      const queue = require(path.join(AI_ROOT, 'lib', 'media', 'backpressure', 'media-queue.js'))
-      t.check('scenario unrelated text with quoted image creates zero image analysis tasks', queue.listPendingMediaTasks('media_image_analysis', 10).length === 0)
-    })
-  })
 
   await withScenario({}, async ({ makeSession, harness }) => {
     const store = require(path.join(AI_ROOT, 'lib', 'media', 'image', 'image-store.js'))
@@ -563,12 +556,13 @@ async function runImageTargetSelection(t) {
     const tools = require(path.join(AI_ROOT, 'lib', 'chat', 'chat-tools.js'))
     await store.storeImageUrl('10001', 'summary-image', 'https://example.test/summary.jpg', 'summary-file')
     await store.markAnalyzed('10001', 'summary-image', '图片中是一只猫。')
+    await store.cacheImageFile('10001', 'summary-image', ONE_PIXEL_PNG)
     const session = makeSession({ messageId: 'summary-image', content: '<img src="https://example.test/summary.jpg"/>', event: { message: [{ type: 'image', data: { url: 'https://example.test/summary.jpg' } }] } })
     vision.prepareVisionRequest(session, { hasVisual: true }, { allowCurrentMessage: true })
-    const mocked = mockFetch([{ json: { choices: [{ message: { content: '是一只猫。' } }] } }])
+    const mocked = mockFetch([{ json: { choices: [{ message: { content: '<image_fact>图片中是一只猫。</image_fact>是一只猫。' } }] } }, { json: { choices: [{ message: { content: '是一只猫。' } }] } }])
     await withFetch(mocked, async () => {
       await chat.chat(session, '图里是什么', harness.ctx)
-      t.check('scenario objective summary reuse sends text only without another vision request', mocked.calls.length === 1 && mocked.calls[0].requestBody.model === 'deepseek-v4-flash', JSON.stringify(mocked.calls))
+      t.check('scenario explicit question uses fresh vision despite prior summary', mocked.calls.length === 2 && mocked.calls[0].requestBody.model === 'glm-4.6v-flash' && mocked.calls[1].requestBody.model === 'deepseek-v4-flash', JSON.stringify(mocked.calls))
     })
     await tools.executeChatTool({ function: { name: 'analyze_historical_image', arguments: JSON.stringify({ messageId: 'summary-image', question: '右下角小字完整写了什么', force: true }) } }, { channelKey: '10001' })
     const queue = require(path.join(AI_ROOT, 'lib', 'media', 'backpressure', 'media-queue.js'))
@@ -586,25 +580,24 @@ async function runImageTargetSelection(t) {
   })
 }
 
-// 多图无法按共享消息编号选中一张；明确邀请必须澄清，不能静默或先识别首图。
+// 真实入口必须读取同消息全部图片，保留私聊与明确提及的准入。
 async function runAmbiguousCurrentImages(t) {
   for (const isPrivate of [true, false]) {
     await withScenario({}, async ({ ready, makeSession, run }) => {
       await ready()
-      const mocked = mockFetch([])
-      const session = makeSession({
-        ...(isPrivate ? { isDirect: true, guildId: undefined } : {}),
-        messageId: `ambiguous-${isPrivate ? 'private' : 'mention'}`,
-        content: `${isPrivate ? '' : '<at id="90000"/>'}<img src="https://example.test/a.jpg"/><img src="https://example.test/b.jpg"/>`,
-        event: { message: { elements: [
-          { type: 'img', attrs: { src: 'https://example.test/a.jpg' } },
-          { type: 'img', attrs: { src: 'https://example.test/b.jpg' } },
-        ] } },
-      })
+      const session = makeSession({ ...(isPrivate ? { isDirect: true, guildId: undefined } : {}), messageId: 'many-' + isPrivate, content: (isPrivate ? '' : '<at id="90000"/>') + '<img src="https://example.test/a.jpg"/><img src="https://example.test/b.jpg"/>', event: { message: { elements: [{ type: 'img', attrs: { src: 'https://example.test/a.jpg' } }, { type: 'img', attrs: { src: 'https://example.test/b.jpg' } }] } } })
+      const store = require(path.join(AI_ROOT, 'lib/media/image/image-store.js'))
+      const manifest = require(path.join(AI_ROOT, 'lib/media/image/image-manifest.js'))
+      const channel = isPrivate ? 'private:' + session.userId : session.guildId
+      const targets = manifest.collectImageManifest(session, channel, channel)
+      await store.storeImageTargets(channel, targets)
+      for (const [index, target] of targets.entries()) await store.cacheImageFile(channel, target.id, Buffer.concat([ONE_PIXEL_PNG, Buffer.from([index])]))
+      const mocked = mockFetch([{ json: { choices: [{ message: { content: '两张图片均已读取。' } }] } }, { json: { choices: [{ message: { content: '这两张图都看到了。' } }] } }])
       await withFetch(mocked, async () => {
-        const result = await run(session, { flushTicks: 60 })
-        t.check(`scenario ${isPrivate ? 'private' : 'explicit'} pure multi-image invitation asks for unique target`, result.sent.some(message => String(message).includes('多张图片')), JSON.stringify(result.sent))
-        t.check(`scenario ${isPrivate ? 'private' : 'explicit'} pure multi-image invitation never recognizes first image`, mocked.calls.length === 0, JSON.stringify(mocked.calls))
+        await run(session, { flushTicks: 120 })
+        await session.waitForSend(() => true)
+        const parts = mocked.calls[0]?.requestBody?.messages?.[0]?.content || []
+        t.check('scenario pure multi image invitation reads both originals ' + isPrivate, parts.filter(p => p.type === 'image_url').length === 2, JSON.stringify({ calls: mocked.calls.length }))
       })
     })
   }

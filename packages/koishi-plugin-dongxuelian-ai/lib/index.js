@@ -39,7 +39,7 @@ const { handleCommand } = require('./handler'); // 指令路由（/help /reset �
 const { flushTokenUsage } = require('./core/api');
 const { analyzeIncomingMessage, normalizeText } = require('./message/message-reader');
 const { resolveForwardSummary } = require('./message/forward');
-const { prepareVisionRequest, isVisionSession, getVisionPayload, markSessionForVision } = require('./media/image/vision'); // 图片消息构建 + 视觉会话判断
+const { prepareVisionRequest, prepareExplicitVisionRequest, isVisionSession, getVisionPayload, markSessionForVision } = require('./media/image/vision'); // 图片消息构建 + 视觉会话判断
 const { handleIncomingMessageArtifacts, } = require('./message/incoming-message-flow'); // 入站图片/文件/语音材料处理
 const { handleSensitiveMessage, // 敏感消息拦截主逻辑
  } = require('./behavior/sensitive');
@@ -702,15 +702,12 @@ function apply(ctx) {
                 return next();
             }
         }
-        if (explicitBotInteraction && (analyzed.hasVisual || analyzed.hasFile || analyzed.hasEmbed)) {
-            if (analyzed.hasFile && !analyzed.hasVisual && !analyzed.hasEmbed && !analyzed.hasUsableText)
-                return;
-            // 有图片 → 尝试识图
-            const preparedVision = prepareVisionRequest(session, analyzed, { content, allowCurrentMessage: true, includeQuote: false });
-            // 多图共用一个消息编号，即使没有正文也必须先澄清唯一目标。
-            if (session._visionAmbiguous)
-                return '这条消息有多张图片，请单独发送需要查看的那一张。';
+        if (explicitBotInteraction) {
+            // 明确交互后的当前图、直接引用图和图片附件全部进入程序读取链。
+            const preparedVision = await prepareExplicitVisionRequest(session);
             if (!preparedVision && !analyzed.hasUsableText) {
+                if (analyzed.hasLink)
+                    return next();
                 return;
             }
         }
@@ -740,7 +737,7 @@ function apply(ctx) {
             triggerAt: Date.now(),
         });
         const maxDepth = inGuild ? 4 : 2;
-        if (isFileQuickReadIntent(userText)) {
+        if (isFileQuickReadIntent(userText) && !isVisionSession(session)) {
             const liveSession = withCurrentBot(session, resolveBot());
             const reply = await resolveFileQuickReadReply(channelKey);
             await safeSendReplyWithFreshness(ctx, liveSession, reply, randomTriggered, resolveBot, randomSendOptions);
@@ -753,7 +750,7 @@ function apply(ctx) {
             try {
                 const recentUserMessages = getRecentUserMessages(liveSession, 4);
                 const searchContext = buildPrivateSearchContext(liveSession, getRecentUserMessageRecords(liveSession, 8), { currentText: userText });
-                const autoRouteResult = await handleAgentAutoRoute({
+                const autoRouteResult = explicitBotInteraction && isVisionSession(liveSession) ? { handled: false, reply: '' } : await handleAgentAutoRoute({
                     ctx,
                     liveSession,
                     channelKey,

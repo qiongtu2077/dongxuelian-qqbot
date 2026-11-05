@@ -5,7 +5,7 @@ const path = require('path')
 const { spawn } = require('child_process')
 const { createTestDataDir, withDataEnv, AI_ROOT } = require('./fake/file')
 const { mockFetch } = require('./fake/fetch')
-const PNG = Buffer.from('89504e470d0a1a0a00000000', 'hex')
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64')
 const LIB = path.join(AI_ROOT, 'lib')
 
 // 在独立进程中争用同一目标，模型执行段使用文件计数且不访问网络。
@@ -74,7 +74,7 @@ async function cleanupRaceMain() {
     await store.cacheImageFile('cleanup-race', 'image', PNG)
     store.getImageEntry = async (...args) => {
       const entry = await originalGetImageEntry(...args)
-      if (!cleanupRan) {
+      if (!cleanupRan && fs.existsSync(channelDir)) {
         cleanupRan = true
         assert.deepEqual(fs.readdirSync(channelDir), [])
         await coordinator.cleanupImageRequests()

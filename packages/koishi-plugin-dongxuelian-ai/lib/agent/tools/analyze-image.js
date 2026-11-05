@@ -3,7 +3,7 @@
  * Agent 工具: analyze_historical_image — 分析图片历史中的某张图片。
  * 优先读已有分析缓存；未命中时写入 S6 媒体背压队列。
  */
-const { getImageEntry, getCachedAnalysis, storeImageUrl, markAnalysisPending } = require('../../media/image/image-store');
+const { getImageEntry, getImagesForMessage, getCachedAnalysis, storeImageUrl, markAnalysisPending } = require('../../media/image/image-store');
 const { enqueueMediaTask, buildImageAnalysisPayload, hasImageAnalysisDemand } = require('../../media/backpressure/media-queue');
 const { shouldEnqueueMediaForAdmission } = require('../../media/backpressure/media-requests');
 const { admitTask } = require('../../resource-scheduler/admission');
@@ -20,7 +20,7 @@ function createAgentImageMessageId(messageId, url) {
 module.exports = {
     definition: {
         name: 'analyze_historical_image',
-        description: '按本轮问题读取选定历史图片。已有摘要足够时直接复用；摘要缺少小字、完整文字或其他所需细节时设置 force=true，按问题重新读取原图。目标不唯一时先澄清，不逐张识别试探。',
+        description: '按本轮问题读取历史图片；原消息编号对应多张图片时读取整组。已有摘要缺少本次所需细节时设置 force=true，按问题重新读取原图。',
         parameters: {
             type: 'object',
             properties: {
@@ -37,7 +37,7 @@ module.exports = {
         const channelKey = context.channelKey || '';
         const userId = context.userId || '';
         let url = String(params.url || '').trim();
-        const messageId = String(params.messageId || '').trim();
+        let messageId = String(params.messageId || '').trim();
         const question = String(params.question || '').trim();
         const force = params.force === true;
         const randomAuthorization = readRandomImageAuthorization(context.randomAuthorization);
@@ -45,6 +45,16 @@ module.exports = {
             return '本轮随机图片话题已经过时，未安排新的识图。';
         if (force && !question)
             return '重新读取图片细节时需要提供本次问题。';
+        if (messageId && context.source !== 'random-image') {
+            const group = await getImagesForMessage(channelKey, messageId);
+            if (group.length > 1) {
+                const { collectExplicitImageTargets, readExplicitImageEvidence } = require('../../media/image/image-batch');
+                const targets = await collectExplicitImageTargets({ quote: { messageId } }, channelKey, channelKey);
+                return (await readExplicitImageEvidence(targets, question || '描述这组图片的内容及关系')).evidence;
+            }
+            if (group.length === 1)
+                messageId = group[0].messageId;
+        }
         let mediaMessageId = createAgentImageMessageId(messageId, url);
         let cachedFile = null;
         if (messageId) {

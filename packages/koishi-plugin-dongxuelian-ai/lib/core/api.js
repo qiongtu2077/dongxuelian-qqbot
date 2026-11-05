@@ -4,7 +4,8 @@
  * 职责: requestChatCompletions + fallback 链 + 图片/转发拉取。
  * 边界: 不存 conversation，不做业务判断。结果返回给调用方（chat.js）处理。
  */
-const { REQUEST_TIMEOUT, DATA_DIR } = require('./constants');
+const { REQUEST_TIMEOUT, DATA_DIR, MAX_IMAGE_BYTES } = require('./constants');
+const { validateImageContent } = require('./image-content');
 const { isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('./utils');
 const { AI_CAPABILITIES, isAiCapability, getProviderCatalogEntry, getVerifiedModelCapabilities, loadCapabilityConfigSync, resolveCapabilityRuntimeSteps, } = require('./ai-capability-config');
 const { notifyCapabilityStepFailure } = require('./capability-failure-notifier');
@@ -16,8 +17,7 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const { createHash } = require('crypto');
-const MAX_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_IMAGE_BYTES, 4 * 1024 * 1024, 128 * 1024, 16 * 1024 * 1024);
-const MAX_REMOTE_IMAGE_BYTES = parseApiPositiveInt(process.env.DONGXUELIAN_MAX_REMOTE_IMAGE_BYTES, MAX_IMAGE_BYTES, 128 * 1024, 16 * 1024 * 1024);
+const MAX_REMOTE_IMAGE_BYTES = MAX_IMAGE_BYTES;
 const REQUEST_TIMEOUT_CAP = parseApiPositiveInt(process.env.AI_REQUEST_TIMEOUT_CAP_MS, 300000, 5000, 600000);
 // 辅助判断按节点预留输出额度；恢复与首轮共用本节点期限。
 const JUDGMENT_BUDGET = { initial: 256, recovery: 512, total: 1024, timeoutMs: 8000 };
@@ -858,7 +858,8 @@ function getFallbackSteps() {
     }
     return result;
 }
-function callOneBotWs(action, params, echo, timeoutMs, extractData) {
+// 执行一次有界OneBot请求，并在完成、超时或调用方取消时关闭连接。
+function callOneBotWs(action, params, echo, timeoutMs, extractData, signal) {
     return new Promise((resolve) => {
         let ws = null;
         let timer = null;
@@ -869,6 +870,7 @@ function callOneBotWs(action, params, echo, timeoutMs, extractData) {
             settled = true;
             if (timer)
                 clearTimeout(timer);
+            signal?.removeEventListener('abort', cancelOneBotMediaRequest);
             try {
                 if (ws)
                     ws.close();
@@ -876,11 +878,19 @@ function callOneBotWs(action, params, echo, timeoutMs, extractData) {
             catch { /* non-critical: OneBot websocket may already be closed */ }
             resolve(value || null);
         };
+        const cancelOneBotMediaRequest = () => finish(null);
+        if (signal?.aborted) {
+            finish(null);
+            return;
+        }
+        signal?.addEventListener('abort', cancelOneBotMediaRequest, { once: true });
         try {
             ws = new WebSocket(resolveOneBotWsUrl());
             const socket = ws;
             timer = setTimeout(() => finish(null), timeoutMs);
             socket.on('open', () => {
+                if (settled)
+                    return;
                 try {
                     socket.send(JSON.stringify({ action, params, echo }));
                 }
@@ -915,11 +925,13 @@ function callOneBotWs(action, params, echo, timeoutMs, extractData) {
         }
     });
 }
-function callGetImage(fileName) {
-    return callOneBotWs('get_image', { file: fileName }, 'gi', 5000, message => (isRecord(message.data) && message.data.file ? message.data : null));
+// 使用平台图片编号取本地原图，取消后不保留WebSocket连接。
+function callGetImage(fileName, signal) {
+    return callOneBotWs('get_image', { file: fileName }, 'gi', 5000, message => (isRecord(message.data) && message.data.file ? message.data : null), signal);
 }
-function callGetFile(fileId) {
-    return callOneBotWs('get_file', { file_id: fileId }, 'gf_file', 8000, message => (isRecord(message.data) && (message.data.file || message.data.url) ? message.data : null));
+// 使用平台文件编号取附件来源，不能混用普通图片接口。
+function callGetFile(fileId, signal) {
+    return callOneBotWs('get_file', { file_id: fileId }, 'gf_file', 8000, message => (isRecord(message.data) && (message.data.file || message.data.url) ? message.data : null), signal);
 }
 function callGetRecord(fileName) {
     return callOneBotWs('get_record', { file: fileName, out_format: 'wav' }, 'gr', 8000, message => (isRecord(message.data) && message.data.file ? message.data : null));
@@ -936,13 +948,36 @@ function getGroupMemberInfo(groupId, userId, timeoutMs = 800) {
 function getGroupInfo(groupId, timeoutMs = 800) {
     return callOneBotWs('get_group_info', { group_id: Number(groupId), no_cache: false }, 'ggi', timeoutMs, message => (message.retcode === 0 || message.status === 'ok') && isRecord(message.data) ? message.data : null);
 }
-async function readImageAsBase64(filePath) {
+// 先检查本地原图大小，再有界读取；读取期间文件增长也不能突破单目标十兆。
+async function readImageAsBase64(filePath, onFailure, signal) {
     try {
         const stat = fs.statSync(filePath);
-        if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_IMAGE_BYTES)
+        if (!stat.isFile() || stat.size <= 0)
             return null;
-        const buf = fs.readFileSync(filePath);
-        return `data:${mimeFromImagePath(filePath)};base64,${buf.toString('base64')}`;
+        if (stat.size > MAX_IMAGE_BYTES) {
+            onFailure?.('image_too_large');
+            return null;
+        }
+        const chunks = [];
+        let size = 0;
+        for await (const chunk of fs.createReadStream(filePath, { signal })) {
+            const buffer = Buffer.from(chunk);
+            size += buffer.length;
+            if (size > MAX_IMAGE_BYTES) {
+                onFailure?.('image_too_large');
+                return null;
+            }
+            chunks.push(buffer);
+        }
+        const dataUrl = `data:${mimeFromImagePath(filePath)};base64,${Buffer.concat(chunks).toString('base64')}`;
+        try {
+            const actual = await validateImageContent(dataUrl);
+            return dataUrl.replace(/^data:[^;]+;/, `data:${actual.mime};`);
+        }
+        catch (error) {
+            onFailure?.(error instanceof Error && error.message === 'image_unsupported_format' ? 'image_unsupported_format' : 'image_invalid');
+            return null;
+        }
     }
     catch {
         return null;
@@ -962,7 +997,8 @@ function extractImageFileFromElements(session) {
     catch { /* non-critical: malformed session elements fall back to no image file */ }
     return null;
 }
-async function downloadImageAsBase64(url, timeoutMs = 5000) {
+// 流式累计实际字节，声明超限立即断开；媒体声明与文件名不能替代内容验证。
+async function downloadImageAsBase64(url, timeoutMs = 5000, onFailure, signal) {
     return new Promise((resolve) => {
         let request = null;
         let timer = null;
@@ -996,7 +1032,7 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
                     catch { /* non-critical: request may already be closed */ }
                     finishDownload(null);
                 }, timeoutMs);
-                request = mod.get(currentUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+                request = mod.get(currentUrl, { signal, headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
                     const status = Number(res.statusCode || 0);
                     if (status >= 300 && status < 400 && res.headers.location) {
                         res.resume();
@@ -1009,15 +1045,13 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
                     const contentTypeHeader = res.headers['content-type'];
                     const contentTypeValue = Array.isArray(contentTypeHeader) ? contentTypeHeader[0] : contentTypeHeader;
                     const type = String(contentTypeValue || 'image/jpeg').split(';')[0].trim().toLowerCase();
-                    if (type && !/^image\/(?:png|jpe?g|gif|webp|bmp)$/.test(type)) {
-                        res.resume();
-                        return finishDownload(null);
-                    }
                     const contentLengthHeader = res.headers['content-length'];
                     const contentLengthValue = Array.isArray(contentLengthHeader) ? contentLengthHeader[0] : contentLengthHeader;
                     const declared = parseInt(String(contentLengthValue || ''), 10);
                     if (Number.isFinite(declared) && declared > MAX_REMOTE_IMAGE_BYTES) {
-                        res.resume();
+                        onFailure?.('image_too_large');
+                        res.destroy();
+                        request?.destroy();
                         return finishDownload(null);
                     }
                     const chunks = [];
@@ -1025,6 +1059,7 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
                     res.on('data', (c) => {
                         received += c.length;
                         if (received > MAX_REMOTE_IMAGE_BYTES) {
+                            onFailure?.('image_too_large');
                             try {
                                 if (request)
                                     request.destroy();
@@ -1034,11 +1069,19 @@ async function downloadImageAsBase64(url, timeoutMs = 5000) {
                         }
                         chunks.push(c);
                     });
-                    res.on('end', () => {
+                    res.on('end', async () => {
                         const buf = Buffer.concat(chunks);
                         if (!buf.length || buf.length > MAX_REMOTE_IMAGE_BYTES)
                             return finishDownload(null);
-                        finishDownload(`data:${type || 'image/jpeg'};base64,${buf.toString('base64')}`);
+                        try {
+                            const dataUrl = `data:${type || 'image/jpeg'};base64,${buf.toString('base64')}`;
+                            const actual = await validateImageContent(dataUrl);
+                            finishDownload(dataUrl.replace(/^data:[^;]+;/, `data:${actual.mime};`));
+                        }
+                        catch (error) {
+                            onFailure?.(error instanceof Error && error.message === 'image_unsupported_format' ? 'image_unsupported_format' : 'image_invalid');
+                            finishDownload(null);
+                        }
                     });
                     res.on('error', () => finishDownload(null));
                 });

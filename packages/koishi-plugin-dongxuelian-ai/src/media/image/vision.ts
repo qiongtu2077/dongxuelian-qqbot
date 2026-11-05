@@ -7,11 +7,12 @@ const {
   isVisionModel,
 } = require('../../core/api') as typeof import('../../core/api')
 const { extractImageUrls } = require('../../core/utils') as typeof import('../../core/utils')
-const { getChannelKey } = require('../../conversation') as typeof import('../../conversation')
+const { getChannelKey, getConversationKey } = require('../../conversation') as typeof import('../../conversation')
 const { readImageSource } = require('./image-source') as typeof import('./image-source')
 const { getCurrentImageSegments, hasAmbiguousImageMessage, normalizeSegmentData } = require('../../message/message-segment') as typeof import('../../message/message-segment')
+const { collectImageManifest } = require('./image-manifest') as typeof import('./image-manifest')
 
-const VISION_SESSION_KEYS: string[] = ['_visionUrls', '_visionFile', '_isVisionRequest', '_visionTargetMessageId', '_visionTargetChannelKey']
+const VISION_SESSION_KEYS: string[] = ['_visionUrls', '_visionFile', '_isVisionRequest', '_visionTargetMessageId', '_visionTargetChannelKey', '_explicitImagesPending', '_visionAmbiguous']
 
 interface SegmentLike {
   type?: string
@@ -129,6 +130,7 @@ function getCurrentImageUrlsFromSegments(session: VisionSessionLike | null | und
 
 // 判断会话是否已绑定允许识图的目标。
 function isVisionSession(session: VisionSessionLike | null | undefined): boolean {
+  if (session?._explicitImagesPending) return true
   if (!session || !session._isVisionRequest) return false
   const payload = getVisionPayload(session)
   return !!(payload.file || payload.urls.length > 0)
@@ -140,26 +142,14 @@ function clearVisionSession(session: VisionSessionLike | null | undefined): void
   for (const key of VISION_SESSION_KEYS) delete session[key]
 }
 
-// 仅供明确选择引用图的调用者提取来源，普通聊天不能自动使用。
-function getQuotedVisionPayload(session: VisionSessionLike): VisionPayload {
-  let qc = ''
-  let quotedFile: string | null = null
-  try {
-    if (typeof session.quote?.content === 'string') qc = session.quote.content
-    else if (Array.isArray(session.quote?.message)) {
-      qc = session.quote.message.map(s => s.data?.url || s.data?.file || '').filter(Boolean).join(' ')
-      const imgSeg = session.quote.message.find(s => s.type === 'image')
-      if (imgSeg && imgSeg.data?.file) quotedFile = String(imgSeg.data.file)
-    }
-  } catch { /* non-critical: quoted message may be absent or adapter-shaped */
-  }
-  if (!qc && !quotedFile) return { urls: [], file: null }
-  return { urls: extractImageUrls(qc), file: quotedFile }
-}
-
-// 为已经获准的当前图邀请绑定图片；引用图必须显式选择。
+// 获准明确交互固定关联全部媒体；随机入口仍按现有单目标授权处理。
 function prepareVisionRequest(session: VisionSessionLike, analyzed: AnalyzedMessageFlags = {}, context: PrepareVisionContext = {}): boolean {
   const content = context.content === undefined ? session?.content || '' : context.content
+  if (context.includeQuote === true && collectImageManifest(session as Parameters<typeof collectImageManifest>[0], getChannelKey(session as Parameters<typeof getChannelKey>[0]), '').length) {
+    session._explicitImagesPending = true
+    delete session._visionAmbiguous
+    return true
+  }
   if (context.allowCurrentMessage) {
     const imageSegments = getCurrentImageSegments(session as Parameters<typeof getCurrentImageSegments>[0])
     // 适配器同消息的多个 img 共用 messageId，当前存储无法唯一绑定其中一张。
@@ -169,12 +159,18 @@ function prepareVisionRequest(session: VisionSessionLike, analyzed: AnalyzedMess
     if (markSessionForVision(session, urls, file)) return true
   }
 
-  if (context.includeQuote === true && !analyzed.hasVisual && !analyzed.hasFile && !analyzed.hasEmbed && session?.quote) {
-    const quoted = getQuotedVisionPayload(session)
-    if (markSessionForVision(session, quoted.urls, quoted.file, String(session.quote.messageId || ''))) return true
-  }
-
   return isVisionSession(session)
+}
+
+// 明确交互同时核实真实消息段与已记录的直接引用来源，供入口统一阻止快捷路径绕过读取。
+async function prepareExplicitVisionRequest(session: VisionSessionLike): Promise<boolean> {
+  const { collectExplicitImageTargets } = require('./image-batch') as typeof import('./image-batch')
+  const compatible = session as Parameters<typeof getChannelKey>[0]
+  const targets = await collectExplicitImageTargets(session as Parameters<typeof collectExplicitImageTargets>[0], getChannelKey(compatible), getConversationKey(compatible))
+  clearVisionSession(session)
+  if (!targets.length) return false
+  session._explicitImagesPending = true
+  return true
 }
 
 // 通过共享读取层取得已绑定原图；读取成功才追加多模态消息。
@@ -237,6 +233,7 @@ export = {
   getVisionPayload,
   clearVisionSession,
   prepareVisionRequest,
+  prepareExplicitVisionRequest,
   appendVisionMessage,
   isVisionBlindnessReply,
   downgradeVisionMessageToText,

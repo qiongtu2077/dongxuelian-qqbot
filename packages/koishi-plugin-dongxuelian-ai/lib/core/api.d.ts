@@ -171,16 +171,16 @@ declare function requestOpenAIResponsesWithSearch(messages: ChatMessage[], confi
 declare function freezeChatRoute(config: ApiConfig, explicitSteps?: readonly ApiConfig[]): FrozenChatRoute;
 declare function buildFallbackConfig(config: ApiConfig, step: number, fallbackSet: string): Promise<ApiConfig | null>;
 declare function getFallbackSteps(): Record<string, FallbackStep[]>;
-declare function callGetImage(fileName: string): Promise<Record<string, unknown> | null>;
-declare function callGetFile(fileId: string): Promise<Record<string, unknown> | null>;
+declare function callGetImage(fileName: string, signal?: AbortSignal): Promise<Record<string, unknown> | null>;
+declare function callGetFile(fileId: string, signal?: AbortSignal): Promise<Record<string, unknown> | null>;
 declare function callGetRecord(fileName: string): Promise<Record<string, unknown> | null>;
 declare function callGetForwardMsg(forwardId: string): Promise<unknown[] | unknown | null>;
 declare function sendForwardMsg(groupId: string | number, nodes: unknown[], timeoutMs?: number): Promise<Record<string, unknown> | null>;
 declare function getGroupMemberInfo(groupId: string | number, userId: string | number, timeoutMs?: number): Promise<Record<string, unknown> | null>;
 declare function getGroupInfo(groupId: string | number, timeoutMs?: number): Promise<Record<string, unknown> | null>;
-declare function readImageAsBase64(filePath: string): Promise<string | null>;
+declare function readImageAsBase64(filePath: string, onFailure?: (reason: string) => void, signal?: AbortSignal): Promise<string | null>;
 declare function extractImageFileFromElements(session: SessionLike): string | null;
-declare function downloadImageAsBase64(url: string, timeoutMs?: number): Promise<string | null>;
+declare function downloadImageAsBase64(url: string, timeoutMs?: number, onFailure?: (reason: string) => void, signal?: AbortSignal): Promise<string | null>;
 declare function isVisionModel(provider: string, modelId: string): boolean;
 declare const _default: {
     requestChatCompletions: typeof requestChatCompletions;

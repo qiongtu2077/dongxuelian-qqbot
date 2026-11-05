@@ -11,7 +11,8 @@ interface FileCheckResult {
 }
 declare function getExtension(fileName: unknown): string;
 declare function sanitizeFileName(fileName: unknown): string;
-declare function checkFile(fileName: unknown, fileSize: unknown): FileCheckResult;
+declare function isImageFileCandidate(fileName: unknown, mime?: unknown, url?: unknown): boolean;
+declare function checkFile(fileName: unknown, fileSize: unknown, mime?: unknown, url?: unknown): FileCheckResult;
 declare function wrapFileContent(fileName: unknown, content: unknown, maxChars?: number): string;
 declare function unwrapFileContent(text?: string): {
     fileName: string;
@@ -20,12 +21,14 @@ declare function unwrapFileContent(text?: string): {
 declare function summarizeFileContentForChat(text?: string, fallbackName?: string): string;
 declare const _default: {
     MAX_FILE_SIZE: number;
+    IMAGE_EXTENSIONS: Set<string>;
     TEXT_EXTENSIONS: Set<string>;
     BINARY_DOC_EXTENSIONS: Set<string>;
     BLOCKED_EXTENSIONS: Set<string>;
     getExtension: typeof getExtension;
     sanitizeFileName: typeof sanitizeFileName;
     checkFile: typeof checkFile;
+    isImageFileCandidate: typeof isImageFileCandidate;
     wrapFileContent: typeof wrapFileContent;
     unwrapFileContent: typeof unwrapFileContent;
     summarizeFileContentForChat: typeof summarizeFileContentForChat;

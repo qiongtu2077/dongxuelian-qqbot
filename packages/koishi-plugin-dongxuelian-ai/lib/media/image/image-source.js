@@ -9,8 +9,10 @@ const path = require('path');
 const { createHash, randomUUID } = require('crypto');
 const { DATA_DIR } = require('../../core/constants');
 const { isProcessAlive } = require('../../resource-common/files');
-const { callGetImage, readImageAsBase64, downloadImageAsBase64 } = require('../../core/api');
-const { getImageEntry, readCachedImage, cacheImageFile } = require('./image-store');
+const { callGetImage, callGetFile, readImageAsBase64, downloadImageAsBase64 } = require('../../core/api');
+const { getImageEntry, getImagesForSource, readCachedImage, cacheImageFile } = require('./image-store');
+const { validateImageContent } = require('../../core/image-content');
+const { fileURLToPath } = require('url');
 const SOURCE_LOCK_DIR = path.join(DATA_DIR, 'image-source-locks');
 const MAX_ACTIVE_READS = 64;
 const SOURCE_WAIT_MS = 20000;
@@ -21,12 +23,31 @@ const inFlight = new Map();
 function getSourceKey(channelKey, messageId) {
     return createHash('sha256').update(JSON.stringify([channelKey, messageId])).digest('hex');
 }
+// 同一平台原图出现在不同消息时共享已验证缓存，取图协议及频道必须一致。
+async function readReusableImageCache(channelKey, imageId, entry) {
+    const direct = await readCachedImage(channelKey, imageId);
+    if (direct || !entry.file)
+        return direct;
+    for (const other of await getImagesForSource(channelKey, entry.file, entry.sourceKind || 'image')) {
+        if (other.messageId === imageId)
+            continue;
+        const cached = await readCachedImage(channelKey, other.messageId);
+        if (cached) {
+            await cacheImageFile(channelKey, imageId, Buffer.from(cached.replace(/^data:[^;]+;base64,/, ''), 'base64'));
+            return cached;
+        }
+    }
+    return null;
+}
 // 在完整原图落盘后才释放所有权，其他入口等待同一目标而非普通缓存队列。
-async function loadImageSource(channelKey, messageId, key) {
+async function loadImageSource(channelKey, messageId, key, signal) {
+    signal?.throwIfAborted();
     let entry = await getImageEntry(channelKey, messageId);
     if (!entry)
         return null;
-    let cached = await readCachedImage(channelKey, messageId);
+    if (entry.declaredSize != null && entry.declaredSize > MAX_IMAGE_BYTES)
+        throw new Error('image_too_large');
+    let cached = await readReusableImageCache(channelKey, messageId, entry);
     if (cached)
         return cached;
     await fs.mkdir(SOURCE_LOCK_DIR, { recursive: true });
@@ -38,6 +59,7 @@ async function loadImageSource(channelKey, messageId, key) {
     try {
         const deadline = Date.now() + SOURCE_WAIT_MS;
         while (!acquired) {
+            signal?.throwIfAborted();
             try {
                 await fs.link(candidate, lock);
                 acquired = true;
@@ -45,7 +67,7 @@ async function loadImageSource(channelKey, messageId, key) {
             catch (error) {
                 if (error.code !== 'EEXIST')
                     throw error;
-                cached = await readCachedImage(channelKey, messageId);
+                cached = await readReusableImageCache(channelKey, messageId, entry);
                 if (cached)
                     return cached;
                 if (!await getImageEntry(channelKey, messageId))
@@ -66,27 +88,48 @@ async function loadImageSource(channelKey, messageId, key) {
         entry = await getImageEntry(channelKey, messageId);
         if (!entry)
             return null;
-        cached = await readCachedImage(channelKey, messageId);
+        cached = await readReusableImageCache(channelKey, messageId, entry);
         if (cached)
             return cached;
         let base64 = null;
+        let failure = '';
+        // 图片附件只使用 get_file；平台图片只使用 get_image，本地协议路径由真实消息段提供。
         if (entry.file) {
             try {
-                const info = await callGetImage(entry.file);
-                if (info?.file)
-                    base64 = await readImageAsBase64(String(info.file));
+                if (entry.file.startsWith('file://'))
+                    base64 = await readImageAsBase64(fileURLToPath(entry.file), reason => { failure = reason; }, signal);
+                else {
+                    const info = entry.sourceKind === 'attachment' ? await callGetFile(entry.file, signal) : await callGetImage(entry.file, signal);
+                    signal?.throwIfAborted();
+                    if (info?.file)
+                        base64 = await readImageAsBase64(String(info.file), reason => { failure = reason; }, signal);
+                    if (failure)
+                        throw new Error(failure);
+                    if (!base64 && entry.sourceKind === 'attachment' && info?.url)
+                        base64 = await downloadImageAsBase64(String(info.url), 10000, reason => { failure = reason; }, signal);
+                }
             }
             catch (error) {
+                if (failure)
+                    throw new Error(failure);
                 console.warn(`[image-source] onebot_get_image_failed target=${key} detail=${error instanceof Error ? error.message : String(error)}`);
             }
         }
+        if (failure)
+            throw new Error(failure);
+        signal?.throwIfAborted();
         if (!base64 && entry.url)
-            base64 = await downloadImageAsBase64(entry.url, 10000);
+            base64 = await downloadImageAsBase64(entry.url, 10000, reason => { failure = reason; }, signal);
+        if (failure)
+            throw new Error(failure);
         if (!base64) {
             console.warn(`[image-source] source_unavailable target=${key}`);
             return null;
         }
+        const actual = await validateImageContent(base64);
         const buffer = Buffer.from(base64.replace(/^data:[^;]+;base64,/, ''), 'base64');
+        if (entry.declaredMime && entry.declaredMime.split(';')[0] !== actual.mime)
+            console.warn(`[image-source] mime_mismatch target=${key} actual=${actual.mime}`);
         if (!buffer.length || buffer.length > MAX_IMAGE_BYTES) {
             console.warn(`[image-source] image_size_limit target=${key}`);
             return null;
@@ -104,26 +147,41 @@ async function loadImageSource(channelKey, messageId, key) {
 }
 // --- 共用原图入口 --- //
 // 合并当前进程的同目标读取，容量满时直接退让，不新增内存下载队列。
-function readImageSource(channelKey, messageId) {
+async function readImageSourceResult(channelKey, messageId, signal) {
     if (!channelKey || !messageId)
-        return Promise.resolve(null);
-    const key = getSourceKey(channelKey, messageId);
+        return Promise.resolve({ dataUrl: null, reason: 'source_unavailable' });
+    const entry = await getImageEntry(channelKey, messageId);
+    if (!entry)
+        return { dataUrl: null, reason: 'source_unavailable' };
+    messageId = entry.imageId || messageId;
+    const key = getSourceKey(channelKey, entry.file ? JSON.stringify([entry.sourceKind || 'image', entry.file]) : messageId);
     const active = inFlight.get(key);
     if (active)
         return active;
     if (inFlight.size >= MAX_ACTIVE_READS) {
         console.warn(`[image-source] source_capacity_full target=${key}`);
-        return Promise.resolve(null);
+        return Promise.resolve({ dataUrl: null, reason: 'source_capacity_full' });
     }
-    const work = loadImageSource(channelKey, messageId, key).catch(error => {
+    const work = loadImageSource(channelKey, messageId, key, signal).then(async (dataUrl) => {
+        if (!dataUrl)
+            return { dataUrl: null, reason: 'source_unavailable' };
+        // 旧缓存同样完整验证，不能绕过大小和内容校验。
+        const actual = await validateImageContent(dataUrl);
+        return { dataUrl: dataUrl.replace(/^data:[^;]+;/, `data:${actual.mime};`), reason: '', ...actual };
+    }).catch(error => {
         console.warn(`[image-source] source_failed target=${key} detail=${error instanceof Error ? error.message : String(error)}`);
-        return null;
+        const code = error instanceof Error ? error.message : '';
+        return { dataUrl: null, reason: ['image_too_large', 'image_empty', 'image_invalid', 'image_unsupported_format'].includes(code) ? code : 'image_invalid_or_unavailable' };
     }).finally(() => {
         if (inFlight.get(key) === work)
             inFlight.delete(key);
     });
     inFlight.set(key, work);
     return work;
+}
+// 既有单图入口保持返回契约，共用逐目标读取和校验结果。
+async function readImageSource(channelKey, messageId) {
+    return (await readImageSourceResult(channelKey, messageId)).dataUrl;
 }
 // 回收崩溃进程遗留的下载锁及候选文件，活所有者始终保留。
 async function cleanupImageSourceLocks() {
@@ -147,4 +205,4 @@ async function cleanupImageSourceLocks() {
     }
     return removed;
 }
-module.exports = { readImageSource, cleanupImageSourceLocks };
+module.exports = { readImageSource, readImageSourceResult, cleanupImageSourceLocks };

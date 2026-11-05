@@ -4,6 +4,8 @@ interface ImageRequestOptions {
     question?: string;
     force?: boolean;
     waitMs?: number;
+    targetIds?: string[];
+    sourceIdentity?: string;
 }
 interface ImageDiagnostic {
     source: ImageSource;

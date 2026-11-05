@@ -8,7 +8,7 @@ const { spawn } = require('child_process')
 const { createHash } = require('crypto')
 
 const ROOT = path.resolve(process.env.IMAGE_STORAGE_TEST_ROOT || path.join(__dirname, '..', 'lib'))
-const PNG = Buffer.from('89504e470d0a1a0a00000000', 'hex')
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64')
 const CHILD_MODE = process.argv[2] || ''
 
 // 独立开发验证时仅即时转译依赖源码，正式测试默认读取构建产物。

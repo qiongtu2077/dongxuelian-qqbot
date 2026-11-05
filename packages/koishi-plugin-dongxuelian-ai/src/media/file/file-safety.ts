@@ -5,6 +5,7 @@
  */
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'])
 
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'json', 'csv', 'yml', 'yaml', 'xml', 'toml', 'ini', 'conf', 'log',
@@ -30,7 +31,13 @@ interface FileCheckResult {
   ext: string
 }
 
+// --- 文件类型与大小 --- //
+
+// 规范化文件名后缀；URL 只读取路径部分，忽略查询和片段。
 function getExtension(fileName: unknown): string {
+  if (/^https?:\/\//i.test(String(fileName || ''))) {
+    try { fileName = new URL(String(fileName)).pathname } catch { return '' }
+  }
   const name = String(fileName || '').trim()
   const dot = name.lastIndexOf('.')
   if (dot < 0 || dot === name.length - 1) return ''
@@ -45,7 +52,14 @@ function sanitizeFileName(fileName: unknown): string {
   return name || 'unnamed'
 }
 
-function checkFile(fileName: unknown, fileSize: unknown): FileCheckResult {
+// 附件存在图片后缀、声明类型或下载路径线索时才列为候选，内容仍由读取层验证。
+function isImageFileCandidate(fileName: unknown, mime: unknown = '', url: unknown = ''): boolean {
+  return IMAGE_EXTENSIONS.has(getExtension(fileName)) || /^image\/(?:jpeg|jpg|png|webp|gif|bmp)(?:;|$)/i.test(String(mime || ''))
+    || IMAGE_EXTENSIONS.has(getExtension(url))
+}
+
+// 按单附件十兆与类型分类；图片进入视觉链，不能进入文本文档提取。
+function checkFile(fileName: unknown, fileSize: unknown, mime: unknown = '', url: unknown = ''): FileCheckResult {
   const ext = getExtension(fileName)
   const size = Number(fileSize) || 0
 
@@ -57,6 +71,8 @@ function checkFile(fileName: unknown, fileSize: unknown): FileCheckResult {
     return { allowed: false, reason: 'unsupported_type', ext }
   }
 
+  if (!BLOCKED_EXTENSIONS.has(ext) && isImageFileCandidate(fileName, mime, url)) return { allowed: true, category: 'image', ext }
+
   if (TEXT_EXTENSIONS.has(ext)) {
     return { allowed: true, category: 'text', ext }
   }
@@ -67,6 +83,8 @@ function checkFile(fileName: unknown, fileSize: unknown): FileCheckResult {
 
   return { allowed: false, reason: 'unknown_type', ext }
 }
+
+// --- 内容包裹与摘要 --- //
 
 function wrapFileContent(fileName: unknown, content: unknown, maxChars: number = 3000): string {
   const truncated = String(content || '').slice(0, maxChars)
@@ -104,12 +122,14 @@ function summarizeFileContentForChat(text: string = '', fallbackName: string = '
 
 export = {
   MAX_FILE_SIZE,
+  IMAGE_EXTENSIONS,
   TEXT_EXTENSIONS,
   BINARY_DOC_EXTENSIONS,
   BLOCKED_EXTENSIONS,
   getExtension,
   sanitizeFileName,
   checkFile,
+  isImageFileCandidate,
   wrapFileContent,
   unwrapFileContent,
   summarizeFileContentForChat,

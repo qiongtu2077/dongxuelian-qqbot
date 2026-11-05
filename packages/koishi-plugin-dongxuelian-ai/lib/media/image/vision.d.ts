@@ -68,6 +68,7 @@ declare function getVisionPayload(session: VisionSessionLike | null | undefined)
 declare function isVisionSession(session: VisionSessionLike | null | undefined): boolean;
 declare function clearVisionSession(session: VisionSessionLike | null | undefined): void;
 declare function prepareVisionRequest(session: VisionSessionLike, analyzed?: AnalyzedMessageFlags, context?: PrepareVisionContext): boolean;
+declare function prepareExplicitVisionRequest(session: VisionSessionLike): Promise<boolean>;
 declare function appendVisionMessage(messages: VisionMessage[], session: VisionSessionLike, config: VisionConfig, ctx: {
     logger: (name: string) => {
         warn: (message: string) => void;
@@ -82,6 +83,7 @@ declare const _default: {
     getVisionPayload: typeof getVisionPayload;
     clearVisionSession: typeof clearVisionSession;
     prepareVisionRequest: typeof prepareVisionRequest;
+    prepareExplicitVisionRequest: typeof prepareExplicitVisionRequest;
     appendVisionMessage: typeof appendVisionMessage;
     isVisionBlindnessReply: typeof isVisionBlindnessReply;
     downgradeVisionMessageToText: typeof downgradeVisionMessageToText;
