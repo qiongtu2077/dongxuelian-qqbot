@@ -147,7 +147,7 @@ const {
   shouldTriggerRandom, calculateWillFactor, // 随机触发判断 + 意愿因子计算
 } = require('./core/utils') as typeof import('./core/utils')
 const { logDebug } = require('./core/logging-config') as typeof import('./core/logging-config') // 调试日志输出
-const { shouldTriggerRareVoice } = require('./behavior/rare-voice') as typeof import('./behavior/rare-voice') // 罕见触发固定语音
+const { shouldTriggerRareVoiceWithDiagnostics, logRareVoiceEvent } = require('./diagnostics/rare-voice-diagnostics') as typeof import('./diagnostics/rare-voice-diagnostics') // 罕见语音抽签与诊断
 const { buildPrivateSearchContext } = require('./routing/search-context') as typeof import('./routing/search-context')
 const agentEngine = require('./agent/engine') as typeof import('./agent/engine') // Agent 执行引擎
 const { enqueueAgentTask, configureAgentQueue } = require('./agent/queue') as typeof import('./agent/queue') // Agent 任务队列
@@ -868,8 +868,9 @@ function apply(ctx: IndexContext): void {
                 if (chatMeta.randomReplyMode === 'ambient_water') {
                   randomSendOptions = buildAmbientWaterSendOptions(randomSendOptions)
                 }
-                if (shouldTriggerRareVoice(chatMeta)) {
+                if (shouldTriggerRareVoiceWithDiagnostics(ctx, liveSession, chatMeta, 'delayed_random')) {
                   if (!isRandomReplyFresh(randomSendOptions)) {
+                    logRareVoiceEvent(ctx, liveSession, { stage: 'send_skipped', reason: 'stale_random_reply', sent: false })
                     logStaleRandomSkip(ctx, 'delayed-rare-voice', randomSendOptions)
                     return
                   }

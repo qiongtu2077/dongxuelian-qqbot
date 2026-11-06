@@ -25,7 +25,7 @@ function seedRareVoiceCache(rareVoice) {
 }
 
 // 隔离执行真实聊天与语音发送流程，只模拟模型 HTTP 和 QQ 会话。
-async function runRareChatCase(t, input, confirmed, { missingAudio = false, random = 0.1 } = {}) {
+async function runRareChatCase(t, input, confirmed, { missingAudio = false, random = 0.1, sendFailure = false, gateRejected = false } = {}) {
   await withScenario({}, async ({ data, harness, makeSession }) => {
     data.writeText('ai-test-mode.txt', 'on')
     const rareVoice = require('../../lib/behavior/rare-voice')
@@ -40,10 +40,17 @@ async function runRareChatCase(t, input, confirmed, { missingAudio = false, rand
     const previousTotal = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
     global.fetch = mocked.fetch
     Math.random = () => random
-    process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+    process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = gateRejected ? '50' : '1200'
     process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
     try {
-      const session = makeSession()
+      const session = makeSession({ guildId: '1072587329', channelId: '1072587329', messageId: 'rare-' + input })
+      const originalSend = session.send.bind(session)
+      // QQ 收发被模拟：语音投递可明确拒绝，成功时返回已知消息 ID。
+      session.send = async message => {
+        if (sendFailure && /<audio\b/.test(String(message))) throw new Error('QQ record rejected: retcode=1200')
+        await originalSend(message)
+        return ['fake-qq-record-id']
+      }
       const meta = {}
       const chat = require('../../lib/chat')
       const reply = await chat.chat(session, input, harness.ctx, { meta, directAt: true })
@@ -67,10 +74,30 @@ async function runRareChatCase(t, input, confirmed, { missingAudio = false, rand
         inGuild: true, chatMeta: meta, resolveBot: () => session.bot,
         safeSendReplyWithFreshness: async (_ctx, liveSession, text) => liveSession.send(text),
       })
-      const expectedVoice = confirmed && !missingAudio && random < 0.5
+      const expectedVoice = confirmed && !missingAudio && !sendFailure && !gateRejected && random < 0.5
       t.checkEqual(`rare voice send or text fallback: ${input}`, session.sent.some(text => /<audio\b/.test(text)), expectedVoice)
       t.check(`rare send stays visible without internal marker: ${input}`, session.sent.length > 0
         && !session.sent.some(text => text.includes('rare_provocation')))
+      const events = harness.logs.filter(entry => entry.msg.startsWith('rare_voice ')).map(entry => JSON.parse(entry.msg.slice(11)))
+      const decisions = events.filter(event => event.stage === 'decision')
+      const result = events.find(event => event.stage === 'send_result')
+      t.check(`rare decision persists exact draw and threshold: ${input}`, decisions.length === 1
+        && decisions[0].draw === (confirmed ? random : null) && decisions[0].rate === 0.5
+        && decisions[0].rareConfirmed === confirmed && decisions[0].selected === (confirmed && random < 0.5))
+      t.check(`rare logs correlate group and original message: ${input}`, events.every(event =>
+        event.channelKey === '1072587329' && event.messageId === session.messageId && event.userId === session.userId && event.createdAt))
+      if (confirmed && random < 0.5) {
+        const reason = gateRejected ? 'resource_gate_rejected' : missingAudio ? 'audio_unavailable' : sendFailure ? 'send_failed' : 'send_resolved'
+        t.check(`rare send result identifies actual stop stage: ${input}`, events.some(event => event.stage === 'send_start')
+          && result?.reason === reason && result.sent === expectedVoice && result.elapsedMs >= 0)
+        if (expectedVoice) t.check('rare successful send records adapter message IDs', result.messageIds?.[0] === 'fake-qq-record-id')
+        if (sendFailure) t.check('rare failed send preserves actual error', result.errorCode === 'send_failed'
+          && result.error === 'QQ record rejected: retcode=1200')
+        if (gateRejected) t.check('rare rejected resource admission records its decision', result.gateDecision && result.gateReason)
+      } else {
+        t.check(`rare non-selection is explicit without a send attempt: ${input}`, events.length === 1
+          && decisions[0].reason === (confirmed ? 'random_miss' : 'not_rare'))
+      }
     } finally {
       fs.readFileSync = cachedRead
       global.fetch = previousFetch
@@ -124,6 +151,43 @@ async function run(t) {
   }
   await runRareChatCase(t, '罕见音频读取失败', true, { missingAudio: true })
   await runRareChatCase(t, '罕见概率未抽中', true, { random: 0.99 })
+  // 重现用户在 1072587329 群的三条实际输入，明确区分抽签未中与投递失败。
+  for (const [input, random] of [['罕见！', 0.91], ['很稀有啊', 0.82], ['你好少见啊', 0.73]]) {
+    await runRareChatCase(t, input, true, { random })
+  }
+  await runRareChatCase(t, '罕见投递失败', true, { sendFailure: true })
+  await runRareChatCase(t, '罕见资源拒绝', true, { gateRejected: true })
+  await withScenario({}, async ({ harness, makeSession }) => {
+    const { shouldTriggerRareVoiceWithDiagnostics } = require('../../lib/diagnostics/rare-voice-diagnostics')
+    const session = makeSession({ messageId: 'rare-draw-count' })
+    let draws = 0
+    const random = () => { draws += 1; return 0.5 }
+    t.checkEqual('rare missing verdict stays unselected', shouldTriggerRareVoiceWithDiagnostics(harness.ctx, session, {}, 'chat', random), false)
+    t.checkEqual('rare negative verdict stays unselected', shouldTriggerRareVoiceWithDiagnostics(harness.ctx, session, { rareConfirmed: false }, 'chat', random), false)
+    t.checkEqual('rare non-candidates never consume a random number for logging', draws, 0)
+    t.checkEqual('rare draw at exact 50 percent remains unselected', shouldTriggerRareVoiceWithDiagnostics(harness.ctx, session, { rareConfirmed: true }, 'chat', random), false)
+    t.checkEqual('rare positive decision consumes exactly one draw', draws, 1)
+    const events = harness.logs.filter(entry => entry.msg.startsWith('rare_voice ')).map(entry => JSON.parse(entry.msg.slice(11)))
+    t.check('rare logs distinguish missing verdict, negative verdict and random miss', events[0].reason === 'missing_verdict'
+      && events[0].rareConfirmed === null && events[1].reason === 'not_rare' && events[2].draw === 0.5 && events[2].reason === 'random_miss')
+  })
+  await withScenario({}, async ({ harness, makeSession }) => {
+    const { sendChatReplyFlow } = require('../../lib/chat/chat-send-flow')
+    const session = makeSession({ messageId: 'rare-stale-selected' })
+    const previousRandom = Math.random
+    Math.random = () => 0.1
+    try {
+      await sendChatReplyFlow({ ctx: harness.ctx, liveSession: session, channelKey: session.guildId,
+        currentUserId: session.userId, userText: '罕见', reply: '骂谁罕见', randomTriggered: true, inGuild: true,
+        chatMeta: { rareConfirmed: true }, randomSendOptions: { randomFreshness: {
+          channelKey: session.guildId, triggerMessageVersion: -1, explicitVersion: -1, triggerAt: Date.now(),
+        } }, safeSendReplyWithFreshness: async () => { throw new Error('stale reply must not send') } })
+      const events = harness.logs.filter(entry => entry.msg.startsWith('rare_voice ')).map(entry => JSON.parse(entry.msg.slice(11)))
+      t.check('rare selected but expired reply has a correlated skip record', events.length === 2
+        && events[0].selected && events[1].reason === 'stale_random_reply' && events[1].messageId === session.messageId)
+      t.checkEqual('rare expired reply never starts voice transport', session.sent.length, 0)
+    } finally { Math.random = previousRandom }
+  })
 }
 
 module.exports = { run }

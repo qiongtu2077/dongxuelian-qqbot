@@ -453,7 +453,11 @@ async function sendVoiceMessage(session: TtsSessionLike, audioBuf: AudioBufferWi
     if (options.diagnostics && typeof options.diagnostics === 'object') {
       options.diagnostics.lastSend = { method: 'file', mimeType, bytes: audioBuf.length, file: path.basename(tempFile) }
     }
-    await session.send(h.audio(src))
+    const receipt = await session.send(h.audio(src))
+    // 只保存平台返回的消息 ID，避免把音频段或媒体地址写入诊断。
+    if (options.diagnostics?.lastSend) {
+      options.diagnostics.lastSend.messageIds = Array.isArray(receipt) ? receipt.filter(id => typeof id === 'string') : []
+    }
     scheduleTtsSendFileCleanup(tempFile, options.tempFileTtlMs)
     return true
   } catch (error) {

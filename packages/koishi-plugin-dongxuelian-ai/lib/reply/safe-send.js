@@ -7,6 +7,7 @@
  */
 const { sendReply } = require('./reply');
 const { readRareVoiceAudioBuffer } = require('../behavior/rare-voice');
+const { logRareVoiceEvent } = require('../diagnostics/rare-voice-diagnostics');
 const { classifySendError, sanitizeForRateLimit, sleepForRateLimitRetry, getCachedPlatformMuteStatus, markPlatformMute, clearPlatformMute, checkPlatformMuteStatus, } = require('./send-guard');
 const { getAdminUserIds } = require('../core/runtime-config');
 const { createBotResolver } = require('../lifecycle/bot-resolver');
@@ -272,9 +273,13 @@ function getSafeSendChannelKey(session) {
 }
 /** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
 async function safeSendRareVoice(ctx, session, options = {}) {
+    const startedAt = Date.now();
+    logRareVoiceEvent(ctx, session, { stage: 'send_start', reason: 'selected' });
     try {
         if (!canSendDuringSafeSendWindow(ctx, session, 'safeSendRareVoice')) {
             const allowRestrictedFallback = options.allowRestrictedFallback ?? isDirectAtBot(asSafeSendBasicSession(session));
+            logRareVoiceEvent(ctx, session, { stage: 'send_result', reason: 'send_restricted', sent: false,
+                handled: !allowRestrictedFallback, elapsedMs: Date.now() - startedAt });
             return !allowRestrictedFallback;
         }
         const { sendVoiceMessage } = require('../media/voice/tts');
@@ -289,6 +294,8 @@ async function safeSendRareVoice(ctx, session, options = {}) {
             run: () => readRareVoiceAudioBuffer(),
         });
         if (!gated.ok) {
+            logRareVoiceEvent(ctx, session, { stage: 'send_result', reason: 'resource_gate_rejected', sent: false,
+                gateDecision: gated.decision, gateReason: gated.reason, elapsedMs: Date.now() - startedAt });
             try {
                 ctx.logger('dongxuelian-ai').warn(`safeSendRareVoice skipped by resource gate: ${gated.reason}`);
             }
@@ -297,13 +304,19 @@ async function safeSendRareVoice(ctx, session, options = {}) {
         }
         const audioBuf = gated.value;
         if (!audioBuf) {
+            logRareVoiceEvent(ctx, session, { stage: 'send_result', reason: 'audio_unavailable', sent: false, elapsedMs: Date.now() - startedAt });
             try {
                 ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: rare voice audio unavailable');
             }
             catch { /* non-critical: logging only */ }
             return false;
         }
-        const sent = await sendVoiceMessage(session, audioBuf);
+        const diagnostics = {};
+        const sent = await sendVoiceMessage(session, audioBuf, { diagnostics });
+        logRareVoiceEvent(ctx, session, { stage: 'send_result', reason: sent ? 'send_resolved' : 'send_failed', sent,
+            bytes: audioBuf.length, elapsedMs: Date.now() - startedAt,
+            messageIds: Array.isArray(diagnostics.lastSend?.messageIds) ? diagnostics.lastSend.messageIds : [],
+            errorCode: diagnostics.lastError?.code, error: diagnostics.lastError?.message });
         if (!sent) {
             try {
                 ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: sendVoiceMessage returned false');
@@ -319,6 +332,8 @@ async function safeSendRareVoice(ctx, session, options = {}) {
         return sent;
     }
     catch (error) {
+        logRareVoiceEvent(ctx, session, { stage: 'send_result', reason: 'exception', sent: false,
+            error: getSafeSendErrorMessage(error), elapsedMs: Date.now() - startedAt });
         try {
             ctx.logger('dongxuelian-ai').warn(`safeSendRareVoice failed: ${getSafeSendErrorMessage(error)}`);
         }

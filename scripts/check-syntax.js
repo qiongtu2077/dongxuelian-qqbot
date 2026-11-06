@@ -13,6 +13,7 @@ const CHECK_DIRS = [
 
 const CHECK_FILES = [
   'packages/koishi-plugin-dongxuelian-ai/lib/behavior/rare-provocation.js',
+  'packages/koishi-plugin-dongxuelian-ai/lib/diagnostics/rare-voice-diagnostics.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/image-content.js',
   ...['image-source', 'image-request', 'image-turn', 'image-random-demand', 'image-manifest', 'image-batch'].map(name => 'packages/koishi-plugin-dongxuelian-ai/lib/media/image/' + name + '.js'),
   ...['models', 'input', 'settings', 'repositories', 'client', 'page-screenshot', 'renderer', 'body-content', 'issue-renderer', 'pull-card', 'themes', 'runtime'].map(name => 'packages/koishi-plugin-dongxuelian-ai/lib/github-preview/' + name + '.js'),

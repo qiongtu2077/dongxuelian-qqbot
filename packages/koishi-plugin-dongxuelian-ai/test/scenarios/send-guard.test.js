@@ -248,6 +248,9 @@ async function run(t) {
   }, { allowRestrictedFallback: false })
   t.checkEqual('scenario rare voice restriction treats random voice as handled', randomRareVoiceHandled, true)
   t.checkEqual('scenario random rare voice restriction stays silent', randomRareVoiceSent.length, 0)
+  const rareRestrictedEvents = voiceGateLogs.filter(line => line.startsWith('rare_voice ')).map(line => JSON.parse(line.slice(11)))
+  t.check('scenario rare restriction logs silence as unsent even when handled', rareRestrictedEvents.some(event =>
+    event.stage === 'send_result' && event.reason === 'send_restricted' && event.handled === true && event.sent === false))
   safeSend.resetSendFailState()
 }
 

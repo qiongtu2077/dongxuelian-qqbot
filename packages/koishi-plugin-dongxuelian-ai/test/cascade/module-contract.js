@@ -207,6 +207,7 @@ async function runModuleContract(context) {
     mcpLocalServer: path.join(LIB, 'mcp', 'local-server'),
     rareVoice: path.join(LIB, 'behavior', 'rare-voice'),
     rareProvocation: path.join(LIB, 'behavior', 'rare-provocation'),
+    rareVoiceDiagnostics: path.join(LIB, 'diagnostics', 'rare-voice-diagnostics'),
     voiceQuickRead: path.join(LIB, 'routing', 'voice-quick-read'),
     index: path.join(LIB, 'index'),
     voice: path.join(LIB, 'media', 'voice', 'voice'),
@@ -632,6 +633,7 @@ async function runModuleContract(context) {
     rareVoice: [
       'shouldTriggerRareVoice', 'readRareVoiceAudioBuffer', 'resolveRareVoiceSource', 'prepareRareVoiceWav',
     ],
+    rareVoiceDiagnostics: ['logRareVoiceEvent', 'shouldTriggerRareVoiceWithDiagnostics'],
     rareProvocation: ['parseRareProvocationDecision'],
     agentEngine: [
       'run', 'resumePending', 'normalizeContextPolicy', 'applyContextPolicyToTools',
