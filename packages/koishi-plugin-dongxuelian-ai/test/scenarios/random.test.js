@@ -326,7 +326,7 @@ async function run(t) {
       randomWhitelist: ['10001'],
       randomRate: { 10001: 1 },
     },
-  }, async ({ ready, makeSession, run, clock }) => {
+  }, async ({ ready, makeSession, run, clock, harness }) => {
     await ready()
     const conversation = require(path.join(AI_ROOT, 'lib', 'conversation.js'))
     conversation.channelSharedCache.set('10001', [
@@ -349,6 +349,10 @@ async function run(t) {
       await session.waitForSend(message => String(message).includes('delayed-random-visible'))
       t.check('scenario delayed random timer sends reply without TDZ crash', session.sent.some(item => String(item).includes('delayed-random-visible')), JSON.stringify(session.sent))
       t.check('scenario delayed random calls model after timer', mocked.calls.length === 1, JSON.stringify(mocked.calls))
+      const rareDecision = harness.logs.filter(entry => entry.msg.startsWith('rare_voice '))
+        .map(entry => JSON.parse(entry.msg.slice(11))).find(event => event.stage === 'decision')
+      t.check('scenario delayed random records rare decision without extra draw', rareDecision?.route === 'delayed_random'
+        && rareDecision.messageId === session.messageId && rareDecision.rareConfirmed === false && rareDecision.draw === null)
     })
   })
 

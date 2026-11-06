@@ -7,7 +7,7 @@
  */
 const { logAffectRouterDiagnosticForOutputShadow, logStickerShadowSendDiagnostic, } = require('../diagnostics/diagnostics');
 const { resolvePersona } = require('../persona/persona');
-const { shouldTriggerRareVoice } = require('../behavior/rare-voice');
+const { shouldTriggerRareVoiceWithDiagnostics, logRareVoiceEvent } = require('../diagnostics/rare-voice-diagnostics');
 const { logStaleRandomSkip, safeSendRareVoice, canSendDuringSafeSendWindow } = require('../reply/safe-send');
 const { notifySensitiveHandlers } = require('../behavior/sensitive');
 const { isRandomReplyFresh } = require('../behavior/random-state');
@@ -105,8 +105,9 @@ async function sendChatReplyFlow({ ctx, liveSession, channelKey, currentUserId, 
         });
     }
     const finalReply = stripVoiceStyleTagText(reply);
-    if (shouldTriggerRareVoice(chatMeta)) {
+    if (shouldTriggerRareVoiceWithDiagnostics(ctx, liveSession, chatMeta, randomTriggered ? 'random' : 'chat')) {
         if (randomTriggered && !isRandomReplyFresh(randomSendOptions)) {
+            logRareVoiceEvent(ctx, liveSession, { stage: 'send_skipped', reason: 'stale_random_reply', sent: false });
             logStaleRandomSkip(ctx, 'rare-voice', randomSendOptions);
             return;
         }
