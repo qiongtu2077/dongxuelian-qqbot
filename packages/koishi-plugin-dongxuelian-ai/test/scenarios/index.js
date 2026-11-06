@@ -23,6 +23,7 @@ const e2eSimulation = require('./e2e-simulation.test')
 const autoMemory = require('./auto-memory.test')
 const skillMarket = require('./skill-market.test')
 const voiceTts = require('./voice-tts.test')
+const rareVoice = require('./rare-voice.test')
 const file = require('./file.test')
 const deployer = require('./deployer.test')
 const botRegression = require('./bot-regression.test')
@@ -54,6 +55,7 @@ const SCENARIOS = [
   autoMemory,
   skillMarket,
   voiceTts,
+  rareVoice,
   file,
   deployer,
   botRegression,

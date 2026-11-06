@@ -10,7 +10,7 @@ const { execFile } = require('child_process') as typeof import('child_process')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 
 const RARE_VOICE_RATE = 0.5
-const RARE_VOICE_ASSET_DIR = path.resolve(__dirname, '..', 'assets')
+const RARE_VOICE_ASSET_DIR = path.resolve(__dirname, '..', '..', 'assets')
 const RARE_VOICE_PREFERRED_FILE = 'rare-voice.mp4'
 const RARE_VOICE_CACHE_DIR = path.join(DATA_DIR, 'rare-voice')
 const RARE_VOICE_WAV_CACHE = path.join(RARE_VOICE_CACHE_DIR, 'rare-voice.wav')

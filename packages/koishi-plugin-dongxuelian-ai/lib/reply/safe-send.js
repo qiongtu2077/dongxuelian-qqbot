@@ -310,6 +310,12 @@ async function safeSendRareVoice(ctx, session, options = {}) {
             }
             catch { /* non-critical: logging only */ }
         }
+        else {
+            try {
+                ctx.logger('dongxuelian-ai').info(`safeSendRareVoice sent: bytes=${audioBuf.length}`);
+            }
+            catch { /* non-critical: logging only */ }
+        }
         return sent;
     }
     catch (error) {

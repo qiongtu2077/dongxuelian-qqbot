@@ -425,6 +425,8 @@ async function safeSendRareVoice(ctx: SafeSendContext, session: SafeSendSessionL
     const sent = await sendVoiceMessage(session, audioBuf)
     if (!sent) {
       try { ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: sendVoiceMessage returned false') } catch { /* non-critical: logging only */ }
+    } else {
+      try { ctx.logger('dongxuelian-ai').info(`safeSendRareVoice sent: bytes=${audioBuf.length}`) } catch { /* non-critical: logging only */ }
     }
     return sent
   } catch (error) {
