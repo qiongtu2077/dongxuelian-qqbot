@@ -583,9 +583,10 @@ function buildWav() {
   t.check('shouldTriggerRareVoice ignores non-rare meta', !rareVoice.shouldTriggerRareVoice({}, () => 0))
   t.check('shouldTriggerRareVoice triggers below half', rareVoice.shouldTriggerRareVoice({ rareConfirmed: true }, () => 0.49))
   t.check('shouldTriggerRareVoice skips at half', !rareVoice.shouldTriggerRareVoice({ rareConfirmed: true }, () => 0.5))
-  t.check('resolveRareVoiceSource returns null or mp4', (() => {
+  t.check('resolveRareVoiceSource finds bundled mp4 in plugin assets', (() => {
     const source = rareVoice.resolveRareVoiceSource()
-    return source === null || /\.mp4$/i.test(source)
+    return source !== null && /\.mp4$/i.test(source) && fs.statSync(source).size > 0
+      && path.dirname(source) === path.resolve(__dirname, '..', '..', 'assets')
   })())
 
   t.section('scenario: voice TTS synthesize (mock)')

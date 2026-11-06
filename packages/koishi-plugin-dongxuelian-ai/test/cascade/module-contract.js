@@ -206,6 +206,7 @@ async function runModuleContract(context) {
     agentToolAnalyzeFile: path.join(LIB, 'agent', 'tools', 'analyze-file'),
     mcpLocalServer: path.join(LIB, 'mcp', 'local-server'),
     rareVoice: path.join(LIB, 'behavior', 'rare-voice'),
+    rareProvocation: path.join(LIB, 'behavior', 'rare-provocation'),
     voiceQuickRead: path.join(LIB, 'routing', 'voice-quick-read'),
     index: path.join(LIB, 'index'),
     voice: path.join(LIB, 'media', 'voice', 'voice'),
@@ -631,6 +632,7 @@ async function runModuleContract(context) {
     rareVoice: [
       'shouldTriggerRareVoice', 'readRareVoiceAudioBuffer', 'resolveRareVoiceSource', 'prepareRareVoiceWav',
     ],
+    rareProvocation: ['parseRareProvocationDecision'],
     agentEngine: [
       'run', 'resumePending', 'normalizeContextPolicy', 'applyContextPolicyToTools',
     ],
@@ -855,6 +857,7 @@ async function runModuleContract(context) {
       check(`${moduleName}.${name} exported`, typeof target[name] === 'function')
     }
   }
+  check('rareProvocation.RARE_PROVOCATION_PROMPT exported', typeof modules.rareProvocation.RARE_PROVOCATION_PROMPT === 'string')
   check('onebotEndpoint.DEFAULT_ONEBOT_WS_URL exported', typeof modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL === 'string' && modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL.startsWith('ws://127.0.0.1:'))
   check('reportRecords.REPORT_INDEX_ROOT exported', typeof modules.reportRecords.REPORT_INDEX_ROOT === 'string' && modules.reportRecords.REPORT_INDEX_ROOT.endsWith('index'))
   check('reportAnalysis fixed failure replies exported', typeof modules.reportAnalysis.REPORT_FAILURE_TEXT === 'string' && typeof modules.reportAnalysis.REPORT_TIMEOUT_TEXT === 'string')

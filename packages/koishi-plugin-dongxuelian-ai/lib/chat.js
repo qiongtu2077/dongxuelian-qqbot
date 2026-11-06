@@ -11,6 +11,7 @@ const path = require('path');
 const { TEST_MODE_FILE, HOSTILE_MODE_FILE, REQUEST_TIMEOUT, MAX_OUTPUT_CHARS_FRIENDLY, MAX_OUTPUT_CHARS_ABUSIVE, USER_PROFILE_DIR, POLITICAL_DETECT_FILE, JAILBREAK_OUTPUT_RE, JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE, SENSITIVE_KEYWORDS_RE, } = require('./core/constants');
 const { resolvePersona, loadPersonalSkill } = require('./persona/persona'); // 人格解析 + 技能文件加载
 const { calculateRetaliationScore } = require('./behavior/retaliation'); // 攻击性评分（决定回怼力度）
+const { RARE_PROVOCATION_PROMPT, parseRareProvocationDecision } = require('./behavior/rare-provocation');
 const { requestChatCompletions, // 通用 LLM 请求（含 fallback 链）
 requestOpenAIResponsesWithSearch, // OpenAI Responses API（联网搜索）
 isVisionModel, // 判断模型是否支持视觉
@@ -256,7 +257,7 @@ async function prepareChatIdentityStage(session, userText, ctx, options) {
     const isRandomTriggered = !!options.randomTriggered;
     const rareProvocation = isRareProvocation(cleanInput);
     const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput);
-    const wideRareHit = isWideRareProvocation(cleanInput) || japanLinked;
+    const wideRareHit = rareProvocation || isWideRareProvocation(cleanInput) || japanLinked;
     const testMode = require('fs').existsSync(TEST_MODE_FILE) && hasAdminPermission(session);
     const channelKey = getChannelKey(session);
     await clearGroupMemoryIfExpired(session, channelKey);
@@ -441,6 +442,16 @@ async function executeChatModelStage(input) {
 // 执行同一获准轮次的视觉注入、工具调用、输出检查和原图事实回写。
 async function executeOwnedChatModelStage(input, imageTurn) {
     const { session, ctx, options, messages, isolatedUserMessage, cleanInput, isRandomTriggered, hostile, currentUserId, channelKey, systemPrompt, currentUserMessage, userName, retaliationLevel, rareConfirmed, } = input;
+    let semanticRareConfirmed = rareConfirmed;
+    // 模型正文一进入聊天链路就移除内部判定，覆盖工具分流等提前返回的路径。
+    const readTurnRareDecision = (text) => {
+        const decision = parseRareProvocationDecision(text);
+        if (decision.confirmed !== null)
+            semanticRareConfirmed = decision.confirmed;
+        if (options.meta)
+            options.meta.rareConfirmed = semanticRareConfirmed;
+        return decision.reply;
+    };
     // 元数据只随实际含原图的调用传递，避免文字降级被误记为视觉尝试。
     const callTurnModel = async (turnMessages, randomTriggered, extra = {}, tools = null) => {
         if (options.imageEvidenceDeadline && Date.now() >= options.imageEvidenceDeadline)
@@ -458,7 +469,12 @@ async function executeOwnedChatModelStage(input, imageTurn) {
         } : {};
         const imageBudget = options.imageEvidenceDeadline ? { signal: options.imageEvidenceSignal,
             _timeoutMs: Math.max(1, Math.min(Number(extra._timeoutMs) || 40000, options.imageEvidenceDeadline - Date.now())) } : {};
-        return await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard, ...imageBudget }, tools);
+        const result = await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard, ...imageBudget }, tools);
+        if (typeof result === 'string')
+            return readTurnRareDecision(result);
+        if (result.message?.content)
+            result.message.content = readTurnRareDecision(result.message.content);
+        return result;
     };
     const callTurnText = async (turnMessages, randomTriggered = false, extra = {}) => toChatText(await callTurnModel(asChatToolFlowMessages(turnMessages), randomTriggered, extra));
     let wasVisionRequest = false;
@@ -577,7 +593,7 @@ async function executeOwnedChatModelStage(input, imageTurn) {
         currentUserMessage,
         userName,
         retaliationLevel,
-        rareConfirmed,
+        rareConfirmed: semanticRareConfirmed,
         usedReminderActionTool,
         usedUploadedFileVariantTool,
         callModel: callTurnText,
@@ -760,6 +776,7 @@ async function chat(session, userText, ctx, options = {}) {
     const generationRequestMessage = createChatPromptGenerationRequestMessage(cleanInput, GENERATION_REQUEST_RE);
     if (generationRequestMessage)
         messages.push(generationRequestMessage);
+    // 所有聊天都交给主模型做跨语言语义判定；本地规则仅提供明确表达的兜底。
     let rareConfirmed = wideRareHit;
     if (rareConfirmed && !isRareProvocation(cleanInput) && !japanLinked) {
         try {
@@ -779,6 +796,7 @@ async function chat(session, userText, ctx, options = {}) {
     const rareContextMessage = createChatPromptRareContextMessage({ rareConfirmed, retaliationLevel, rareProvocation });
     if (rareContextMessage)
         messages.push(rareContextMessage);
+    messages.push({ role: 'system', content: RARE_PROVOCATION_PROMPT });
     // 注入对话摘要（仅在长对话时作为背景参考）
     const convKey = getConversationKey(session);
     const convDisk = readConversationDisk(convKey);

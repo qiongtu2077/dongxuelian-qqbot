@@ -35,6 +35,7 @@ const {
 const { getRecentAssistantReplies, channelSharedCache } = require('../conversation') as typeof import('../conversation')
 const { classifySceneItemsForActive } = require('../routing/group-scene-index') as typeof import('../routing/group-scene-index')
 const { parseRandomReplyDecision } = require('../behavior/random-reply-mode') as typeof import('../behavior/random-reply-mode')
+const { parseRareProvocationDecision } = require('../behavior/rare-provocation') as typeof import('../behavior/rare-provocation')
 const { generatePersonaFallbackReply } = require('../persona/persona-fallback') as typeof import('../persona/persona-fallback')
 
 interface ChatMessage {
@@ -213,6 +214,18 @@ async function finalizeChatReply({
 }: FinalizeChatReplyOptions): Promise<FinalizeChatReplyResult> {
   const guardSession: ReplyGuardSession = session || {}
   const isRandomTriggered = options.randomTriggered === true
+  // 在清洗、重试和历史保存之前取出语义判定，后续模型回复也复用同一解析器。
+  const readRareDecision = (text: string): string => {
+    const decision = parseRareProvocationDecision(text)
+    if (decision.confirmed !== null) rareConfirmed = decision.confirmed
+    if (options.meta) options.meta.rareConfirmed = rareConfirmed
+    return decision.reply
+  }
+  // 重试和人格兜底同样移除内部标记，避免进入可见回复。
+  const callRareAwareModel: CallModelFn = async (...args) => readRareDecision(await callModel(...args))
+  reply = readRareDecision(reply)
+  // 上游只输出判定标记时仍给出可见回复，不能让非空协议正文变成静默丢消息。
+  if (!reply.trim()) reply = rareConfirmed ? '骂谁罕见。' : '这句我先重组织一下。'
   reply = await retryUnsafeReply({
     reply,
     messages,
@@ -222,7 +235,7 @@ async function finalizeChatReply({
     cleanInput,
     currentUserId,
     channelKey,
-    callModel,
+    callModel: callRareAwareModel,
     usedReminderActionTool,
     usedUploadedFileVariantTool,
   })
@@ -250,7 +263,7 @@ async function finalizeChatReply({
       userName,
       reason: '最终回复仍包含内部草稿或工具计划',
       maxChars: getReplyMaxChars(retaliationLevel),
-      callModel,
+      callModel: callRareAwareModel,
       isRandom: isRandomTriggered,
     })
     finalReply = personaFallback || (retaliationLevel >= 1 ? '这句先别绕了，换个说法。' : '这句我先重组织一下。')
@@ -265,7 +278,7 @@ async function finalizeChatReply({
       userName,
       reason: '最终回复仍泄漏内部上下文',
       maxChars: getReplyMaxChars(retaliationLevel),
-      callModel,
+      callModel: callRareAwareModel,
       isRandom: isRandomTriggered,
     })
     finalReply = personaFallback || (retaliationLevel >= 1 ? '这句先别绕了，换个说法。' : '这句我重组织一下。')
@@ -288,7 +301,7 @@ async function finalizeChatReply({
         userName,
         reason: '最终回复仍包含禁用表达',
         maxChars: MAX_OUTPUT_CHARS_FRIENDLY,
-        callModel,
+        callModel: callRareAwareModel,
         isRandom: isRandomTriggered,
       })
       finalReply = personaFallback || '这句我接不了，换个说法吧。'
@@ -306,7 +319,7 @@ async function finalizeChatReply({
         userName,
         reason: '最终回复仍和近期回复过于相似',
         maxChars: MAX_OUTPUT_CHARS_FRIENDLY,
-        callModel,
+        callModel: callRareAwareModel,
         isRandom: isRandomTriggered,
       })
       finalReply = personaFallback || '换个说法吧，别一直绕同一句。'
