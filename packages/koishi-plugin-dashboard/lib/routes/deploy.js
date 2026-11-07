@@ -66,23 +66,22 @@ function setRemoteDeployStage(task, stage) {
     task.updatedAt = Date.now();
     writeRemoteDeployTask(task);
 }
-// Moves the task into a terminal success or failed state exactly once.
-function finishRemoteDeployTask(task, state, stage, error = '') {
-    if (task.state !== 'running')
+// Accepts a matching remote terminal result even when an earlier local transport error marked failure.
+function finishRemoteDeployTask(task, state, stage, error = '', remoteConfirmed = false) {
+    if (task.remoteResultConfirmed || (task.state !== 'running' && !remoteConfirmed))
         return;
     task.state = state;
+    task.remoteResultConfirmed = remoteConfirmed;
     task.stage = stage;
     task.error = state === 'failed' ? sanitizeDeployError(error) : '';
     task.updatedAt = Date.now();
     task.finishedAt = task.updatedAt;
     writeRemoteDeployTask(task);
 }
-// Reads a durable task and converts an expired running task into a failed terminal state.
+// Reads durable state; the progress route checks the remote outcome before applying the local deadline.
 function readRemoteDeployTask(taskId) {
     try {
         const task = JSON.parse(fs.readFileSync(deployTaskStateFile(taskId), 'utf8'));
-        if (task.state === 'running' && Date.now() >= task.expiresAt)
-            finishRemoteDeployTask(task, 'failed', 'timeout', '远程部署超过服务端 30 分钟期限');
         return task;
     }
     catch {
@@ -114,31 +113,43 @@ function writeSuccessfulReleaseRecord(task) {
 }
 // Pulls the detached target-side activation result into the local durable task state.
 function refreshRemoteDeployTask(task) {
-    if (task.state !== 'running' || !task.server || !task.appDir)
+    if (task.state === 'success' || task.remoteResultConfirmed || !task.server || !task.appDir)
         return;
     try {
         const resultFile = dh.remoteJoin(task.appDir, 'data', 'deploy-tasks', task.taskId + '.remote.json');
         const output = execSync(dh.sshCommand(task.server, `test -f ${shellQuote(resultFile)} && cat ${shellQuote(resultFile)}`), { encoding: 'utf8', timeout: 5000, maxBuffer: 128 * 1024 });
         const result = JSON.parse(String(output || '{}'));
+        // 早期锁和清单校验失败允许空哈希；成功结果必须与冻结发布物完全一致。
+        if (!['running', 'success', 'failed'].includes(String(result.state)) || result.releaseId !== task.releaseId
+            || (result.manifestHash && result.manifestHash !== task.manifestHash)
+            || (result.contentHash && result.contentHash !== task.contentHash)
+            || (result.state === 'success' && (result.manifestHash !== task.manifestHash || result.contentHash !== task.contentHash))) {
+            recordRemoteDeployWarning(task, 'remote_result_identity_mismatch', '远端回执状态或发布标识与当前任务不一致');
+            return;
+        }
+        if (result.state === 'running' && Date.now() >= task.expiresAt)
+            return;
         task.stage = String(result.stage || task.stage);
         task.updatedAt = Date.now();
         task.rolledBack = !!result.rolledBack;
         if (result.rollbackState)
             task.rollbackState = result.rollbackState;
-        if (result.releaseId)
-            task.releaseId = result.releaseId;
-        if (result.manifestHash)
-            task.manifestHash = result.manifestHash;
-        if (result.contentHash)
-            task.contentHash = result.contentHash;
         if (result.state === 'success') {
-            writeSuccessfulReleaseRecord(task);
-            finishRemoteDeployTask(task, 'success', task.stage);
+            finishRemoteDeployTask(task, 'success', task.stage, '', true);
+            try {
+                writeSuccessfulReleaseRecord(task);
+            }
+            catch (error) {
+                recordRemoteDeployWarning(task, 'release_record_write_failed', error);
+            }
         }
         else if (result.state === 'failed') {
-            finishRemoteDeployTask(task, 'failed', task.stage, result.error || '目标服务器发布失败');
+            finishRemoteDeployTask(task, 'failed', task.stage, result.error || '目标服务器发布失败', true);
         }
         else {
+            task.state = 'running';
+            task.error = '';
+            task.finishedAt = 0;
             writeRemoteDeployTask(task);
         }
     }
@@ -155,6 +166,12 @@ function runSafeDeployCommands(task, commands, onComplete) {
         const current = commands[index];
         setRemoteDeployStage(task, current.stage);
         exec(current.command, { cwd: path.join(PLUGIN_ROOT, '..', '..'), timeout: current.timeout, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+            // 查询接口可先读到远端完成结果；迟到的命令回调必须重新读取持久状态。
+            const latest = readRemoteDeployTask(task.taskId);
+            if (latest)
+                Object.assign(task, latest);
+            if (task.state !== 'running')
+                return;
             if (stdout)
                 try {
                     fs.appendFileSync(path.join(DEPLOY_TASKS_DIR, task.taskId + '.log'), stdout.trim() + '\n', 'utf8');
@@ -169,6 +186,12 @@ function runSafeDeployCommands(task, commands, onComplete) {
                 catch (logError) {
                     recordRemoteDeployWarning(task, 'stderr_log_write_failed', logError);
                 }
+            if (error && current.stage === 'start_detached_activation') {
+                setRemoteDeployStage(task, 'awaiting_remote_result');
+                recordRemoteDeployWarning(task, 'activation_start_unconfirmed', error);
+                refreshRemoteDeployTask(task);
+                return;
+            }
             if (error)
                 return finishRemoteDeployTask(task, 'failed', current.stage, error);
             index += 1;
@@ -276,7 +299,7 @@ function handlePostSafeDeployRun(req, res) {
                 { stage: 'prepare_remote_version', command: dh.sshCommand(task.server, `mkdir -p ${shellQuote(remoteReleaseRoot)} ${shellQuote(path.dirname(remoteResult))} && rm -rf ${shellQuote(remoteNext)}`), timeout: 30000 },
                 { stage: 'upload_release', command: dh.scpCommand(release.releaseDir, dh.scpRemoteTarget(task.server, remoteNext), { recursive: true }), timeout: 10 * 60 * 1000 },
                 { stage: 'verify_remote_manifest', command: dh.sshCommand(task.server, `node ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'verify-release-manifest.js'))} ${shellQuote(remoteNext)}`), timeout: 3 * 60 * 1000 },
-                { stage: 'start_detached_activation', command: dh.sshCommand(task.server, `systemd-run --unit=${shellQuote(unitName)} --collect --quiet --property=Type=oneshot --property=TimeoutStartSec=1800 /bin/bash ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'activate-dashboard-release.sh'))} ${shellQuote(task.appDir)} ${shellQuote(release.releaseId)} ${shellQuote(remoteResult)} ${shellQuote(task.baselineManifestHash)}`), timeout: 30000 },
+                { stage: 'start_detached_activation', command: dh.sshCommand(task.server, `systemd-run --unit=${shellQuote(unitName)} --collect --quiet --no-block --property=Type=oneshot --property=TimeoutStartSec=1800 /bin/bash ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'activate-dashboard-release.sh'))} ${shellQuote(task.appDir)} ${shellQuote(release.releaseId)} ${shellQuote(remoteResult)} ${shellQuote(task.baselineManifestHash)}`), timeout: 30000 },
             ];
             runSafeDeployCommands(task, commands, () => {
                 setRemoteDeployStage(task, 'target_activation');
@@ -305,6 +328,8 @@ function handleGetDeployProgress(req, res, pathname) {
         if (!task || !fs.existsSync(logFile))
             return json(res, { ok: false, message: '部署任务不存在', code: 'DEPLOY_TASK_NOT_FOUND' }, 404);
         refreshRemoteDeployTask(task);
+        if (task.state === 'running' && Date.now() >= task.expiresAt)
+            finishRemoteDeployTask(task, 'failed', 'timeout', '远程部署超过服务端 30 分钟期限');
         const stat = fs.statSync(logFile);
         const start = Math.max(0, stat.size - dh.MAX_DEPLOY_TASK_LOG_BYTES);
         const fd = fs.openSync(logFile, 'r');
