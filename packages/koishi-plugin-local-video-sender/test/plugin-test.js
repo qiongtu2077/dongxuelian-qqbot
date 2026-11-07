@@ -1621,6 +1621,120 @@ async function testInflightReuse() {
   })
 }
 
+// 验证十群在真实准入规则下争用独占位，缓存及共享下载的等待者均持久入队。
+async function testTenGroupResourceContention() {
+  section('ten-group resource contention with warm and cold cache')
+  const { decideAdmission } = require(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dongxuelian-ai', 'lib', 'resource-scheduler', 'admission.js'))
+  for (const warmCache of [true, false]) {
+    await withIsolatedPlugin(async ({ plugin }) => {
+      const ctx = makeCtx()
+      const counters = { probes: 0, downloads: 0 }
+      const store = makeVideoTaskStore()
+      const releaseFirst = deferred()
+      const releaseFollower = deferred()
+      let owner = null
+      let overlappingGates = 0
+      const resourceModules = {
+        // 只模拟机器资源快照；排队决策运行生产准入函数。
+        admitTask(input) {
+          return decideAdmission(input, { resourceState: 'green', botMode: 'normal', memAvailableMb: 800, locked: !!owner, running: owner })
+        },
+        // 模拟外部独占锁，检查真实插件和队列是否同时启动多个发送者。
+        async acquireResourceGate(input) {
+          if (owner) overlappingGates += 1
+          owner = { taskId: input.taskId }
+          return { updateStep() {}, release() { owner = null } }
+        },
+      }
+      if (warmCache) {
+        await plugin.downloadAndSend(makeCtx(), makeSession({ guildId: 'seed', channelId: 'seed' }), TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000, counters))
+      }
+      const deps = makeDeps(1_000_000, 1_000_000, counters, { resourceGate: undefined, resourceModules, taskStore: store })
+      const sessions = Array.from({ length: 10 }, (_, index) => {
+        const session = makeSession({ guildId: `ten-${index}`, channelId: `ten-${index}` })
+        // 固定首发和第一个共享接收者的发送窗口，确保其他群确实遇到资源忙。
+        session.send = async message => {
+          session.sent.push(String(message))
+          if (String(message).includes('<video')) {
+            if (index === 0) await releaseFirst.promise
+            if (index === 1 && !warmCache) await releaseFollower.promise
+          }
+          return message
+        }
+        return session
+      })
+      const requests = [plugin.downloadAndSend(ctx, sessions[0], TEST_URL, TEST_BV, deps)]
+      const label = warmCache ? 'warm cache' : 'shared first download'
+      try {
+        await waitFor(() => sessions[0].sent.some(message => message.includes('<video')))
+        requests.push(...sessions.slice(1).map(session => plugin.downloadAndSend(ctx, session, TEST_URL, TEST_BV, deps)))
+        if (warmCache) await waitFor(() => store.tasks.size === 9)
+        else await waitFor(() => ctx.logs.filter(entry => entry.msg.includes('event="input_normalized"')).length === 10)
+        releaseFirst.resolve()
+        if (!warmCache) await waitFor(() => store.tasks.size === 8)
+        releaseFollower.resolve()
+        const results = await Promise.all(requests)
+        await waitFor(() => [...store.tasks.values()].every(task => task.status === 'done'), 20_000)
+        const tasks = [...store.tasks.values()]
+        const videos = sessions.map(session => session.sent.filter(message => message.includes('<video')))
+        check(`${label}: all ten groups receive exactly one video`, videos.every(messages => messages.length === 1), JSON.stringify(videos.map(messages => messages.length)))
+        check(`${label}: one probe and download serve all ten groups`, counters.probes === 1 && counters.downloads === 1 && new Set(videos.flat()).size === 1, JSON.stringify(counters))
+        check(`${label}: resource-busy requests enter distinct completed tasks`, tasks.length === (warmCache ? 9 : 8) && new Set(tasks.map(task => task.id)).size === tasks.length && new Set(tasks.map(task => task.payload.targetId)).size === tasks.length, JSON.stringify(tasks))
+        check(`${label}: no user sees video-028 or a false failure`, results.every(result => result === undefined) && sessions.every(session => session.sent.every(message => !message.includes('video-028'))) && !ctx.logs.some(entry => entry.msg.includes('user_error_id=video-028')), JSON.stringify(results))
+        check(`${label}: all ten traces have one successful terminal`, ctx.logs.filter(entry => entry.msg.includes('event="terminal_status"')).length === 10 && !ctx.logs.some(entry => entry.msg.includes('event="terminal_status"') && !entry.msg.includes('status="done"')), JSON.stringify(ctx.logs.filter(entry => entry.msg.includes('event="terminal_status"'))))
+        check(`${label}: exclusive gate is never overlapped and is released`, overlappingGates === 0 && owner === null, JSON.stringify({ overlappingGates, owner }))
+      } finally {
+        releaseFirst.resolve()
+        releaseFollower.resolve()
+        await Promise.allSettled(requests)
+      }
+    })
+  }
+}
+
+// 验证缓存请求的队列故障不会伪报入队，等待期间缓存过期后可重新下载。
+async function testQueuedCacheBoundaries() {
+  section('cached queue failures and expiry')
+  for (const [label, taskStore, expected] of [
+    ['unavailable', {}, 'video-028'],
+    ['persist failed', makeVideoTaskStore({ failBeforePersist: true }), 'video-029'],
+    ['full', { ...makeVideoTaskStore(), countResourceTasksByKind: () => 10 }, '视频队列已满'],
+  ]) {
+    await withIsolatedPlugin(async ({ plugin }) => {
+      const ctx = makeCtx()
+      const counters = { probes: 0, downloads: 0 }
+      await plugin.downloadAndSend(ctx, makeSession({ guildId: 'seed', channelId: 'seed' }), TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000, counters))
+      const session = makeSession({ guildId: 'waiting', channelId: 'waiting' })
+      const deps = makeDeps(1_000_000, 1_000_000, counters, { resourceGate: undefined, resourceModules: makeResourceModules({ decision: 'queue', reason: 'exclusive slot is busy', resourceState: 'green', memAvailableMb: 800 }), taskStore })
+      await plugin.downloadAndSend(ctx, session, TEST_URL, TEST_BV, deps)
+      check(`${label}: cached request reports exact queue failure without sending video`, session.sent.some(message => message.includes(expected)) && !session.sent.some(message => message.includes('<video')) && counters.downloads === 1, JSON.stringify(session.sent))
+      check(`${label}: cached request never reports successful persistence`, !ctx.logs.some(entry => entry.msg.includes('event="queue_persisted"')), JSON.stringify(ctx.logs))
+    })
+  }
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const ctx = makeCtx()
+    const counters = { probes: 0, downloads: 0 }
+    const store = makeVideoTaskStore()
+    let ready = false
+    await plugin.downloadAndSend(ctx, makeSession({ guildId: 'seed', channelId: 'seed' }), TEST_URL, TEST_BV, makeDeps(1_000_000, 1_000_000, counters))
+    const session = makeSession({ guildId: 'expired-cache', channelId: 'expired-cache' })
+    const deps = makeDeps(1_000_000, 1_000_000, counters, {
+      resourceGate: undefined,
+      resourceModules: {
+        // 模拟资源恢复，实际缓存清理、队列重试和下载均执行生产实现。
+        admitTask() { return { decision: ready ? 'run_now' : 'queue', reason: 'fixture resource state', resourceState: 'green', memAvailableMb: 800 } },
+        async acquireResourceGate() { return { updateStep() {}, release() {} } },
+      },
+      taskStore: store,
+    })
+    await plugin.downloadAndSend(ctx, session, TEST_URL, TEST_BV, deps)
+    await plugin.cleanupVideoCache(ctx, plugin.getVideoCacheStatus().items[0].expiresAt + 1)
+    ready = true
+    await waitFor(() => [...store.tasks.values()].some(task => task.status === 'done'), 4000)
+    check('queued cache expiry downloads once more and delivers once', counters.probes === 2 && counters.downloads === 2 && session.sent.filter(message => message.includes('<video')).length === 1, JSON.stringify({ counters, sent: session.sent }))
+  })
+}
+
 // 验证不同短链经过一次解析后归一到同一个 BV 缓存。
 async function testShortLinkNormalization() {
   section('short-link normalization')
@@ -2241,6 +2355,8 @@ async function run() {
   await testDuplicateAndCacheReuse()
   await testExplicitUncertainCacheRetry()
   await testInflightReuse()
+  await testTenGroupResourceContention()
+  await testQueuedCacheBoundaries()
   await testShortLinkNormalization()
   await testShortLinkStructuredFailures()
   await testCleanupAndSafety()
