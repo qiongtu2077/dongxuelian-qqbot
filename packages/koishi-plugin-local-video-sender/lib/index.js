@@ -233,7 +233,8 @@ async function acquireVideoResourceGate(ctx, session, source, deps = {}, existin
                     minimumMemoryMb: VIDEO_MIN_MEM_MB,
                     decision: admission.decision,
                 });
-        logVideoUserError(ctx, userError);
+        if (!canOnlyQueue)
+            logVideoUserError(ctx, userError);
         return { ok: false, busy: canOnlyQueue, taskId, userError };
     }
     try {
@@ -968,7 +969,7 @@ async function sendCachedVideo(ctx, session, entry, trace) {
         const previewOutcome = await safeSend(ctx, session, entry.infoMessage, 'cached preview');
         writeVideoTrace(ctx, trace, 'preview_send_finished', { stage: 'cached_preview', ok: previewOutcome.status === 'confirmed', reason: previewOutcome.status });
         if (previewOutcome.status === 'uncertain') {
-            return { status: 'failed', reason: 'cached_preview_send_uncertain' };
+            return { status: 'uncertain', reason: 'cached_preview_send_uncertain' };
         }
         if (previewOutcome.status === 'failed') {
             const userError = previewOutcome.reason === 'rejected'
@@ -981,7 +982,7 @@ async function sendCachedVideo(ctx, session, entry, trace) {
         writeVideoTrace(ctx, trace, 'video_send_finished', { stage: 'cached_video', ok: videoOutcome.status === 'confirmed', reason: videoOutcome.status });
         entry.lastSendStatus = videoOutcome.status;
         if (videoOutcome.status === 'uncertain') {
-            return { status: 'failed', reason: 'cached_video_send_uncertain' };
+            return { status: 'uncertain', reason: 'cached_video_send_uncertain' };
         }
         if (videoOutcome.status === 'failed') {
             const userError = videoOutcome.reason === 'rejected'
@@ -1397,14 +1398,16 @@ async function releaseAcquiredVideoGate(ctx, session, handle, reason, taskId, op
     }
 }
 // 给缓存命中请求单独申请资源锁并发送磁盘视频。
-async function sendCachedVideoWithGate(ctx, session, entry, source, deps, trace) {
-    const taskId = buildVideoTaskId();
+async function sendCachedVideoWithGate(ctx, session, entry, url, source, deps, trace, existingTaskId = '') {
+    const taskId = existingTaskId || buildVideoTaskId();
     const taskTrace = trace ? videoTraceModule.withVideoTraceTask(trace, taskId) : undefined;
     const gateResult = await acquireVideoResourceGate(ctx, session, source, deps, taskId, taskTrace);
-    if (!gateResult.ok)
-        return (gateResult.userError || buildVideoUserError({ id: 'video-003' })).message;
+    if (!gateResult.ok) {
+        const userError = gateResult.userError || buildVideoUserError({ id: 'video-003' });
+        return gateResult.busy ? { kind: 'busy', taskId, p1Url: url, keys: entry.aliases, userError } : { kind: 'failed', userError };
+    }
     const gateHandle = gateResult.handle || null;
-    let sendResult = { status: 'failed', reason: 'cached_send_not_started' };
+    let sendResult;
     try {
         gateHandle?.updateStep('video_cached_send');
         sendResult = await sendCachedVideo(ctx, session, entry, taskTrace);
@@ -1421,12 +1424,10 @@ async function sendCachedVideoWithGate(ctx, session, entry, source, deps, trace)
     finally {
         await releaseAcquiredVideoGate(ctx, session, gateHandle, 'external-video-cache-finally', taskId, deps.gateAdminAlertOptions, taskTrace);
     }
-    writeVideoTrace(ctx, taskTrace, 'terminal_status', {
-        status: sendResult.status === 'done' ? 'done' : 'failed',
-        errorId: sendResult.status === 'failed' ? sendResult.userError?.id : undefined,
-        reason: sendResult.status === 'done' ? 'cached_video_sent' : sendResult.reason,
-    });
-    return sendResult.status === 'failed' ? sendResult.userError?.message : undefined;
+    // 终态由直接请求或队列统一写入；资源忙和发送结果未知都不能误报成功。
+    return sendResult.status === 'failed'
+        ? { kind: 'failed', userError: sendResult.userError }
+        : { kind: 'sent', sendStatus: sendResult.status === 'done' ? 'confirmed' : 'uncertain' };
 }
 // 创建一个视频运行目录，并把失败转换为指定的目录错误编号。
 async function ensureVideoDirectory(ctx, fsApi, directory, errorId) {
@@ -1737,7 +1738,11 @@ async function executeQueuedVideoTask(ctx, task, deps) {
     if (normalizeBiliP1Url(p1Url) !== p1Url || !/^BV[0-9A-Za-z]{10}$/i.test(bvId) || !traceId || !keys.length) {
         return { status: 'failed', reason: 'invalid_video_task_payload' };
     }
-    const result = await processInitialVideoRequest(ctx, session, p1Url, bvId, keys, null, deps, task.id, trace);
+    // 排队期间其他群可已完成下载；执行时重新校验缓存，过期才走下载路径。
+    const cached = findVideoFileCache(ctx, keys);
+    const result = cached
+        ? await sendCachedVideoWithGate(ctx, session, cached, p1Url, bvId, deps, trace, task.id)
+        : await processInitialVideoRequest(ctx, session, p1Url, bvId, keys, null, deps, task.id, trace);
     if (result.kind === 'busy')
         return { status: 'retry', reason: 'resource_busy' };
     if (result.kind === 'failed')
@@ -1830,16 +1835,16 @@ async function enqueueBusyVideoRequest(ctx, session, result, deps, trace) {
     return false;
 }
 // 把共享首次处理结果投递给等待中的其他群请求。
-async function deliverSharedVideoResult(ctx, session, result, source, deps, trace) {
+async function deliverSharedVideoResult(ctx, session, result, url, source, deps, trace) {
     if (result.kind === 'cached')
-        return sendCachedVideoWithGate(ctx, session, result.entry, source, deps, trace);
+        return sendCachedVideoWithGate(ctx, session, result.entry, url, source, deps, trace);
+    // 共享的忙状态只共享视频信息，各群必须持有独立任务编号和发送目标。
+    if (result.kind === 'busy')
+        return { ...result, taskId: buildVideoTaskId() };
     if (result.kind === 'rejected') {
         await sendRejectedVideo(ctx, session, result.infoMessage, result.userError.message);
-        return undefined;
     }
-    if (result.kind === 'failed')
-        return result.userError.message;
-    return undefined;
+    return result;
 }
 // 找到任一 BV/alias 正在执行的首次处理任务。
 function findInflightDownload(keys) {
@@ -1913,33 +1918,14 @@ async function downloadAndSend(ctx, session, url, source = url, deps = {}, optio
         return undefined;
     }
     const recentEntry = canRetryUncertainCache ? null : rememberRecentParse(session, keys, now);
-    if (cached) {
-        const result = await sendCachedVideoWithGate(ctx, session, cached, source, deps, trace);
-        if (result)
-            forgetRecentParse(session, recentEntry);
-        writeVideoTrace(ctx, trace, 'terminal_status', { status: result ? 'failed' : 'done', reason: result ? 'cached_send_failed' : 'cached_send_complete' });
-        return result;
-    }
-    const inflight = findInflightDownload(keys);
-    if (inflight) {
-        const result = await inflight;
-        if (result.kind === 'busy') {
-            const queued = await enqueueBusyVideoRequest(ctx, session, { ...result, taskId: buildVideoTaskId() }, deps, trace);
-            if (!queued)
-                forgetRecentParse(session, recentEntry);
-            if (!queued)
-                writeVideoTrace(ctx, trace, 'terminal_status', { status: 'failed', reason: 'queue_not_persisted' });
-            return undefined;
-        }
-        const delivered = await deliverSharedVideoResult(ctx, session, result, source, deps, trace);
-        if (result.kind === 'failed' || delivered)
-            forgetRecentParse(session, recentEntry);
-        recordDirectVideoTerminal(ctx, trace, result, delivered ? 'shared_result_delivery_failed' : undefined);
-        return delivered;
-    }
-    let work;
-    work = processInitialVideoRequest(ctx, session, resolvedInput.p1Url, source, keys, recentEntry, deps, '', trace);
-    const registeredKeys = registerInflightDownload(keys, work);
+    const inflight = cached ? null : findInflightDownload(keys);
+    // 缓存命中、共享下载和首次下载复用同一结果处理，避免忙状态绕过持久队列。
+    const work = cached
+        ? sendCachedVideoWithGate(ctx, session, cached, resolvedInput.p1Url, source, deps, trace)
+        : inflight
+            ? inflight.then(result => deliverSharedVideoResult(ctx, session, result, resolvedInput.p1Url, source, deps, trace))
+            : processInitialVideoRequest(ctx, session, resolvedInput.p1Url, source, keys, recentEntry, deps, '', trace);
+    const registeredKeys = cached || inflight ? [] : registerInflightDownload(keys, work);
     try {
         const result = await work;
         if (result.kind === 'failed') {
