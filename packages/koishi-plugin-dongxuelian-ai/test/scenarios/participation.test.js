@@ -4,6 +4,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const { OneBot } = require('koishi-plugin-adapter-onebot')
+const { Session } = require('@satorijs/core')
 const { withScenario } = require('./_setup')
 
 // 使用已安装的真实 OneBot Internal，仅替换网络传输，记录实际协议操作。
@@ -116,6 +117,25 @@ async function run(t) {
     assert.equal(closed.sent.length, 0)
     assert.equal(data.readJson('ai-repeat-enabled.json')['10001'], true)
     t.check('scenario participation gates real middleware and hot-loads first-enable repeat defaults', true)
+  })
+
+  await withScenario({}, async ({ data, harness }) => {
+    const events = []
+    const { bot } = makeBot(session => events.push(session))
+    await harness.ctx.emit('bot-connect', bot)
+    // 复现已安装 Satori 3.7.0 的真实 getter：生命周期事件没有 channel。
+    const lifecycle = Object.assign(Object.create(Session.prototype), { event: { type: 'login-added' } })
+    assert.throws(() => lifecycle.isDirect, /reading 'type'/)
+    bot.dispatch(lifecycle)
+    assert.equal(events.length, 1, 'channel-less lifecycle must pass without probing isDirect')
+    const groupNotice = Object.assign(Object.create(Session.prototype), { event: { type: 'guild-member-removed', guild: { id: '10001' } } })
+    bot.dispatch(groupNotice)
+    assert.equal(events.length, 1, 'disabled group notice must remain blocked')
+    writePolicy(data, { 10001: true })
+    bot.dispatch(groupNotice)
+    assert.equal(events.length, 2, 'enabled group notice without a channel must pass')
+    assert.equal(harness.logs.filter(item => item.name === 'participation').length, 0)
+    t.check('scenario participation supports real Satori lifecycle and guild-only event accessors', true)
   })
 }
 
