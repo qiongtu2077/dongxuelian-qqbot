@@ -72,6 +72,11 @@ function buildCoverageMap(AI_ROOT) {
     needles: ['scenario: managed capability fallback', "['invalid JSON'", 'all managed steps error is sanitized'],
   },
   {
+    behavior: 'shared model thinking policy and cross-provider isolation',
+    file: path.join(AI_ROOT, 'test', 'scenarios', 'model-thinking.test.js'),
+    needles: ['scenario: shared model thinking policy', 'returns visible answer after quota failure', 'default request omits all thinking controls', 'GLM automatic fields stay local', 'new provider real report entry shares model policy'],
+  },
+  {
     behavior: 'forward summary resolution',
     file: path.join(AI_ROOT, 'test', 'scenarios', 'forward.test.js'),
     needles: ['scenario: forward summary resolution', 'scenario forward nested CQ calls inner id', 'scenario forward empty array returns empty summary'],

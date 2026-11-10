@@ -319,7 +319,7 @@ async function generatePetBridgeChatReply(input: PetBridgeChatInput): Promise<Pe
     messages.push({ role: 'user', content: input.text })
     const extraBody: Record<string, unknown> = {}
     if (config.searchEnabled) extraBody.enable_search = true
-    if (getThinkingEnabled()) extraBody.enable_thinking = true
+    extraBody._thinkingEnabled = getThinkingEnabled()
     gateHandle?.updateStep('pet_bridge_model')
     const reply = await requestChatCompletions(messages, config, extraBody)
     return { ok: true, reply }

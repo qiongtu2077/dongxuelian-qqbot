@@ -50,6 +50,7 @@ async function runModuleContract(context) {
     constants: path.join(LIB, 'core', 'constants'),
     frontmatter: path.join(LIB, 'core', 'frontmatter'),
     onebotEndpoint: path.join(LIB, 'core', 'onebot-endpoint'),
+    modelThinking: path.join(LIB, 'core', 'model-thinking'),
     participationPolicy: path.join(LIB, 'core', 'participation-policy'),
     participationGuard: path.join(LIB, 'lifecycle', 'participation-guard'),
     dashboardParticipation: path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'participation'),
@@ -278,6 +279,7 @@ async function runModuleContract(context) {
     onebotEndpoint: [
       'resolveOneBotWsUrl',
     ],
+    modelThinking: ['buildModelThinkingArgs', 'resolveModelThinkingFields', 'supportsModelReasoningEffort'],
     redactor: [
       'redactSensitiveText',
     ],
@@ -478,6 +480,7 @@ async function runModuleContract(context) {
       'buildRandomSendOptions', 'isRandomReplyFresh', 'isSafeSendReplyFresh',
     ],
     api: [
+      'buildModelThinkingArgs',
       'requestChatCompletions', 'freezeChatRoute', 'getChatFailureMetadata', 'normalizeMessagesForProvider', 'buildFallbackConfig', 'getFallbackSteps',
       'buildResponsesInput', 'extractResponsesText', 'requestOpenAIResponsesWithSearch',
       'isVisionModel', 'callGetImage', 'callGetForwardMsg', 'sendForwardMsg', 'getGroupMemberInfo', 'getGroupInfo', 'readImageAsBase64',

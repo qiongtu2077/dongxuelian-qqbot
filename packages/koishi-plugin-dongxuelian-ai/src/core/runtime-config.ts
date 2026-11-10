@@ -6,6 +6,7 @@
 const { SEARCH_ENABLED_FILE, ADMIN_IDS_FILE } = require('./constants') as typeof import('./constants')
 const fs = require('fs')
 const fsp = require('fs/promises')
+const { buildModelThinkingArgs } = require('./model-thinking') as typeof import('./model-thinking')
 const {
   isAiCapability,
   resolveCapabilityRuntimeSteps,
@@ -50,15 +51,6 @@ function parseRuntimeEnabledText(value: string = ''): boolean {
   return /^(?:1|true|on|yes|\u5f00|\u5f00\u542f)$/i.test(String(value).trim())
 }
 
-function getRuntimeBaseHostname(baseURL: string = ''): string {
-  try { return new URL(String(baseURL || '')).hostname.toLowerCase() } catch { return '' }
-}
-
-function isRuntimeDashScopeConfig(config: Partial<RuntimeConfig> = {}): boolean {
-  const hostname = getRuntimeBaseHostname(config.baseURL)
-  return hostname.includes('dashscope') || hostname.endsWith('aliyuncs.com')
-}
-
 function readAdminUserIdsFile(): Set<string> | null {
   try {
     const stat = fs.statSync(ADMIN_IDS_FILE)
@@ -88,16 +80,9 @@ function isAdminUserId(userId: string): boolean {
   return getAdminUserIds().has(String(userId || '').trim())
 }
 
+// 保留公共配置入口，思考参数统一由当前节点的已核实规则生成。
 function getThinkingArgs(config: RuntimeConfig): ThinkingArgs {
-  if (!thinkingEnabled) {
-    if (isRuntimeDashScopeConfig(config)) return { enable_thinking: false }
-    if (/glm|mimo|kimi/i.test(config.model || '')) return { thinking: { type: 'disabled' } }
-    if (/deepseek/i.test(config.model || '')) return { enable_thinking: false }
-    return {}
-  }
-  if (isRuntimeDashScopeConfig(config)) return { enable_thinking: true }
-  if (/glm|mimo|kimi/i.test(config.model || '')) return { thinking: { type: 'enabled' } }
-  return {}
+  return buildModelThinkingArgs(config, thinkingEnabled)
 }
 
 // 按能力读取优先级第一项；空链立即报错且绝不回退到旧主模型或其他能力。

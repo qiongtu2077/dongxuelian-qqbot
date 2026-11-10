@@ -10,6 +10,7 @@ const participation = require('./participation.test')
 const sticker = require('./sticker.test')
 const sensitive = require('./sensitive.test')
 const fallback = require('./fallback.test')
+const modelThinking = require('./model-thinking.test')
 const forward = require('./forward.test')
 const vision = require('./vision.test')
 const random = require('./random.test')
@@ -43,6 +44,7 @@ const SCENARIOS = [
   sticker,
   sensitive,
   fallback,
+  modelThinking,
   forward,
   vision,
   random,

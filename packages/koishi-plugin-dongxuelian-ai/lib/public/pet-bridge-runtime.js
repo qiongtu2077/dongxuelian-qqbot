@@ -262,8 +262,7 @@ async function generatePetBridgeChatReply(input) {
         const extraBody = {};
         if (config.searchEnabled)
             extraBody.enable_search = true;
-        if (getThinkingEnabled())
-            extraBody.enable_thinking = true;
+        extraBody._thinkingEnabled = getThinkingEnabled();
         gateHandle?.updateStep('pet_bridge_model');
         const reply = await requestChatCompletions(messages, config, extraBody);
         return { ok: true, reply };

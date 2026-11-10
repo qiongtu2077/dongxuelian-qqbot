@@ -10,16 +10,16 @@ const crypto_1 = require("crypto");
 const management_runtime_1 = require("koishi-plugin-dongxuelian-ai/lib/public/management-runtime");
 const report_request_pool_1 = require("./report-request-pool");
 const { loadConfig } = (0, management_runtime_1.loadManagementModule)('core.runtimeConfig');
-const { freezeChatRoute, requestChatCompletions, getChatFailureMetadata } = (0, management_runtime_1.loadManagementModule)('core.api');
+const { freezeChatRoute, requestChatCompletions, getChatFailureMetadata, buildModelThinkingArgs } = (0, management_runtime_1.loadManagementModule)('core.api');
 // --- 已核实的模型参数 ---
-// 仅对已核实组合冻结参数；GLM-5.3-Flash不能关闭思考，以low显式限制推理深度。
+// 思考参数复用公共模型规则；日报只额外声明已核实的 JSON 对象输出契约。
 function reportModelArguments(node) {
     if (node.model === 'mimo-v2.6-pro')
         return { thinking: { type: 'disabled' } };
-    if (node.model === 'glm-5.3-flash' && node.baseURL.replace(/\/+$/, '') === 'https://llm.pko.svcfusion.com/v1') {
-        return { thinking: { type: 'enabled' }, reasoning_effort: 'low', _structuredOutput: { version: 1, format: 'object' } };
-    }
-    return {};
+    const thinking = buildModelThinkingArgs(node, false);
+    if (node.model === 'glm-5.3-flash')
+        return { ...thinking, _structuredOutput: { version: 1, format: 'object' } };
+    return thinking;
 }
 // --- 冻结节点与单次执行 ---
 // 一次冻结现有文字主备节点；每轮公共请求只含一个执行节点，不改全局配置。
