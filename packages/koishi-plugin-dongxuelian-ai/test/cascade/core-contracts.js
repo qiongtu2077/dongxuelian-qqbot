@@ -135,6 +135,7 @@ async function runCoreContracts(context) {
     path.join(LIB, 'rulesets', 'jailbreak.js'),
     path.join(LIB, 'core', 'logging-config.js'),
     path.join(LIB, 'core', 'runtime-config.js'),
+    path.join(LIB, 'core', 'model-thinking.js'),
     path.join(LIB, 'reply', 'reply.js'),
     path.join(LIB, 'reply', 'reply-guard.js'),
     path.join(LIB, 'behavior', 'repeat.js'),
@@ -234,6 +235,7 @@ async function runCoreContracts(context) {
   const functions = []
   duplicateScanFiles.push('behavior/rare-provocation.js')
   duplicateScanFiles.push('core/participation-policy.js', 'lifecycle/participation-guard.js')
+  duplicateScanFiles.push('core/model-thinking.js')
   duplicateScanFiles.push('../../koishi-plugin-dashboard/lib/routes/participation.js')
   duplicateScanFiles.push('diagnostics/rare-voice-diagnostics.js')
   duplicateScanFiles.push('media/image/image-source.js', 'media/image/image-request.js', 'media/image/image-turn.js', 'media/image/image-random-demand.js', 'media/image/image-manifest.js', 'core/image-content.js', 'media/image/image-batch.js')

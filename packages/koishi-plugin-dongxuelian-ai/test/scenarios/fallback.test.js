@@ -558,7 +558,7 @@ async function runGlmReasoningEffortCases(t) {
       t.checkEqual('GLM keeps temperature ' + effort, body.temperature, 0.2)
     }
     await api.requestChatCompletions([{ role: 'user', content: 'ordinary' }], node, { _frozenRoute: route })
-    t.check('ordinary GLM does not acquire implicit effort', !Object.hasOwn(mocked.calls.at(-1).requestBody, 'reasoning_effort'))
+    t.checkEqual('ordinary GLM uses shared low default', mocked.calls.at(-1).requestBody.reasoning_effort, 'low')
   })
   await withManagedApi([{ status: 500, text: 'upstream failed' }, success], { text: TEXT_CHAIN }, async (api, mocked) => {
     const route = api.freezeChatRoute(node, [node, { ...node, apiKey: 'fake-glm-backup' }])
@@ -591,7 +591,6 @@ async function runGlmObjectModeCases(t) {
     const cases = [
       { label: 'schema', option: { ...valid, format: 'schema', schema: { type: 'object' } } },
       { label: 'foreign thinking budget', option: { ...valid, thinkingBudget: 0 } },
-      { label: 'disabled thinking', parameters: { thinking: { type: 'disabled' } } },
       { label: 'different effort', parameters: { reasoning_effort: 'high' } },
       { label: 'unknown backup', nodes: [node, { ...node, model: 'unknown' }] },
     ]
@@ -610,7 +609,24 @@ async function runGlmObjectModeCases(t) {
   })
 }
 
-// 未核实型号、端点、协议或备用在任何实际请求前拒绝，不静默吞掉已请求的推理参数。
+// 原生对象请求也自动适配，省略参数或旧调用方显式关闭都必须得到同一已核实的 enabled+low 组合。
+async function runGlmObjectThinkingDefaults(t) {
+  const node = { provider: 'glm', model: 'glm-5.3-flash', baseURL: 'https://llm.pko.svcfusion.com/v1', apiKey: 'fake-key', chatProtocol: 'openai-chat' }
+  for (const parameters of [{}, { thinking: { type: 'disabled' }, enable_thinking: false }]) {
+    await withManagedApi([{ json: { choices: [{ finish_reason: 'stop', message: { content: '{"ok":true}' } }] } }], { text: TEXT_CHAIN }, async (api, mocked) => {
+      const result = await api.requestChatCompletions([{ role: 'user', content: 'Return JSON.' }], node, {
+        ...parameters, _frozenRoute: api.freezeChatRoute(node, [node]), _structuredOutput: { version: 1, format: 'object' },
+      })
+      const body = mocked.calls[0].requestBody
+      t.checkEqual('GLM object shared default preserves response', result.content, '{"ok":true}')
+      t.check('GLM object automatically enforces thinking policy before preflight',
+        body.thinking?.type === 'enabled' && body.reasoning_effort === 'low' && !Object.hasOwn(body, 'enable_thinking'))
+      t.checkEqual('GLM object shared default retains JSON contract', body.response_format.type, 'json_object')
+    })
+  }
+}
+
+// 未核实型号、协议或备用在任何实际请求前拒绝；同型号切换供应商不改变推理参数契约。
 async function runGlmReasoningEffortRejections(t) {
   const node = { provider: 'glm', model: 'glm-5.3-flash', baseURL: 'https://llm.pko.svcfusion.com/v1', apiKey: 'fake-glm-key', chatProtocol: 'openai-chat' }
   await withManagedApi([], { text: TEXT_CHAIN }, async (api, mocked) => {
@@ -618,7 +634,6 @@ async function runGlmReasoningEffortRejections(t) {
       { label: 'unknown effort', effort: 'medium', nodes: [node] },
       { label: 'disabled effort', effort: 'none', nodes: [node] },
       { label: 'unknown model', effort: 'low', nodes: [{ ...node, model: 'glm-unverified' }] },
-      { label: 'unknown endpoint', effort: 'low', nodes: [{ ...node, baseURL: 'https://other.invalid/v1' }] },
       { label: 'unknown protocol', effort: 'low', nodes: [{ ...node, chatProtocol: 'anthropic-messages' }] },
       { label: 'unknown backup', effort: 'low', nodes: [node, { ...node, model: 'glm-unverified' }] },
     ]
@@ -656,6 +671,7 @@ async function run(t) {
   await runStructuredOutputRejections(t)
   await runGlmReasoningEffortCases(t)
   await runGlmObjectModeCases(t)
+  await runGlmObjectThinkingDefaults(t)
   await runGlmReasoningEffortRejections(t)
   await runFailureCapabilityNotifications(t)
 }

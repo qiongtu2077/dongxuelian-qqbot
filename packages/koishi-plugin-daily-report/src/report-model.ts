@@ -11,17 +11,16 @@ import type { ReportClassificationCachePolicy } from './report-classification-ca
 import type { ReportStageCachePolicies, ReportCachedStage } from './report-stage-cache'
 
 const { loadConfig } = loadManagementModule('core.runtimeConfig')
-const { freezeChatRoute, requestChatCompletions, getChatFailureMetadata } = loadManagementModule('core.api')
+const { freezeChatRoute, requestChatCompletions, getChatFailureMetadata, buildModelThinkingArgs } = loadManagementModule('core.api')
 
 // --- 已核实的模型参数 ---
 
-// 仅对已核实组合冻结参数；GLM-5.3-Flash不能关闭思考，以low显式限制推理深度。
-function reportModelArguments(node: { model: string; baseURL: string }): { thinking?: { type: 'enabled' | 'disabled' }; reasoning_effort?: 'low'; _structuredOutput?: { version: 1; format: 'object' } } {
+// 思考参数复用公共模型规则；日报只额外声明已核实的 JSON 对象输出契约。
+function reportModelArguments(node: { model: string; chatProtocol?: string }): ReturnType<typeof buildModelThinkingArgs> & { _structuredOutput?: { version: 1; format: 'object' } } {
   if (node.model === 'mimo-v2.6-pro') return { thinking: { type: 'disabled' } }
-  if (node.model === 'glm-5.3-flash' && node.baseURL.replace(/\/+$/, '') === 'https://llm.pko.svcfusion.com/v1') {
-    return { thinking: { type: 'enabled' }, reasoning_effort: 'low', _structuredOutput: { version: 1, format: 'object' } }
-  }
-  return {}
+  const thinking = buildModelThinkingArgs(node, false)
+  if (node.model === 'glm-5.3-flash') return { ...thinking, _structuredOutput: { version: 1, format: 'object' } }
+  return thinking
 }
 
 // --- 冻结节点与单次执行 ---

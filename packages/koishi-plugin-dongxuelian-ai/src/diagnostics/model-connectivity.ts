@@ -6,6 +6,7 @@
  */
 const { createHash } = require('crypto') as typeof import('crypto')
 const { resolveCapabilityRuntimeSteps } = require('../core/ai-capability-config') as typeof import('../core/ai-capability-config')
+const { buildModelThinkingArgs } = require('../core/model-thinking') as typeof import('../core/model-thinking')
 const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')
 const { acquireResourceGate } = require('../resource-gate/gate') as typeof import('../resource-gate/gate')
 
@@ -58,7 +59,7 @@ async function probeTextStep(step: Step): Promise<ProbeResult> {
     const response = await fetch(`${step.baseURL.replace(/\/+$/, '')}/chat/completions`, {
       method: 'POST', redirect: 'manual', signal: controller.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${step.apiKey}` },
-      body: JSON.stringify({ model: step.model, messages: [{ role: 'user', content: 'Hi' }], max_tokens: 1, stream: false }),
+      body: JSON.stringify({ model: step.model, messages: [{ role: 'user', content: 'Hi' }], max_tokens: 1, stream: false, ...buildModelThinkingArgs(step) }),
     })
     if (!response.ok) {
       await response.body?.cancel()

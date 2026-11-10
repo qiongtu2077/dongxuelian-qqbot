@@ -17,6 +17,11 @@ const {
 const { notifyCapabilityStepFailure } = require('./capability-failure-notifier') as typeof import('./capability-failure-notifier')
 const { ModelRequestError: CapabilityUpstreamError, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics') as typeof import('./request-diagnostics')
 const { resolveOneBotWsUrl } = require('./onebot-endpoint') as typeof import('./onebot-endpoint')
+const { resolveModelThinkingFields, supportsModelReasoningEffort } = require('./model-thinking') as typeof import('./model-thinking')
+// 公开纯参数构造器的稳定结构类型，避免导出内部模块的私有声明。
+const buildModelThinkingArgs: (config: { model?: string; chatProtocol?: string }, enabled?: boolean) => {
+  enable_thinking?: boolean; thinking?: { type: 'enabled' | 'disabled' }; reasoning_effort?: 'low' | 'high' | 'max'
+} = require('./model-thinking').buildModelThinkingArgs
 const WebSocket = require('ws') as typeof import('ws')
 const path = require('path')
 const fs = require('fs')
@@ -374,31 +379,7 @@ function extractResponsesText(data: { output_text?: string; output?: Array<{ typ
   return joined
 }
 
-function buildManagedThinkingArgs(config: Partial<ApiConfig> = {}, enabled: boolean = false): Record<string, unknown> {
-  const model = String(config.model || '')
-  if (!enabled) {
-    if (isDashScopeConfig(config)) return { enable_thinking: false }
-    if (/deepseek/i.test(model)) return { enable_thinking: false }
-    return {}
-  }
-  if (isDashScopeConfig(config)) return { enable_thinking: true }
-  if (/glm|mimo|kimi/i.test(model)) return { thinking: { type: 'enabled' } }
-  return {}
-}
-
-function rebuildFallbackExtraBody(extraBody: RequestExtraBody = {}, config: ApiConfig): RequestExtraBody {
-  if (!extraBody._thinkingManaged) return extraBody
-  const next = { ...extraBody }
-  const explicit = new Set(Array.isArray(extraBody._explicitThinkingKeys) ? extraBody._explicitThinkingKeys : [])
-  if (!explicit.has('enable_thinking')) delete next.enable_thinking
-  if (!explicit.has('thinking')) delete next.thinking
-  const managed = buildManagedThinkingArgs(config, !!extraBody._thinkingEnabled)
-  for (const [key, value] of Object.entries(managed)) {
-    if (!explicit.has(key)) next[key] = value
-  }
-  return next
-}
-
+// 将多个系统消息合并为 DashScope 支持的单个系统消息。
 function normalizeMessagesForProvider(messages: ChatMessage[] = [], config: Partial<ApiConfig> = {}): ChatMessage[] {
   if (!isDashScopeConfig(config)) return messages
   const result = []
@@ -599,9 +580,8 @@ function prepareStructuredRequest(option: StructuredOutputOptions, config: ApiCo
     throw new Error('原生结构化输出选项契约无效')
   }
   const protocol = config.chatProtocol || getProviderCatalogEntry(config.provider)?.chatProtocol || 'openai-chat'
-  const isLingGlm = protocol === 'openai-chat' && config.model === 'glm-5.3-flash'
-    && String(config.baseURL).replace(/\/+$/, '') === 'https://llm.pko.svcfusion.com/v1'
-  if (isLingGlm) {
+  const isGlmObject = protocol === 'openai-chat' && config.model === 'glm-5.3-flash'
+  if (isGlmObject) {
     if (option.format !== 'object' || option.schema !== undefined || option.thinkingBudget !== undefined
       || !isRecord(filtered.thinking) || filtered.thinking.type !== 'enabled' || filtered.reasoning_effort !== 'low') {
       throw new Error('原生GLM对象模式仅核实无Schema/思考预算且enabled+low的组合')
@@ -611,7 +591,7 @@ function prepareStructuredRequest(option: StructuredOutputOptions, config: ApiCo
   }
   if (protocol !== 'openai-chat' || String(config.baseURL).replace(/\/+$/, '') !== 'https://dashscope.aliyuncs.com/compatible-mode/v1'
     || !['qwen3.7-flash', 'qwen3.7-plus'].includes(config.model)) {
-    throw new Error('原生结构化输出仅核实DashScope的qwen3.7-flash/qwen3.7-plus与灵GLM对象模式')
+    throw new Error('原生结构化输出仅核实DashScope的qwen3.7-flash/qwen3.7-plus与GLM-5.3-Flash对象模式')
   }
   if (option.thinkingBudget === undefined) throw new Error('原生DashScope结构化输出必须明确思考预算')
   if (option.format === 'schema' && !isRecord(option.schema)) throw new Error('原生结构化输出缺少当前单元Schema')
@@ -633,14 +613,13 @@ function prepareStructuredRequest(option: StructuredOutputOptions, config: ApiCo
 
 // 调用 OpenAI 兼容 Chat Completions 并规范为统一结果。
 async function requestOpenAiChatAttempt(messages: ChatMessage[], config: ApiConfig, filtered: Record<string, unknown>, tools: ToolDefinition[] | null, signal: AbortSignal): Promise<ProtocolAttemptResult> {
-  const { _thinkingEnabled, _nativeStructuredOutput, ...requestFields } = filtered
+  const { _nativeStructuredOutput, ...requestFields } = filtered
   const response = await fetch(String(config.baseURL).replace(/\/+$/, '') + '/chat/completions', {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
     body: JSON.stringify({
       model: config.model, temperature: 0.9,
       ...(_nativeStructuredOutput ? {} : { max_tokens: filtered.max_tokens || 1500 }),
-      ...buildManagedThinkingArgs(config, !!_thinkingEnabled),
       ...requestFields, messages: normalizeMessagesForProvider(messages, config),
       ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
     }),
@@ -762,21 +741,24 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
     throw new Error('冻结模型恢复起始节点无效')
   }
   const filtered = buildFilteredExtraBody(extraBody)
-  filtered._thinkingEnabled = extraBody._thinkingEnabled
-  // 本轮仅核实灵的GLM-5.3-Flash三档推理控制；整条执行链先核验，禁止主节点已消费后猜备用能力。
+  // 显式推理深度在整条执行链提交前核验；自动默认值由当前节点独立生成。
   if (extraBody.reasoning_effort !== undefined) {
     if (!['low', 'high', 'max'].includes(extraBody.reasoning_effort)
-      || attempts.slice(startIndex).some(node => node.model !== 'glm-5.3-flash'
-        || String(node.baseURL).replace(/\/+$/, '') !== 'https://llm.pko.svcfusion.com/v1'
-        || (node.chatProtocol || getProviderCatalogEntry(node.provider)?.chatProtocol || 'openai-chat') !== 'openai-chat')) {
-      throw new Error('推理深度仅核实灵GLM-5.3-Flash的low/high/max配置')
+      || attempts.slice(startIndex).some(node => !supportsModelReasoningEffort({ ...node,
+        chatProtocol: node.chatProtocol || getProviderCatalogEntry(node.provider)?.chatProtocol || 'openai-chat' }))) {
+      throw new Error('推理深度仅核实OpenAI兼容协议GLM-5.3系列的low/high/max配置')
     }
     filtered.reasoning_effort = extraBody.reasoning_effort
   }
   if (extraBody._structuredOutput !== undefined && (!frozen || tools?.length)) throw new Error('原生结构化输出需要冻结路由且不支持工具组合')
+  // 先按节点适配，再检查结构化组合，普通聊天与日报都不依赖调用方预填思考参数。
+  const nodeFields = attempts.map(attempt => resolveModelThinkingFields({ ...attempt,
+    chatProtocol: attempt.chatProtocol || getProviderCatalogEntry(attempt.provider)?.chatProtocol || 'openai-chat' }, filtered, {
+    enabled: extraBody._thinkingEnabled, managed: extraBody._thinkingManaged, explicitKeys: extraBody._explicitThinkingKeys,
+  }))
   // 所有可能执行的节点在提交前核实；备用配置未知时不能先消耗一次请求再猜兼容。
   const structuredFields = extraBody._structuredOutput !== undefined
-    ? attempts.map((attempt, index) => index < startIndex ? filtered : prepareStructuredRequest(extraBody._structuredOutput!, attempt, filtered, messages)) : null
+    ? attempts.map((attempt, index) => index < startIndex ? nodeFields[index] : prepareStructuredRequest(extraBody._structuredOutput!, attempt, nodeFields[index], messages)) : null
   const externalSignal = extraBody.signal && typeof extraBody.signal === 'object' ? extraBody.signal : null
   const requestedTimeout = Number(extraBody._timeoutMs)
   const purpose = extraBody._purpose || (capability === 'vision' ? 'vision' : 'chat')
@@ -828,7 +810,9 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
       extraBody._onRequestAttempt?.(execution)
       protocolStarted = true
       if (budget) remainingOutput -= maxTokens
-      const response = await requestProtocolAttempt(messages, attempt, budget ? { ...filtered, max_tokens: maxTokens } : structuredFields?.[index] || filtered, tools, controller.signal)
+      // 辅助判断恢复同样使用当前节点的独立参数；原生结构参数已提前逐节点核验。
+      const requestFields = structuredFields?.[index] || nodeFields[index]
+      const response = await requestProtocolAttempt(messages, attempt, budget ? { ...requestFields, max_tokens: maxTokens } : requestFields, tools, controller.signal)
       protocolCompleted = true
       clearTimeout(timer)
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(response.usage), {
@@ -1202,6 +1186,7 @@ function isVisionModel(provider: string, modelId: string): boolean {
 }
 
 export = {
+  buildModelThinkingArgs,
   requestChatCompletions, freezeChatRoute, getChatFailureMetadata, normalizeMessagesForProvider, buildResponsesInput, extractResponsesText,
   requestOpenAIResponsesWithSearch,
   buildFallbackConfig, getFallbackSteps,

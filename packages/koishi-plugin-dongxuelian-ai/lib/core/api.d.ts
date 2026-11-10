@@ -183,6 +183,16 @@ declare function extractImageFileFromElements(session: SessionLike): string | nu
 declare function downloadImageAsBase64(url: string, timeoutMs?: number, onFailure?: (reason: string) => void, signal?: AbortSignal): Promise<string | null>;
 declare function isVisionModel(provider: string, modelId: string): boolean;
 declare const _default: {
+    buildModelThinkingArgs: (config: {
+        model?: string;
+        chatProtocol?: string;
+    }, enabled?: boolean) => {
+        enable_thinking?: boolean;
+        thinking?: {
+            type: "enabled" | "disabled";
+        };
+        reasoning_effort?: "low" | "high" | "max";
+    };
     requestChatCompletions: typeof requestChatCompletions;
     freezeChatRoute: typeof freezeChatRoute;
     getChatFailureMetadata: typeof getChatFailureMetadata;

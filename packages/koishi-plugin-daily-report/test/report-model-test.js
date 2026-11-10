@@ -8,7 +8,7 @@ const modelPath = path.resolve(__dirname, '../lib/report-model')
 // 临时替换已知公共管理入口，返回形状严格采用当前已实现的冻结契约。
 async function withModelConfiguration(configured, run, failure, resolveNode) {
   const original = require.cache[managementPath].exports, calls = []
-  const api = { freezeChatRoute(config, explicit) {
+  const api = { buildModelThinkingArgs: require('koishi-plugin-dongxuelian-ai/lib/core/model-thinking').buildModelThinkingArgs, freezeChatRoute(config, explicit) {
     const steps = (explicit || config.steps || [config]).map((step, priorityIndex) => ({ ...step, priorityIndex, chatProtocol: step.chatProtocol || 'openai-chat' }))
     return { version: 1, capability: 'text', identity: createHash('sha256').update(JSON.stringify(steps)).digest('hex'),
       routeRevision: createHash('sha256').update('revision-' + JSON.stringify(steps)).digest('hex'), steps }
@@ -156,11 +156,13 @@ async function checkGlmReasoningPolicy() {
     }
     assert.equal(calls.length, 14); assert.equal(node.model, 'glm-5.3-flash')
   })
-  await withModelConfiguration({ ...node, baseURL: 'https://unverified.invalid/v1' }, async (model, calls) => {
+  await withModelConfiguration({ ...node, provider: 'new-provider', baseURL: 'https://new-provider.invalid/v1' }, async (model, calls) => {
     const profile = await model.createGroundedModelRequest()
     await profile.request('classification', 1, 'JSON', '{}', 4096, {})
-    assert.equal(calls[0].extra._thinkingEnabled, false)
-    assert(!Object.hasOwn(calls[0].extra, 'reasoning_effort')); assert(!Object.hasOwn(calls[0].extra, 'thinking'))
+    assert.equal(calls[0].extra._thinkingEnabled, true)
+    assert.equal(calls[0].extra.reasoning_effort, 'low'); assert.equal(calls[0].extra.thinking.type, 'enabled')
+    assert.deepEqual(calls[0].extra._structuredOutput, { version: 1, format: 'object' })
+    assert.equal(calls[0].config.provider, 'new-provider'); assert.equal(calls[0].config.baseURL, 'https://new-provider.invalid/v1')
   })
 }
 

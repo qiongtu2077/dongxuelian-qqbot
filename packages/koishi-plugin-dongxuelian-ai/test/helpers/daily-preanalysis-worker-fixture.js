@@ -44,7 +44,7 @@ async function run() {
   global.fetch = async (_url, options) => {
     calls++
     const body = JSON.parse(options.body)
-    assert.equal(body.model, 'deepseek-v4-flash'); assert.equal(body.enable_thinking, false)
+    assert.equal(body.model, 'deepseek-v4-flash'); assert(!Object.hasOwn(body, 'enable_thinking'))
     const payload = JSON.parse(body.messages[1].content)
     const ledgerRoot = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'daily-analysis/v2/background-ledger')
     assert(fs.existsSync(path.join(ledgerRoot, 'day-' + period.reportDate + '.json')))

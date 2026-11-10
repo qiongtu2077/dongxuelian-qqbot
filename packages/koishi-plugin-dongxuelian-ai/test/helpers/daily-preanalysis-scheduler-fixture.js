@@ -63,7 +63,7 @@ async function main() {
   global.fetch = async (_url, options) => {
     calls++
     const body = JSON.parse(options.body)
-    assert.equal(body.model, 'deepseek-v4-flash'); assert.equal(body.enable_thinking, false)
+    assert.equal(body.model, 'deepseek-v4-flash'); assert(!Object.hasOwn(body, 'enable_thinking'))
     const input = JSON.parse(body.messages[1].content)
     return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({
       groups: { 'social:1': '社交互动' }, records: Object.fromEntries(input.items.map(item => [item.ref, 'social:1'])), quotes: [], completed: true,

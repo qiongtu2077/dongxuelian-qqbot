@@ -215,23 +215,23 @@ async function callOpenAI(messages, isRandom, extraBody = {}, tools = null) {
     const managedThinkingMeta = {
         _thinkingManaged: true,
         _thinkingEnabled: thinkingEnabled,
-        _explicitThinkingKeys: ['enable_thinking', 'thinking'].filter(key => extraBody[key] !== undefined),
+        _explicitThinkingKeys: ['enable_thinking', 'thinking', 'reasoning_effort'].filter(key => extraBody[key] !== undefined),
     };
     const capability = getSearchCapability(config);
     if (hasImage || isRandom || !config.searchEnabled || !capability.supported) {
-        const result = await requestChatCompletions(asChatApiMessages(messages), config, { ...getThinkingArgs(config), ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
+        const result = await requestChatCompletions(asChatApiMessages(messages), config, { ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
         if (result && result.type === 'tool_calls')
             return result;
         return getChatCompletionText(result);
     }
     if (capability.mode === 'dashscope-chat') {
-        const result = await requestChatCompletions(asChatApiMessages(messages), config, { ...getThinkingArgs(config), enable_search: true, search_options: { forced_search: true }, ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
+        const result = await requestChatCompletions(asChatApiMessages(messages), config, { enable_search: true, search_options: { forced_search: true }, ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
         if (result && result.type === 'tool_calls')
             return result;
         return getChatCompletionText(result);
     }
     if (capability.mode === 'openai-chat-search') {
-        const result = await requestChatCompletions(asChatApiMessages(messages), config, { ...getThinkingArgs(config), web_search_options: {}, ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
+        const result = await requestChatCompletions(asChatApiMessages(messages), config, { web_search_options: {}, ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
         if (result && result.type === 'tool_calls')
             return result;
         return getChatCompletionText(result);
@@ -239,7 +239,7 @@ async function callOpenAI(messages, isRandom, extraBody = {}, tools = null) {
     if (capability.mode === 'openai-responses') {
         return requestOpenAIResponsesWithSearch(asChatApiMessages(messages), config);
     }
-    const result = await requestChatCompletions(asChatApiMessages(messages), config, { ...getThinkingArgs(config), ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
+    const result = await requestChatCompletions(asChatApiMessages(messages), config, { ...(isRandom ? { max_tokens: 200 } : {}), ...extraBody, ...managedThinkingMeta }, asChatTools(tools));
     if (result && result.type === 'tool_calls')
         return result;
     return getChatCompletionText(result);

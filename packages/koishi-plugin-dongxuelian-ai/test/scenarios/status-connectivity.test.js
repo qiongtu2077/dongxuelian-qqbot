@@ -51,6 +51,16 @@ async function run(t) {
   t.section('scenario: status connectivity')
   await runForwardCases(t)
   await withScenario({}, async ({ data, makeSession, run }) => {
+    seedCapabilityConfig(data, { text: [{ provider: 'glm', model: 'glm-5.3-flash' }] })
+    const mocked = mockFetch()
+    await withProbeEnvironment(mocked.fetch, async () => {
+      await run(makeSession({ content: 'AI状态' }))
+      const body = mocked.calls[0]?.requestBody
+      t.check('status GLM probe shares enabled low policy without raising token limit',
+        body?.thinking?.type === 'enabled' && body.reasoning_effort === 'low' && body.max_tokens === 1 && !Object.hasOwn(body, 'enable_thinking'))
+    })
+  })
+  await withScenario({}, async ({ data, makeSession, run }) => {
     seedCapabilityConfig(data, { text: [
       { provider: 'opencode', model: 'probe-one' }, { provider: 'dashscope', model: 'probe-two' },
       { provider: 'glm', model: 'probe-three' }, { provider: 'deepseek', model: 'probe-four' },
