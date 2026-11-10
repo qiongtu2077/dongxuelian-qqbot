@@ -12,6 +12,7 @@ export interface ManagementModuleMap {
   'core.conversation': typeof import('../conversation')
   'core.frontmatter': typeof import('../core/frontmatter')
   'core.providerRegistry': typeof import('../core/provider-registry')
+  'core.participationPolicy': typeof import('../core/participation-policy')
   'core.redactor': typeof import('../core/redactor')
   'core.runtimeConfig': typeof import('../core/runtime-config')
   'core.utils': typeof import('../core/utils')
@@ -70,6 +71,7 @@ const MANAGEMENT_MODULE_PATHS: Record<ManagementModuleName, string> = {
   'core.conversation': '../conversation',
   'core.frontmatter': '../core/frontmatter',
   'core.providerRegistry': '../core/provider-registry',
+  'core.participationPolicy': '../core/participation-policy',
   'core.redactor': '../core/redactor',
   'core.runtimeConfig': '../core/runtime-config',
   'core.utils': '../core/utils',

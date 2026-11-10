@@ -71,18 +71,26 @@ interface RepeatState {
 
 const channelRepeatState: Map<string, RepeatState> = new Map()
 let repeatEnabledCache: Record<string, boolean> = {}
+let repeatConfigFingerprint = ''
 
+// 按文件指纹读取复读开关，使 Web 首次启用群的默认值无需重启即可生效。
 function loadRepeatConfig(): void {
   try {
     const stat = fs.statSync(REPEAT_ENABLED_FILE)
     if (!stat.isFile() || stat.size > MAX_REPEAT_CONFIG_BYTES) throw new Error('repeat config too large')
+    const fingerprint = `${stat.mtimeMs}:${stat.size}:${stat.ino}`
+    if (fingerprint === repeatConfigFingerprint) return
     repeatEnabledCache = JSON.parse(fs.readFileSync(REPEAT_ENABLED_FILE, 'utf8'))
+    repeatConfigFingerprint = fingerprint
   } catch { /* non-critical: missing repeat config disables repeat until configured */
     repeatEnabledCache = {}
+    repeatConfigFingerprint = ''
   }
 }
 
+// 返回已经同步最新磁盘配置的复读状态。
 function getRepeatEnabledCache(): Record<string, boolean> {
+  loadRepeatConfig()
   return repeatEnabledCache
 }
 
@@ -106,7 +114,9 @@ function getRepeatStateSize(): number {
   return channelRepeatState.size
 }
 
+// 更新单群复读状态，先合并其他群已经通过 Web 保存的配置。
 function setRepeatEnabled(channelKey: string, enabled: boolean): void {
+  loadRepeatConfig()
   const key = String(channelKey)
   repeatEnabledCache[key] = enabled
   clearRepeatState(key)
@@ -299,7 +309,7 @@ function buildRepeatCandidate(session: RepeatSession, plain: string, analyzed: R
 
 function checkGroupRepeat(session: RepeatSession, candidate: RepeatCandidate | null | undefined, channelKey: string, currentUserId: string, now: number = Date.now()): RepeatCandidate | null {
   if (session.isDirect) return null
-  if (!repeatEnabledCache[channelKey]) return null
+  if (!getRepeatEnabledCache()[channelKey]) return null
   pruneRepeatState(now)
   if (!candidate || !candidate.supported || !candidate.key || !candidate.reply) {
     channelRepeatState.delete(channelKey)

@@ -41,12 +41,13 @@ const aiModelApiRoutes = require('./routes/ai-model-api') as RouteModule
 const botRoutes = require('./routes/bot') as RouteModule
 const deployRoutes = require('./routes/deploy') as RouteModule
 const resourceRoutes = require('./routes/resource') as RouteModule
+const participationRoutes = require('./routes/participation') as RouteModule
 
 const exactRoutes = new Map<string, RouteHandler>()
 const prefixRoutes: PrefixRoute[] = []
 const regexRoutes: RegexRoute[] = []
 
-for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, aiModelApiRoutes, botRoutes, deployRoutes, resourceRoutes]) {
+for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, aiModelApiRoutes, botRoutes, deployRoutes, resourceRoutes, participationRoutes]) {
   if (mod.routes) for (const [key, handler] of Object.entries(mod.routes)) exactRoutes.set(key, handler)
   if (mod.prefixRoutes) {
     if (Array.isArray(mod.prefixRoutes)) {

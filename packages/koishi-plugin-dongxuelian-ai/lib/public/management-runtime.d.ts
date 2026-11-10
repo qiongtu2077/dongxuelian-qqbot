@@ -11,6 +11,7 @@ export interface ManagementModuleMap {
     'core.conversation': typeof import('../conversation');
     'core.frontmatter': typeof import('../core/frontmatter');
     'core.providerRegistry': typeof import('../core/provider-registry');
+    'core.participationPolicy': typeof import('../core/participation-policy');
     'core.redactor': typeof import('../core/redactor');
     'core.runtimeConfig': typeof import('../core/runtime-config');
     'core.utils': typeof import('../core/utils');

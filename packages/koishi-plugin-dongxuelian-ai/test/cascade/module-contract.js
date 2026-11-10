@@ -50,6 +50,9 @@ async function runModuleContract(context) {
     constants: path.join(LIB, 'core', 'constants'),
     frontmatter: path.join(LIB, 'core', 'frontmatter'),
     onebotEndpoint: path.join(LIB, 'core', 'onebot-endpoint'),
+    participationPolicy: path.join(LIB, 'core', 'participation-policy'),
+    participationGuard: path.join(LIB, 'lifecycle', 'participation-guard'),
+    dashboardParticipation: path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'participation'),
     redactor: path.join(LIB, 'core', 'redactor'),
     utils: path.join(LIB, 'core', 'utils'),
     persona: path.join(LIB, 'persona', 'persona'),
@@ -241,6 +244,8 @@ async function runModuleContract(context) {
   }
 
   const c = modules.constants
+  check('participation policy exports a data path and bounded group ID regex', typeof modules.participationPolicy.PARTICIPATION_POLICY_FILE === 'string' && modules.participationPolicy.GROUP_ID_PATTERN instanceof RegExp)
+  check('dashboard participation exports authenticated read and write routes', typeof modules.dashboardParticipation.routes['GET /dashboard/api/participation'] === 'function' && typeof modules.dashboardParticipation.routes['PUT /dashboard/api/participation'] === 'function')
   check('GitHub limits preserve a 30-second target budget and white padding', !!modules.githubModels && Object.isFrozen(modules.githubModels.GITHUB_LIMITS) && modules.githubModels.GITHUB_LIMITS.targetMs === 30000 && modules.githubModels.GITHUB_LIMITS.padding === 24)
   const u = modules.utils
   const p = modules.persona
@@ -251,6 +256,9 @@ async function runModuleContract(context) {
   const index = modules.index
 
   const expectedExports = {
+    participationPolicy: ['validateParticipationPolicy', 'readParticipationPolicy', 'isGroupParticipationEnabled', 'isSessionParticipationEnabled', 'isOneBotActionAllowed'],
+    participationGuard: ['installParticipationGuard', 'ParticipationDisabledError'],
+    dashboardParticipation: [],
     githubModels: ['assertGithubWork', 'waitGithubWork'],
     githubInput: ['parseGithubTarget', 'extractGithubTargets', 'resolveGithubNumber', 'isGithubPreviewCommand'],
     githubSettings: ['GithubPreviewSettings', 'normalizeGithubGroup'],

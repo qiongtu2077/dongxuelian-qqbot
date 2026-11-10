@@ -9,10 +9,11 @@ const aiModelApiRoutes = require('./routes/ai-model-api');
 const botRoutes = require('./routes/bot');
 const deployRoutes = require('./routes/deploy');
 const resourceRoutes = require('./routes/resource');
+const participationRoutes = require('./routes/participation');
 const exactRoutes = new Map();
 const prefixRoutes = [];
 const regexRoutes = [];
-for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, aiModelApiRoutes, botRoutes, deployRoutes, resourceRoutes]) {
+for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, settingsRoutes, aiModelApiRoutes, botRoutes, deployRoutes, resourceRoutes, participationRoutes]) {
     if (mod.routes)
         for (const [key, handler] of Object.entries(mod.routes))
             exactRoutes.set(key, handler);

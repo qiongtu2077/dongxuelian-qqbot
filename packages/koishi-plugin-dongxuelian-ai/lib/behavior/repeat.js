@@ -13,18 +13,27 @@ const MAX_REPEAT_CONFIG_BYTES = 128 * 1024;
 const MAX_REPEAT_STATE_SIZE = 5000;
 const channelRepeatState = new Map();
 let repeatEnabledCache = {};
+let repeatConfigFingerprint = '';
+// 按文件指纹读取复读开关，使 Web 首次启用群的默认值无需重启即可生效。
 function loadRepeatConfig() {
     try {
         const stat = fs.statSync(REPEAT_ENABLED_FILE);
         if (!stat.isFile() || stat.size > MAX_REPEAT_CONFIG_BYTES)
             throw new Error('repeat config too large');
+        const fingerprint = `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+        if (fingerprint === repeatConfigFingerprint)
+            return;
         repeatEnabledCache = JSON.parse(fs.readFileSync(REPEAT_ENABLED_FILE, 'utf8'));
+        repeatConfigFingerprint = fingerprint;
     }
     catch { /* non-critical: missing repeat config disables repeat until configured */
         repeatEnabledCache = {};
+        repeatConfigFingerprint = '';
     }
 }
+// 返回已经同步最新磁盘配置的复读状态。
 function getRepeatEnabledCache() {
+    loadRepeatConfig();
     return repeatEnabledCache;
 }
 function clearRepeatState(channelKey) {
@@ -47,7 +56,9 @@ function pruneRepeatState(now = Date.now()) {
 function getRepeatStateSize() {
     return channelRepeatState.size;
 }
+// 更新单群复读状态，先合并其他群已经通过 Web 保存的配置。
 function setRepeatEnabled(channelKey, enabled) {
+    loadRepeatConfig();
     const key = String(channelKey);
     repeatEnabledCache[key] = enabled;
     clearRepeatState(key);
@@ -230,7 +241,7 @@ function buildRepeatCandidate(session, plain, analyzed = {}) {
 function checkGroupRepeat(session, candidate, channelKey, currentUserId, now = Date.now()) {
     if (session.isDirect)
         return null;
-    if (!repeatEnabledCache[channelKey])
+    if (!getRepeatEnabledCache()[channelKey])
         return null;
     pruneRepeatState(now);
     if (!candidate || !candidate.supported || !candidate.key || !candidate.reply) {

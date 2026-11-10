@@ -125,6 +125,41 @@ async function verifyControlPanel(page) {
   await verifyAdminModalCancel(page)
   await clickText(page, '保存')
   await waitForText(page, '节流配置已保存')
+  await verifyParticipationControls(page)
+}
+
+/** Verifies live Vue switches, failed writes, persistence and mobile layout with mocked HTTP. */
+async function verifyParticipationControls(page) {
+  const groupSwitch = 'input[aria-label="所填群号的总开关"]'
+  const privateSwitch = 'input[aria-label="全局私聊开关"]'
+  await page.waitForFunction(sel => document.querySelector(sel)?.disabled === true, {}, groupSwitch)
+  await page.waitForFunction(sel => document.querySelector(sel)?.checked === false && !document.querySelector(sel)?.disabled, {}, privateSwitch)
+  await page.type('#participation-group-id', '10001')
+  await clickVisibleSelector(page, '.participation-group-editor .participation-track')
+  await page.waitForFunction(sel => document.querySelector(sel)?.checked === true && !document.querySelector(sel)?.disabled, {}, groupSwitch)
+  await clickVisibleSelector(page, '.participation-private .participation-track')
+  await page.waitForFunction(sel => document.querySelector(sel)?.checked === true && !document.querySelector(sel)?.disabled, {}, privateSwitch)
+  await page.$eval('#participation-group-id', input => { input.value = '99900'; input.dispatchEvent(new Event('input', { bubbles: true })) })
+  await clickVisibleSelector(page, '.participation-group-editor .participation-track')
+  await waitForText(page, '模拟保存失败')
+  if (await page.$eval(groupSwitch, input => input.checked)) throw new Error('failed group write changed switch state')
+  await page.reload({ waitUntil: 'networkidle0' })
+  await page.waitForFunction(() => document.querySelector('input[aria-label="群 10001 总开关"]')?.checked === true)
+  await page.waitForFunction(sel => document.querySelector(sel)?.checked === true, {}, privateSwitch)
+  await clickVisibleSelector(page, '.participation-group-row .participation-track')
+  await page.waitForFunction(() => document.querySelector('input[aria-label="群 10001 总开关"]')?.checked === false)
+  await clickVisibleSelector(page, '.participation-private .participation-track')
+  await page.waitForFunction(sel => document.querySelector(sel)?.checked === false && !document.querySelector(sel)?.disabled, {}, privateSwitch)
+  const outDir = path.join(ROOT, 'tmp', 'workspace')
+  fs.mkdirSync(outDir, { recursive: true })
+  await (await page.$('.participation-card')).screenshot({ path: path.join(outDir, 'participation-desktop.png') })
+  await page.setViewport({ width: 380, height: 900, deviceScaleFactor: 1 })
+  await ensureSidebarCollapsed(page)
+  await page.$eval('.participation-card', card => card.scrollIntoView({ block: 'center' }))
+  await page.waitForFunction(() => document.documentElement.scrollWidth <= window.innerWidth)
+  await (await page.$('.participation-card')).screenshot({ path: path.join(outDir, 'participation-mobile.png') })
+  await page.setViewport({ width: 1440, height: 1100, deviceScaleFactor: 1 })
+  await ensureSidebarExpanded(page)
 }
 
 /** Verifies that Agent Console navigation reaches its route. */
@@ -190,7 +225,7 @@ async function verifyResourcePanel(page, options = {}) {
   await waitForText(page, '最小 948 MB')
   await waitForText(page, '最大 1148 MB')
   await waitForTextInSelector(page, '.resource-task-card', '生成群聊日报')
-  await waitForTextInSelector(page, '.resource-events', '媒体分析任务已完成')
+  await waitForTextInSelector(page, '.resource-events', '媒体处理任务已完成')
   await waitForTextInSelector(page, '.resource-events', '10-05 20:22:56')
   await waitForText(page, 'group_10001')
   await waitForText(page, 'group_20002')

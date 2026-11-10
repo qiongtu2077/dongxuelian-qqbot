@@ -15,6 +15,7 @@ const MANAGEMENT_MODULE_PATHS = {
     'core.conversation': '../conversation',
     'core.frontmatter': '../core/frontmatter',
     'core.providerRegistry': '../core/provider-registry',
+    'core.participationPolicy': '../core/participation-policy',
     'core.redactor': '../core/redactor',
     'core.runtimeConfig': '../core/runtime-config',
     'core.utils': '../core/utils',

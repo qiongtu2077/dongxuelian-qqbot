@@ -20,6 +20,7 @@ interface IndexContext {
     logger(name: string): IndexLogger;
     middleware(handler: (session: IndexSession, next: () => unknown | Promise<unknown>) => unknown | Promise<unknown>): unknown;
     on(event: 'ready' | 'dispose', handler: () => unknown): void;
+    on(event: 'bot-connect', handler: (bot: import('./lifecycle/participation-guard').GuardBot) => void): void;
 }
 interface IndexSession {
     [key: string]: unknown;
