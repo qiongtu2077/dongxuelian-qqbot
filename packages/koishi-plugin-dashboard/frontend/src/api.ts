@@ -12,6 +12,7 @@ import type {
   WhitelistMap,
 } from './types'
 import { errorMessage } from './types'
+import type { ParticipationChange, ParticipationResponse } from './services/participation-model'
 import type {
   AiCapability,
   AiDiscoveryResponse,
@@ -200,6 +201,10 @@ export async function startNapcat() { return post('/deploy/napcat-start', {}, tr
 export async function napcatDeployStatus() { return get('/deploy/napcat-status') }
 // 等待 NapCat 与原本运行的机器人恢复连接，避免取消仍在进行的恢复。
 export async function restartNapcat() { return post('/napcat/restart', {}, true, 120000) }
+// 读取管理员可见的群聊与全局私聊总开关。
+export async function fetchParticipation(): Promise<ApiResult<ParticipationResponse | null>> { return get<ParticipationResponse>('/participation', true) }
+// 保存一个开关，首次开启群时由后端原子初始化功能默认值。
+export async function saveParticipation(change: ParticipationChange): Promise<ApiResult<ParticipationResponse | null>> { return put<ParticipationResponse>('/participation', change, true) }
 export async function startKoishiLocal() { return post('/deploy/koishi-start', {}, true, 10000) }
 export async function koishiDeployStatus() { return get('/deploy/koishi-status') }
 export async function localReadyCheck() { return get('/deploy/local-ready-check') }

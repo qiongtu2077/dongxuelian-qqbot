@@ -111,6 +111,8 @@
       </div>
     </div>
 
+    <ParticipationControls />
+
     <div class="card">
       <h2>发送节流</h2>
       <div style="font-size:13px;color:var(--text3);margin-bottom:8px">每分钟最多发送消息数，超出部分静默丢弃，防止风控（每个群独立计算）</div>
@@ -129,6 +131,7 @@ import { computed, ref, onMounted, inject } from 'vue'
 import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQToken, fetchSSHInfo, fetchSelfId, updateSelfId, fetchThrottle, saveThrottle, restartNapcat } from '../api'
 import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
+import ParticipationControls from './ParticipationControls.vue'
 
 interface BotStatusData {
   loading: boolean
@@ -139,6 +142,7 @@ interface BotStatusData {
 
 export default {
   name: 'ControlPanel',
+  components: { ParticipationControls },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
 

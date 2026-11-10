@@ -12,6 +12,9 @@ const CHECK_DIRS = [
 ]
 
 const CHECK_FILES = [
+  'packages/koishi-plugin-dongxuelian-ai/lib/core/participation-policy.js',
+  'packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/participation-guard.js',
+  'packages/koishi-plugin-dashboard/lib/routes/participation.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/behavior/rare-provocation.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/diagnostics/rare-voice-diagnostics.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/image-content.js',

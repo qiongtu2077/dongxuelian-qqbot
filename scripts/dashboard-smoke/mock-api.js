@@ -78,6 +78,7 @@ const mockState = {
   serverMode: 'large',
   serverModeSource: 'resource-control/config.json',
   maintenance: false,
+  participation: { version: 1, privateEnabled: false, groups: {} },
   resourceCancelAttempts: 0,
   resourceScenario: 'idle',
   openAiKeyConfigured: true,
@@ -408,6 +409,14 @@ function apiMock(method, pathname, body) {
 
   if (method === 'GET' && pathname === '/bot/status') return ok({ running: true, workers: 1, qq: '123456' })
   if (method === 'GET' && pathname === '/maintenance') return ok({ enabled: false })
+  if (method === 'GET' && pathname === '/participation') return ok({ ok: true, policy: mockState.participation })
+  if (method === 'PUT' && pathname === '/participation') {
+    const change = body.body
+    if (change.groupId === '99900') return ok({ ok: false, message: '模拟保存失败' })
+    if (change.kind === 'private') mockState.participation.privateEnabled = change.enabled
+    else mockState.participation.groups[change.groupId] = change.enabled
+    return ok({ ok: true, policy: mockState.participation, message: '参与开关已保存并生效' })
+  }
   if (method === 'GET' && pathname === '/qq/token') return jsonResponse({ code: 'ADMIN_REQUIRED', message: '需要管理员密码' }, 403)
   if (method === 'GET' && pathname === '/qq/ssh-info') return ok({ host: 'mock-host.invalid', user: 'mock-user' })
   if (method === 'GET' && pathname === '/qq/selfid') return ok({ selfId: '123456' })

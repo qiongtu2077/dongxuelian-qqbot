@@ -42,6 +42,7 @@ function testPublicRuntimeContract() {
   assert.strictEqual(typeof management.loadManagementModule('daily.reportRecords').readReportRecords, 'function')
   assert.strictEqual(typeof management.loadManagementModule('daily.reportAnalysis').createReportAnalysisDiagnostics, 'function')
   assert.strictEqual(typeof management.loadManagementModule('core.api').freezeChatRoute, 'function')
+  assert.strictEqual(typeof management.loadManagementModule('core.participationPolicy').readParticipationPolicy, 'function')
   assert.throws(() => management.loadManagementModule('core/private-file'), /unknown management module/)
 }
 

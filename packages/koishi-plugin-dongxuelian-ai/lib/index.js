@@ -24,6 +24,7 @@ const fs = require('fs/promises');
 const satoriCore = require('@satorijs/core');
 const KoishiSession = satoriCore.Session;
 const KoishiBot = satoriCore.Bot;
+const { installParticipationGuard } = require('./lifecycle/participation-guard');
 const { installSessionCompatibility, } = require('./lifecycle/session-compat'); // Koishi/Satori Session 兼容补丁
 const { createBotResolver, withCurrentBot, } = require('./lifecycle/bot-resolver'); // 当前 bot 解析与异步 session 注入
 const { enqueueForChannel, } = require('./lifecycle/channel-task-queue'); // 同频道任务串行队列
@@ -186,6 +187,7 @@ function readOneBotRawEvent(session) {
 }
 // 注册插件生命周期与消息处理中间件。
 function apply(ctx) {
+    installParticipationGuard(ctx);
     const githubPreview = new GithubPreviewRuntime(undefined, { log: message => ctx.logger('github-preview').warn(message) });
     ctx.on('dispose', () => githubPreview.dispose());
     registerCapabilityFailureContext(ctx);
