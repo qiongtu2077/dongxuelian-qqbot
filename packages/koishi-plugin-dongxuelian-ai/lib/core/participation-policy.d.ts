@@ -4,6 +4,9 @@ export interface ParticipationPolicy {
     groups: Record<string, boolean>;
 }
 export interface ParticipationSession {
+    event?: {
+        channel?: unknown;
+    };
     isDirect?: boolean;
     guildId?: string | number;
     channelId?: string | number;

@@ -15,6 +15,7 @@ export interface ParticipationPolicy {
 }
 
 export interface ParticipationSession {
+  event?: { channel?: unknown }
   isDirect?: boolean
   guildId?: string | number
   channelId?: string | number
@@ -70,7 +71,9 @@ export function isGroupParticipationEnabled(groupId: string | number): boolean {
 // 临时私聊即使带有来源群号，也必须先受全局私聊开关控制。
 export function isSessionParticipationEnabled(session: ParticipationSession): boolean {
   const policy = readParticipationPolicy()
-  if (session.isDirect || session.subtype === 'private' || String(session.channelId || '').startsWith('private:')) return policy.privateEnabled
+  // Satori 的 isDirect getter 直接读取 event.channel.type，生命周期事件没有 channel。
+  const canReadIsDirect = !session.event || Boolean(session.event.channel)
+  if ((canReadIsDirect && session.isDirect) || session.subtype === 'private' || String(session.channelId || '').startsWith('private:')) return policy.privateEnabled
   if (session.guildId) return policy.groups[String(session.guildId)] === true
   return true
 }
