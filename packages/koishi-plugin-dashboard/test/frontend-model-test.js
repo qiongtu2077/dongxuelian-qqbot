@@ -92,6 +92,58 @@ function testAiModelApiModel(aiModel) {
   assert.doesNotMatch(appSource, /id: 'keys'/)
 }
 
+// 验证未检测与失败的区别、中文排错提示、保留配置后的真实状态，以及按四项能力计数。
+function testCapabilityDetectionDisplay(display) {
+  const capabilities = ['text', 'vision', 'voice-asr', 'voice-tts']
+  const model = { id: 'opaque', name: '不透明模型', capabilities: ['text'] }
+  assert.strictEqual(display.capabilityCheckDisplay(model, 'text', true).status, 'unverified')
+  assert.match(display.capabilityCheckDisplay(model, 'text', false).reason, /内置能力目录/)
+  assert.strictEqual(display.capabilityCheckDisplay(model, 'vision', false).status, 'unverified')
+  const waiting = Object.fromEntries(capabilities.map(capability => [capability, { status: 'pending', reason: '等待接口能力检测' }]))
+  model.capabilityChecks = waiting
+  assert.strictEqual(display.capabilityCheckDisplay(model, 'text', true).label, '未检测')
+
+  model.capabilityChecks = { ...waiting,
+    text: { status: 'supported', reason: '接口请求及返回格式验证通过' },
+    vision: { status: 'unsupported', reason: '接口检测 HTTP 404' },
+    'voice-asr': { status: 'pending', reason: '接口检测 HTTP 429，请稍后重试' },
+  }
+  assert.strictEqual(display.capabilityCheckDisplay(model, 'text', true).label, '已确认')
+  assert.strictEqual(display.capabilityCheckDisplay(model, 'vision', true).label, '检测失败')
+  assert.match(display.capabilityCheckDisplay(model, 'vision', true).reason, /未找到接口或模型.*404.*\/v1/)
+  assert.strictEqual(display.capabilityCheckDisplay(model, 'voice-asr', true).status, 'failed')
+  const before = JSON.stringify(model)
+  const summary = display.summarizeCapabilityChecks([model], true)
+  assert.deepStrictEqual([summary.models, summary.total, summary.confirmed, summary.failed, summary.unverified], [1, 4, 1, 2, 1])
+  assert.match(display.capabilitySummaryText(summary), /1 个模型，共 4 项能力：已确认 1 项，检测失败 2 项，未检测 1 项/)
+  assert.strictEqual(JSON.stringify(model), before, 'display must not change saved capabilities or check results')
+
+  const failedChecks = Object.fromEntries(capabilities.map(capability => [capability, { status: 'unsupported', reason: '接口检测 HTTP 404' }]))
+  const failed = display.summarizeCapabilityChecks(Array.from({ length: 10 }, (_, id) => ({ ...model, id: String(id), capabilityChecks: failedChecks })), true)
+  assert.deepStrictEqual([failed.total, failed.confirmed, failed.failed, failed.unverified], [40, 0, 40, 0])
+  assert.strictEqual(failed.failureReasons.length, 1)
+  assert.strictEqual(failed.failureReasons[0].count, 40)
+  assert.deepStrictEqual(display.summarizeCapabilityChecks([], true), { models: 0, total: 0, confirmed: 0, failed: 0, unverified: 0, failureReasons: [] })
+
+  // 已有运行能力仍保留，但本轮超时不能继续显示为检测已确认。
+  model.capabilityChecks.text = { status: 'pending', reason: '能力检测超时，请重试' }
+  assert.strictEqual(display.capabilityCheckDisplay(model, 'text', true).status, 'failed')
+  assert.deepStrictEqual(model.capabilities, ['text'])
+  const reasons = [
+    ['接口检测 HTTP 400', /拒绝了检测参数/], ['接口检测 HTTP 401，请检查权限', /Key 验证失败/],
+    ['接口检测 HTTP 403，请检查权限', /模型权限、账户余额/], ['接口检测 HTTP 405', /不接受检测请求/],
+    ['接口检测 HTTP 415', /数据格式/], ['接口检测 HTTP 429，请稍后重试', /调用受到限制/],
+    ['接口检测 HTTP 500', /供应商服务暂时异常/], ['接口检测 HTTP 502', /供应商服务暂时异常/],
+    ['接口检测 HTTP 501', /尚未提供这个接口/], ['接口检测 HTTP 302', /请求地址发生跳转/],
+    ['接口检测 HTTP 422', /供应商未接受本次检测/], ['能力检测超时，请重试', /未在检测时限内返回/],
+    ['网络或返回格式异常，待重新检测', /未能连接供应商，或返回内容无法读取/],
+    ['返回内容未能确认该能力', /内容不足以确认/], ['语音接口未返回音频数据', /没有返回声音数据/],
+    ['返回内容未确认是音频', /无法识别为音频/], ['UNKNOWN_PRIVATE_ERROR', /没有取得可用结果/],
+  ]
+  for (const [reason, expected] of reasons) assert.match(display.capabilityFailureReason(reason), expected)
+  assert(!display.capabilityFailureReason('UNKNOWN_PRIVATE_ERROR').includes('UNKNOWN_PRIVATE_ERROR'))
+}
+
 // 验证北京时间快捷区间、闰日、日历和长区间趋势分桶。
 function testUsageRangeModel(model) {
   const now = Date.parse('2026-01-01T16:30:00.000Z')
@@ -321,6 +373,7 @@ function main() {
   try {
     testDeployModel(loadService('deploy-model'))
     testAiModelApiModel(loadService('ai-model-api-model'))
+    testCapabilityDetectionDisplay(loadService('ai-capability-display'))
     testUsageRangeModel(loadService('usage-range-model'))
     testResourceModel(loadService('resource-model'))
     testResourceReadability(loadBackendModule('resource-readability'))
