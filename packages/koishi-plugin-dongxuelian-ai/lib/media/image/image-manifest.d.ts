@@ -1,4 +1,4 @@
-type ImageGroup = 'quoted' | 'current';
+type ImageGroup = 'quoted' | 'current' | 'forwarded';
 interface ImageAlias {
     group: ImageGroup;
     ordinal: number;
@@ -32,6 +32,7 @@ interface ImageMessageView {
             elements?: unknown[];
         };
     };
+    _forwardImageMessages?: ImageMessageView[];
 }
 declare function parseImageMediaSegments(view: ImageMessageView): Array<{
     type: string;

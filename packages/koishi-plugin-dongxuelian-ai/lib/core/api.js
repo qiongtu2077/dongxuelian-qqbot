@@ -9,7 +9,7 @@ const { validateImageContent } = require('./image-content');
 const { isDashScopeConfig, todayCst, validatePublicHttpUrl, resolveAndValidateHostname, errorMessage } = require('./utils');
 const { AI_CAPABILITIES, isAiCapability, getProviderCatalogEntry, getVerifiedModelCapabilities, loadCapabilityConfigSync, resolveCapabilityRuntimeSteps, } = require('./ai-capability-config');
 const { notifyCapabilityStepFailure } = require('./capability-failure-notifier');
-const { ModelRequestError: CapabilityUpstreamError, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics');
+const { ModelRequestError: CapabilityUpstreamError, resolveModelQueueFailure, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics');
 const { resolveOneBotWsUrl } = require('./onebot-endpoint');
 const { resolveModelThinkingFields, supportsModelReasoningEffort } = require('./model-thinking');
 // 公开纯参数构造器的稳定结构类型，避免导出内部模块的私有声明。
@@ -642,6 +642,7 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
     let deadline = Infinity, budgetStepIndex = -1;
     let remainingOutput = budget?.total || 0, recoveryUsed = false, recoveryNext = false, attemptNumber = 0;
     let lastFailure = null;
+    const stepFailures = new Map();
     for (let index = startIndex; index < attempts.length; index += 1) {
         const attempt = attempts[index];
         // 每个备用节点独立计时和分配输出预算；同节点截断恢复继续共享本节点预算。
@@ -722,6 +723,7 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
                 ? error
                 : new CapabilityUpstreamError(controller.signal.aborted ? 'AI 上游请求超时' : 'AI 上游网络请求失败', controller.signal.aborted ? 'TIMEOUT' : 'NETWORK_ERROR', true);
             lastFailure = failure;
+            stepFailures.set(index, failure);
             const readable = hasReadableTokenUsage(failure.details.usage);
             const failedUsage = readUsageDetails(failure.details.usage);
             recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(failure.details.usage), { capability, model: attempt.model, usage: failure.details.usage, readable });
@@ -745,7 +747,7 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
                 continue;
             }
             if (!failure.retryable || index >= attempts.length - 1)
-                throw failure;
+                throw resolveModelQueueFailure([...stepFailures.values()], attempts.length);
         }
         finally {
             clearTimeout(timer);
@@ -757,7 +759,7 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
     }
     // 最后一个节点在恢复提交前过期时，保留已记录的上游错误。
     if (lastFailure)
-        throw lastFailure;
+        throw resolveModelQueueFailure([...stepFailures.values()], attempts.length);
     throw new Error('该能力未配置模型');
 }
 async function requestOpenAIResponsesWithSearch(messages, config) {

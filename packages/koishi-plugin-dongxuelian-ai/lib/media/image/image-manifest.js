@@ -62,12 +62,16 @@ function collectMessageImageTargets(view, context) {
 // --- 本轮清单与去重 --- //
 // 引用组在前、当前组在后；只按同频道中已核实的平台媒体编号合并来源。
 function collectImageManifest(session, channelKey, conversationKey, includeQuote = true) {
+    const forwarded = (session._forwardImageMessages || []).flatMap(view => collectMessageImageTargets(view, { channelKey, conversationKey, group: 'forwarded' }));
+    forwarded.forEach((target, index) => { target.aliases[0].ordinal = index + 1; });
     const all = [
+        ...forwarded,
         ...(includeQuote && session.quote ? collectMessageImageTargets(session.quote, { channelKey, conversationKey, group: 'quoted' }) : []),
         ...collectMessageImageTargets(session, { channelKey, conversationKey, group: 'current' }),
     ];
     const unique = new Map();
-    for (const target of all) {
+    // 含消息记录的轮次总共最多读十张，普通多图消息继续沿用完整读取规则。
+    for (const target of forwarded.length ? all.slice(0, 10) : all) {
         const key = target.platformId ? JSON.stringify([channelKey, target.sourceKind, target.platformId]) : target.id;
         const existing = unique.get(key);
         if (existing) {

@@ -51,6 +51,8 @@ declare class ModelRequestError extends Error {
     constructor(message: string, code: string, retryable: boolean, status?: number, details?: FailureDetails);
 }
 declare function sanitizeDiagnosticText(value: unknown, secrets?: string[], limit?: number): string;
+declare function isModelQuotaFailure(error: unknown): error is ModelRequestError;
+declare function resolveModelQueueFailure(failures: ModelRequestError[], expectedSteps: number): ModelRequestError;
 declare function formatModelHttpStatus(status: number): string;
 declare function assertModelResponseOk(response: Response, secrets?: string[]): Promise<void>;
 declare function getModelFailureReason(error: ModelRequestError): string;
@@ -82,6 +84,8 @@ declare function recordModelDiagnostic(event: DiagnosticEvent): void;
 declare function formatRecentModelDiagnostic(): string;
 declare const _default: {
     ModelRequestError: typeof ModelRequestError;
+    isModelQuotaFailure: typeof isModelQuotaFailure;
+    resolveModelQueueFailure: typeof resolveModelQueueFailure;
     sanitizeDiagnosticText: typeof sanitizeDiagnosticText;
     assertModelResponseOk: typeof assertModelResponseOk;
     getModelFailureReason: typeof getModelFailureReason;

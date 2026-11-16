@@ -137,6 +137,8 @@ async function runModuleContract(context) {
     replyGuard: path.join(LIB, 'reply', 'reply-guard'),
     repeat: path.join(LIB, 'behavior', 'repeat'),
     forward: path.join(LIB, 'message', 'forward'),
+    forwardImages: path.join(LIB, 'message', 'forward-images'),
+    modelQuota: path.join(LIB, 'reply', 'model-quota'),
     vision: path.join(LIB, 'media', 'image', 'vision'),
     sensitive: path.join(LIB, 'behavior', 'sensitive'),
     retaliation: path.join(LIB, 'behavior', 'retaliation'),
@@ -619,6 +621,8 @@ async function runModuleContract(context) {
     forward: [
       'resolveForwardSummary',
     ],
+    forwardImages: ['createForwardImageReader'],
+    modelQuota: ['getModelQuotaReply'],
     vision: [
       'prepareExplicitVisionRequest',
       'markSessionForVision', 'isVisionSession', 'getVisionPayload',
@@ -634,7 +638,7 @@ async function runModuleContract(context) {
       'runHealthCheck', 'formatHealthReport', 'resetHealthCache',
     ],
     modelConnectivity: ['runTextConnectivityCheck'],
-    requestDiagnostics: ['ModelRequestError', 'sanitizeDiagnosticText', 'assertModelResponseOk', 'getModelFailureReason', 'getFailedModelUsage', 'formatModelHttpStatus', 'createDiagnosticRequestId', 'buildModelFailureNotice', 'recordModelDiagnostic', 'formatRecentModelDiagnostic'],
+    requestDiagnostics: ['ModelRequestError', 'isModelQuotaFailure', 'resolveModelQueueFailure', 'sanitizeDiagnosticText', 'assertModelResponseOk', 'getModelFailureReason', 'getFailedModelUsage', 'formatModelHttpStatus', 'createDiagnosticRequestId', 'buildModelFailureNotice', 'recordModelDiagnostic', 'formatRecentModelDiagnostic'],
     retaliation: [
       'calculateRetaliationScore',
     ],

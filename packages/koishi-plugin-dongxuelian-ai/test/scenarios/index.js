@@ -1,6 +1,7 @@
 const command = require('./command.test')
 const statusConnectivity = require('./status-connectivity.test')
 const modelDiagnostics = require('./model-diagnostics.test')
+const modelQuota = require('./model-quota.test')
 const retaliation = require('./retaliation.test')
 const githubPreview = require('./github-preview.test')
 const essence = require('./essence.test')
@@ -12,6 +13,7 @@ const sensitive = require('./sensitive.test')
 const fallback = require('./fallback.test')
 const modelThinking = require('./model-thinking.test')
 const forward = require('./forward.test')
+const forwardImages = require('./forward-images.test')
 const vision = require('./vision.test')
 const random = require('./random.test')
 const persistence = require('./persistence.test')
@@ -35,6 +37,7 @@ const SCENARIOS = [
   command,
   statusConnectivity,
   modelDiagnostics,
+  modelQuota,
   retaliation,
   githubPreview,
   essence,
@@ -46,6 +49,7 @@ const SCENARIOS = [
   fallback,
   modelThinking,
   forward,
+  forwardImages,
   vision,
   random,
   persistence,

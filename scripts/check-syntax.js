@@ -12,6 +12,7 @@ const CHECK_DIRS = [
 ]
 
 const CHECK_FILES = [
+  'packages/koishi-plugin-dongxuelian-ai/lib/message/forward-images.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/model-thinking.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/participation-policy.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/participation-guard.js',
@@ -24,6 +25,7 @@ const CHECK_FILES = [
   ...['models', 'input', 'settings', 'repositories', 'client', 'page-screenshot', 'renderer', 'body-content', 'issue-renderer', 'pull-card', 'themes', 'runtime'].map(name => 'packages/koishi-plugin-dongxuelian-ai/lib/github-preview/' + name + '.js'),
   'packages/koishi-plugin-dongxuelian-ai/lib/diagnostics/model-connectivity.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/request-diagnostics.js',
+  'packages/koishi-plugin-dongxuelian-ai/lib/reply/model-quota.js',
   'packages/koishi-plugin-daily-report/lib/report-evidence.js',
   'packages/koishi-plugin-daily-report/lib/report-candidates.js',
   'packages/koishi-plugin-daily-report/lib/report-exchange.js',

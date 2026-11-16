@@ -21,6 +21,13 @@ interface ForwardSession {
     quote?: {
         content?: string;
     };
+    _forwardImageMessages?: Array<{
+        messageId: string;
+        message: Array<{
+            type: string;
+            data: Record<string, unknown>;
+        }>;
+    }>;
 }
 interface ResolveForwardOptions {
     callGetForwardMsg?: ForwardGetter;

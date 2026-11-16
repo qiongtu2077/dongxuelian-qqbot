@@ -7,6 +7,7 @@ const { callGetForwardMsg } = require('../core/api') as typeof import('../core/a
 const { summarizeForwardNodes } = require('./message-reader') as typeof import('./message-reader')
 const { getChannelKey, setLastForwardSummaryCache } = require('../conversation') as typeof import('../conversation')
 const { logDebug } = require('../core/logging-config') as typeof import('../core/logging-config')
+const { createForwardImageReader } = require('./forward-images') as typeof import('./forward-images')
 
 const FORWARD_ID_RE = /(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/
 const BLANK_NICK_CHARS_RE = /[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g
@@ -32,6 +33,7 @@ interface ForwardSession {
   author?: { id?: string }
   bot?: { selfId?: string }
   quote?: { content?: string }
+  _forwardImageMessages?: Array<{ messageId: string; message: Array<{ type: string; data: Record<string, unknown> }> }>
 }
 
 interface ForwardSegment {
@@ -126,9 +128,11 @@ function summarizeNodes(nodes: unknown[]): string {
   return summarizeForwardNodes(nodes, 0, function(x: string): string { return x })
 }
 
-async function normalizeForwardNodes(nodes: unknown[], getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined): Promise<ForwardNode[]> {
+// 有界归一嵌套节点，防止循环引用消耗整轮。
+async function normalizeForwardNodes(nodes: unknown[], getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined, depth = 0): Promise<ForwardNode[]> {
+  if (depth > 4) return []
   const result = await Promise.all(nodes.map(function(node) {
-    return normalizeForwardNode(node, getForwardMsg, ctx)
+    return normalizeForwardNode(node, getForwardMsg, ctx, depth)
   }))
   const filtered: ForwardNode[] = []
   for (const item of result) {
@@ -137,7 +141,9 @@ async function normalizeForwardNodes(nodes: unknown[], getForwardMsg: ForwardGet
   return filtered
 }
 
-async function summarizeNestedForward(nestedId: string, getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined, logLabel?: string): Promise<string> {
+// 复用当前响应读取嵌套转发，在深度上限处停止展开。
+async function summarizeNestedForward(nestedId: string, getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined, logLabel?: string, depth = 1): Promise<string> {
+  if (depth > 4) return ''
   if (!nestedId) return ''
   const nestedData = await getForwardMsg(nestedId)
   const logger = getLogger(ctx)
@@ -146,40 +152,45 @@ async function summarizeNestedForward(nestedId: string, getForwardMsg: ForwardGe
   }
   const nestedArr = normalizeForwardMessages(nestedData)
   if (!nestedArr) return ''
-  const nestedNodes = await normalizeForwardNodes(nestedArr, getForwardMsg, ctx)
+  const nestedNodes = await normalizeForwardNodes(nestedArr, getForwardMsg, ctx, depth)
   return summarizeNodes(nestedNodes)
 }
 
-async function resolveRawNestedForward(rawMessage: string, getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined): Promise<string | null> {
-  const match = rawMessage.match(/\[CQ:forward,id=(\d+)/)
-  if (!match) return null
-  let text = await summarizeNestedForward(match[1], getForwardMsg, ctx, 'cq inner')
+// CQ 转发资源可以是数字或 SL 返回的非数字资源 ID。
+async function resolveRawNestedForward(rawMessage: string, getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined, depth: number): Promise<string | null> {
+  const nestedId = extractForwardId(rawMessage)
+  if (!nestedId) return null
+  let text = await summarizeNestedForward(nestedId, getForwardMsg, ctx, 'cq inner', depth + 1)
   if (!text || text.indexOf('[CQ:forward') >= 0) text = NESTED_FORWARD_UNAVAILABLE
   return text
 }
 
-async function resolveStructuredMessageText(segments: unknown, getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined): Promise<string> {
+// 结构化转发在同一深度预算内展开。
+async function resolveStructuredMessageText(segments: unknown, getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined, depth: number): Promise<string> {
   const nestedSegment = findNestedForwardSegment(segments)
   if (!nestedSegment) return messageSegmentsToText(segments)
 
   const nestedId = getNestedForwardId(nestedSegment)
-  let text = await summarizeNestedForward(nestedId, getForwardMsg, ctx)
+  const inline = nestedSegment.data?.content
+  let text = Array.isArray(inline) ? summarizeNodes(await normalizeForwardNodes(inline, getForwardMsg, ctx, depth + 1))
+    : await summarizeNestedForward(nestedId, getForwardMsg, ctx, undefined, depth + 1)
   if (!text || text.indexOf('[CQ:forward') >= 0) text = NESTED_FORWARD_UNAVAILABLE
   return text
 }
 
-async function normalizeForwardNode(node: unknown, getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined): Promise<ForwardNode | null> {
+// 保留原节点或生成带作者的可读摘要。
+async function normalizeForwardNode(node: unknown, getForwardMsg: ForwardGetter, ctx: ForwardContext | null | undefined, depth: number): Promise<ForwardNode | null> {
   const item = asForwardSegment(node)
   if (item.type === 'node' && item.data) return item as ForwardNode
 
   const nickname = normalizeNickname(item.sender || {})
   let messageText = item.raw_message || ''
-  const rawNestedText = messageText ? await resolveRawNestedForward(messageText, getForwardMsg, ctx) : null
+  const rawNestedText = messageText ? await resolveRawNestedForward(messageText, getForwardMsg, ctx, depth) : null
 
   if (rawNestedText !== null) {
     messageText = rawNestedText
   } else if (Array.isArray(item.message)) {
-    messageText = await resolveStructuredMessageText(item.message, getForwardMsg, ctx)
+    messageText = await resolveStructuredMessageText(item.message, getForwardMsg, ctx, depth)
   }
 
   return makeSummaryNode(nickname, messageText)
@@ -187,7 +198,9 @@ async function normalizeForwardNode(node: unknown, getForwardMsg: ForwardGetter,
 
 // 展开当前消息或其引用中的转发正文，供两个 OneBot 协议共用。
 async function resolveForwardSummary(session: ForwardSession, content: unknown, ctx: ForwardContext | null | undefined, options: ResolveForwardOptions = {}): Promise<string> {
-  const getForwardMsg = options.callGetForwardMsg || callGetForwardMsg
+  delete session._forwardImageMessages
+  const reader = createForwardImageReader(options.callGetForwardMsg || callGetForwardMsg)
+  const getForwardMsg = reader.getForwardMsg
   // 适配器把 reply 移到 session.quote；当前消息没有转发时才读取该引用。
   const forwardId = extractForwardId(content) || extractForwardId(session.quote?.content)
   if (!forwardId) return ''
@@ -197,9 +210,10 @@ async function resolveForwardSummary(session: ForwardSession, content: unknown, 
   const forwardMessages = normalizeForwardMessages(forwardData)
   if (!forwardMessages || forwardMessages.length === 0) return ''
 
+  session._forwardImageMessages = await reader.collectImages(forwardId)
   const nodes = await normalizeForwardNodes(forwardMessages, getForwardMsg, ctx)
   if (nodes.length === 0) return ''
-  const forwardSummaryText = summarizeNodes(nodes)
+  const forwardSummaryText = summarizeNodes(nodes) + (session._forwardImageMessages.length >= 10 ? '\n[消息记录图片最多读取前10张，其余图片未读取，不得猜测。]' : '')
   logDebug(ctx, 'forward', 'summary len=' + (forwardSummaryText ? forwardSummaryText.length : 0))
   if (forwardSummaryText) setLastForwardSummaryCache(getChannelKey(session), forwardSummaryText)
   return forwardSummaryText

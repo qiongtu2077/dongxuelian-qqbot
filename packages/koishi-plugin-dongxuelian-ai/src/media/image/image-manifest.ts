@@ -7,7 +7,7 @@ const { createHash } = require('crypto') as typeof import('crypto')
 const { normalizeSegmentData, extractAttrValue, extractCqAttrValue } = require('../../message/message-segment') as typeof import('../../message/message-segment')
 const { isImageFileCandidate } = require('../file/file-safety') as typeof import('../file/file-safety')
 
-type ImageGroup = 'quoted' | 'current'
+type ImageGroup = 'quoted' | 'current' | 'forwarded'
 interface ImageAlias { group: ImageGroup; ordinal: number; originalMessageId: string; mediaIndex: number }
 interface ImageTarget {
   id: string
@@ -32,6 +32,7 @@ interface ImageMessageView {
   elements?: unknown[]
   message?: unknown[]
   event?: { message?: unknown[] | { elements?: unknown[] } }
+  _forwardImageMessages?: ImageMessageView[]
 }
 
 // --- 协议解析 --- //
@@ -89,12 +90,16 @@ function collectMessageImageTargets(view: ImageMessageView, context: { channelKe
 
 // 引用组在前、当前组在后；只按同频道中已核实的平台媒体编号合并来源。
 function collectImageManifest(session: ImageMessageView & { quote?: ImageMessageView }, channelKey: string, conversationKey: string, includeQuote = true): ImageTarget[] {
+  const forwarded = (session._forwardImageMessages || []).flatMap(view => collectMessageImageTargets(view, { channelKey, conversationKey, group: 'forwarded' }))
+  forwarded.forEach((target, index) => { target.aliases[0].ordinal = index + 1 })
   const all = [
+    ...forwarded,
     ...(includeQuote && session.quote ? collectMessageImageTargets(session.quote, { channelKey, conversationKey, group: 'quoted' }) : []),
     ...collectMessageImageTargets(session, { channelKey, conversationKey, group: 'current' }),
   ]
   const unique = new Map<string, ImageTarget>()
-  for (const target of all) {
+  // 含消息记录的轮次总共最多读十张，普通多图消息继续沿用完整读取规则。
+  for (const target of forwarded.length ? all.slice(0, 10) : all) {
     const key = target.platformId ? JSON.stringify([channelKey, target.sourceKind, target.platformId]) : target.id
     const existing = unique.get(key)
     if (existing) {

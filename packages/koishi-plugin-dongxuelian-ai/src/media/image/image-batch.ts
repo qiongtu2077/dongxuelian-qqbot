@@ -10,7 +10,7 @@ const { readImageSourceResult } = require('./image-source') as typeof import('./
 const { acquireImageRequest } = require('./image-request') as typeof import('./image-request')
 const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-config') as typeof import('../../core/ai-capability-config')
 const { requestChatCompletions, freezeChatRoute } = require('../../core/api') as typeof import('../../core/api')
-const { ModelRequestError } = require('../../core/request-diagnostics') as typeof import('../../core/request-diagnostics')
+const { ModelRequestError, resolveModelQueueFailure } = require('../../core/request-diagnostics') as typeof import('../../core/request-diagnostics')
 const { admitTask } = require('../../resource-scheduler/admission') as typeof import('../../resource-scheduler/admission')
 const { normalizeTaskBudget } = require('../../resource-scheduler/task-budget') as typeof import('../../resource-scheduler/task-budget')
 const { writeMediaEvent } = require('../backpressure/media-queue') as typeof import('../backpressure/media-queue')
@@ -54,7 +54,7 @@ function partitionImageTargets(targets: TargetResult[], limits: VisionLimits, pr
 
 // 所有别名都显示来源组与组内位置，避免当前与引用的“第一张”混淆。
 function imageTargetLabel(target: Target): string {
-  return target.aliases.map(alias => `${alias.group === 'quoted' ? '引用' : '当前'}第${alias.ordinal}张`).join(' / ')
+  return target.aliases.map(alias => `${alias.group === 'forwarded' ? '消息记录' : alias.group === 'quoted' ? '引用' : '当前'}第${alias.ordinal}张`).join(' / ')
 }
 
 // --- 获准轮次与完整性 --- //
@@ -62,7 +62,7 @@ function imageTargetLabel(target: Target): string {
 // 收集当前和直接引用图片；只有引用真实段缺失时才使用已存在的历史记录。
 async function collectExplicitImageTargets(session: Parameters<typeof imageManifest.collectImageManifest>[0], channelKey: string, conversationKey: string): Promise<Target[]> {
   const targets = imageManifest.collectImageManifest(session, channelKey, conversationKey)
-  if (session.quote?.messageId && !targets.some(target => target.aliases.some(alias => alias.group === 'quoted'))) {
+  if (!session._forwardImageMessages?.length && session.quote?.messageId && !targets.some(target => target.aliases.some(alias => alias.group === 'quoted'))) {
     const stored = await getImagesForMessage(channelKey, String(session.quote.messageId))
     targets.unshift(...stored.map((entry, index) => ({
       id: entry.messageId, channelKey, conversationKey, originalMessageId: entry.originalMessageId || String(session.quote!.messageId),
@@ -89,6 +89,7 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
   const evidence: string[] = []
   let batchCount = 0
   let request: Awaited<ReturnType<typeof acquireImageRequest>> | null = null
+  let queueFailure: InstanceType<typeof ModelRequestError> | null = null
   // 每个下载和上游节点开始前复检取消、总截止与现有资源准入，不新增无界等待。
   const checkActive = (): void => {
     if (controller.signal.aborted || options.canContinue?.() === false) throw new Error('image_turn_cancelled')
@@ -121,7 +122,8 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
       } else if (request.status === 'owned') {
         const diagnostic = request.diagnostic
         const steps = resolveCapabilityRuntimeSteps('vision')
-        for (const step of steps) {
+        const stepFailures = new Map<number, InstanceType<typeof ModelRequestError>>()
+        for (const [stepIndex, step] of steps.entries()) {
           checkActive()
           const limits = getVisionInputLimits(step.model)
           const pending = ready.filter(item => item.state === 'ready' && !(/^gpt-/.test(step.model) && item.animated) && Math.ceil((item.bytes || 0) / 3) * 4 <= limits.encodedImageBytes
@@ -169,6 +171,8 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
                 batches.unshift(covered.slice(0, middle), covered.slice(middle))
                 continue
               }
+              stepFailures.set(stepIndex, error instanceof ModelRequestError ? error
+                : new ModelRequestError('视觉接口读取失败', 'IMAGE_VISION_FAILED', false))
               covered.forEach(item => { item.reason = error instanceof ModelRequestError ? error.code : 'image_vision_failed' })
               break
             }
@@ -211,6 +215,11 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
           }
         }
         for (const item of ready) if (item.state === 'ready') { item.state = item.reason ? 'failed' : 'unsupported'; item.reason ||= steps.length ? '视觉链无法读取此格式或容量' : '没有可用视觉模型' }
+        // 只有整条视觉链都失败且没有读图成功时，才让统一回复出口展示额度图片。
+        if (stepFailures.size && ready.every(item => item.state === 'failed')) {
+          const failure = resolveModelQueueFailure([...stepFailures.values()], steps.length)
+          if (failure.code === 'MODEL_QUEUE_QUOTA_EXHAUSTED') queueFailure = failure
+        }
         if (ready.every(item => item.state === 'read')) await request.complete(evidence.join('\n\n'))
       } else {
         ready.forEach(item => { item.state = 'failed'; item.reason = request!.status === 'pending' ? '同一组图片仍在处理中' : '图片已失效' })
@@ -240,6 +249,7 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
       }
     }
   }
+  if (queueFailure) throw queueFailure
   if (results.some(item => item.state === 'ready')) throw new Error('image_manifest_incomplete')
   const unread = results.filter(item => !['read', 'reused'].includes(item.state))
   const reasons: Record<string, string> = { image_too_large: '超过10 MiB', source_unavailable: '来源失效或无法访问', image_invalid: '内容与图片类型不符或图片已损坏', image_invalid_or_unavailable: '内容不是可解码图片或来源不可用', image_unsupported_format: '当前视觉链不支持此格式', image_resource_paused: '资源保护暂停读取', image_turn_deadline: '本轮读取超时', image_turn_cancelled: '本轮读取已取消', source_capacity_full: '图片读取繁忙', image_vision_failed: '视觉接口读取失败' }

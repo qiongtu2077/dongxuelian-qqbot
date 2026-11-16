@@ -25,6 +25,7 @@ const satoriCore = require('@satorijs/core');
 const KoishiSession = satoriCore.Session;
 const KoishiBot = satoriCore.Bot;
 const { installParticipationGuard } = require('./lifecycle/participation-guard');
+const { getModelQuotaReply } = require('./reply/model-quota');
 const { installSessionCompatibility, } = require('./lifecycle/session-compat'); // Koishi/Satori Session 兼容补丁
 const { createBotResolver, withCurrentBot, } = require('./lifecycle/bot-resolver'); // 当前 bot 解析与异步 session 注入
 const { enqueueForChannel, } = require('./lifecycle/channel-task-queue'); // 同频道任务串行队列
@@ -816,6 +817,9 @@ function apply(ctx) {
                 const m = getIndexErrorMessage(err);
                 const code = getIndexErrorCode(err);
                 ctx.logger('dongxuelian-ai').warn(`chat failed: name=${getIndexErrorName(err)} code=${code} message=${m}`);
+                const quotaReply = getModelQuotaReply(err);
+                if (quotaReply)
+                    return safeSendReplyWithFreshness(ctx, liveSession, quotaReply, randomTriggered, resolveBot, randomSendOptions);
                 let msg = '东雪莲暂时无法连接。';
                 if (/fallback/i.test(m))
                     msg = '我寄了';

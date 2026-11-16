@@ -15,7 +15,7 @@ const {
   resolveCapabilityRuntimeSteps,
 } = require('./ai-capability-config') as typeof import('./ai-capability-config')
 const { notifyCapabilityStepFailure } = require('./capability-failure-notifier') as typeof import('./capability-failure-notifier')
-const { ModelRequestError: CapabilityUpstreamError, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics') as typeof import('./request-diagnostics')
+const { ModelRequestError: CapabilityUpstreamError, resolveModelQueueFailure, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics') as typeof import('./request-diagnostics')
 const { resolveOneBotWsUrl } = require('./onebot-endpoint') as typeof import('./onebot-endpoint')
 const { resolveModelThinkingFields, supportsModelReasoningEffort } = require('./model-thinking') as typeof import('./model-thinking')
 // 公开纯参数构造器的稳定结构类型，避免导出内部模块的私有声明。
@@ -770,6 +770,7 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
   let deadline = Infinity, budgetStepIndex = -1
   let remainingOutput = budget?.total || 0, recoveryUsed = false, recoveryNext = false, attemptNumber = 0
   let lastFailure: InstanceType<typeof CapabilityUpstreamError> | null = null
+  const stepFailures = new Map<number, InstanceType<typeof CapabilityUpstreamError>>()
 
   for (let index = startIndex; index < attempts.length; index += 1) {
     const attempt = attempts[index]
@@ -843,6 +844,7 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
         ? error
         : new CapabilityUpstreamError(controller.signal.aborted ? 'AI 上游请求超时' : 'AI 上游网络请求失败', controller.signal.aborted ? 'TIMEOUT' : 'NETWORK_ERROR', true)
       lastFailure = failure
+      stepFailures.set(index, failure)
       const readable = hasReadableTokenUsage(failure.details.usage)
       const failedUsage = readUsageDetails(failure.details.usage)
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(failure.details.usage), { capability, model: attempt.model, usage: failure.details.usage, readable })
@@ -863,14 +865,14 @@ async function requestChatCompletions(messages: ChatMessage[], config: ApiConfig
         recoveryUsed = true; recoveryNext = true; index -= 1
         continue
       }
-      if (!failure.retryable || index >= attempts.length - 1) throw failure
+      if (!failure.retryable || index >= attempts.length - 1) throw resolveModelQueueFailure([...stepFailures.values()], attempts.length)
     } finally {
       clearTimeout(timer)
       try { cleanupExternalSignal?.() } catch { /* non-critical: abort listener cleanup can race with cancellation */ }
     }
   }
   // 最后一个节点在恢复提交前过期时，保留已记录的上游错误。
-  if (lastFailure) throw lastFailure
+  if (lastFailure) throw resolveModelQueueFailure([...stepFailures.values()], attempts.length)
   throw new Error('该能力未配置模型')
 }
 

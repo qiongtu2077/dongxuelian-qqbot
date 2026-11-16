@@ -70,8 +70,30 @@ async function readErrorPrefix(response: Response): Promise<string> {
 // 按上游明确说明区分余额、认证与请求错误；未知原因不推测成欠费。
 function describeModelFailure(status: number, code = '', summary = ''): string {
   if (/欠费|余额不足|insufficient[_ ]balance|balance.{0,20}(insufficient|not enough)|payment required/i.test(summary + ' ' + code)) return '欠费或余额不足'
+  if (hasModelQuotaEvidence(code, summary)) return '额度不足'
   const reasons: Record<number, string> = { 400: '请求被拒绝', 401: '认证失败', 402: '需要付费', 403: '权限不足', 404: '模型或接口不存在', 408: '请求超时', 422: '请求参数校验失败', 429: '请求受限', 502: '上游网关错误', 503: '上游服务暂不可用', 504: '上游网关超时' }
   return reasons[status] || (status >= 500 ? '上游服务错误' : '原因未明')
+}
+
+// 仅识别已确认的额度证据，不将 HTTP 403、429 或普通限流当作欠费。
+function hasModelQuotaEvidence(code: string, summary: string): boolean {
+  return ['insufficient_quota', 'insufficient_user_quota', 'insufficient_balance'].includes(code.toLowerCase())
+    || /额度不足|余额不足|欠费|free quota exhausted|insufficient (?:user )?quota|insufficient balance/i.test(summary)
+}
+
+// 供文字队列和视觉分批队列共享明确的额度失败分类。
+function isModelQuotaFailure(error: unknown): error is ModelRequestError {
+  return error instanceof ModelRequestError && (error.code === 'MODEL_QUEUE_QUOTA_EXHAUSTED'
+    || hasModelQuotaEvidence(error.details.upstreamCode || '', error.details.summary || ''))
+}
+
+// 整队列全部尝试且均失败，并至少包含一次额度不足时，返回专用终态。
+function resolveModelQueueFailure(failures: ModelRequestError[], expectedSteps: number): ModelRequestError {
+  const last = failures[failures.length - 1]
+  if (expectedSteps > 0 && failures.length === expectedSteps && failures.some(isModelQuotaFailure)) {
+    return new ModelRequestError('模型队列全部不可用，且存在额度或余额不足', 'MODEL_QUEUE_QUOTA_EXHAUSTED', false, last.status, last.details)
+  }
+  return last
 }
 
 // HTTP 编号始终附带中文含义，200 空结果也明确区分响应与答案有效性。
@@ -91,7 +113,7 @@ async function assertModelResponseOk(response: Response, secrets: string[] = [])
   const requestId = sanitizeDiagnosticText(response.headers?.get('x-request-id') || response.headers?.get('request-id'), secrets, 100)
   const modelMissing = status === 404 && upstreamCode === 'model_not_found'
   throw new ModelRequestError(`AI 上游请求失败（HTTP ${status}）`, `HTTP_${status}`,
-    modelMissing || [401, 403, 429].includes(status) || status >= 500, status,
+    modelMissing || hasModelQuotaEvidence(upstreamCode, summary) || [401, 403, 429].includes(status) || status >= 500, status,
     { upstreamCode, summary, requestId, reason: describeModelFailure(status, upstreamCode, summary) })
 }
 
@@ -196,4 +218,4 @@ function formatRecentModelDiagnostic(): string {
   } catch { return '最近文字调用：暂无记录' }
 }
 
-export = { ModelRequestError, sanitizeDiagnosticText, assertModelResponseOk, getModelFailureReason, getFailedModelUsage, formatModelHttpStatus, createDiagnosticRequestId, buildModelFailureNotice, recordModelDiagnostic, formatRecentModelDiagnostic, readImageRequestDiagnostic, recordImageRequestEvent }
+export = { ModelRequestError, isModelQuotaFailure, resolveModelQueueFailure, sanitizeDiagnosticText, assertModelResponseOk, getModelFailureReason, getFailedModelUsage, formatModelHttpStatus, createDiagnosticRequestId, buildModelFailureNotice, recordModelDiagnostic, formatRecentModelDiagnostic, readImageRequestDiagnostic, recordImageRequestEvent }

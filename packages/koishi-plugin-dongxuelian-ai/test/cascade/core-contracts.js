@@ -47,6 +47,7 @@ async function runCoreContracts(context) {
     ...['image-manifest', 'image-batch'].map(name => path.join(LIB, 'media', 'image', name + '.js')),
     ...['models', 'input', 'settings', 'repositories', 'client', 'page-screenshot', 'renderer', 'body-content', 'issue-renderer', 'pull-card', 'themes', 'runtime'].map(name => path.join(LIB, 'github-preview', name + '.js')),
     path.join(LIB, 'core', 'request-diagnostics.js'),
+    path.join(LIB, 'reply', 'model-quota.js'),
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-evidence.js'),
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-candidates.js'),
     path.resolve(LIB, '../../koishi-plugin-daily-report/lib/report-exchange.js'),
@@ -141,6 +142,7 @@ async function runCoreContracts(context) {
     path.join(LIB, 'reply', 'reply-guard.js'),
     path.join(LIB, 'behavior', 'repeat.js'),
     path.join(LIB, 'message', 'forward.js'),
+    path.join(LIB, 'message', 'forward-images.js'),
     path.join(LIB, 'behavior', 'sensitive.js'),
     path.join(LIB, 'behavior', 'retaliation.js'),
     path.join(LIB, 'reply', 'send-guard.js'),
@@ -240,10 +242,10 @@ async function runCoreContracts(context) {
   duplicateScanFiles.push('../../koishi-plugin-dashboard/lib/routes/participation.js')
   duplicateScanFiles.push('../../koishi-plugin-dashboard/lib/group-directory.js')
   duplicateScanFiles.push('diagnostics/rare-voice-diagnostics.js')
-  duplicateScanFiles.push('media/image/image-source.js', 'media/image/image-request.js', 'media/image/image-turn.js', 'media/image/image-random-demand.js', 'media/image/image-manifest.js', 'core/image-content.js', 'media/image/image-batch.js')
+  duplicateScanFiles.push('message/forward-images.js', 'media/image/image-source.js', 'media/image/image-request.js', 'media/image/image-turn.js', 'media/image/image-random-demand.js', 'media/image/image-manifest.js', 'core/image-content.js', 'media/image/image-batch.js')
   duplicateScanFiles.push('diagnostics/model-connectivity.js')
   duplicateScanFiles.push(...['models', 'input', 'settings', 'repositories', 'client', 'page-screenshot', 'renderer', 'body-content', 'issue-renderer', 'pull-card', 'themes', 'runtime'].map(name => 'github-preview/' + name + '.js'))
-  duplicateScanFiles.push('core/request-diagnostics.js')
+  duplicateScanFiles.push('core/request-diagnostics.js', 'reply/model-quota.js')
   duplicateScanFiles.push('commands/essence-command.js', '../../koishi-plugin-group-name-at/lib/scope-schema.js')
   duplicateScanFiles.push('daily-precompute/report-period.js', 'daily-precompute/report-records.js')
   duplicateScanFiles.push('daily-precompute/report-analysis.js')
