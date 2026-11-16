@@ -154,11 +154,28 @@ function waitForNextMillisecond() {
   while (Date.now() === started) { /* release IDs intentionally include the millisecond */ }
 }
 
+// 在独立 Node 进程中模拟不同系统语言，验证中文路径不能让同一发布物误报损坏。
+function testCrossLocaleManifest(releaseDir) {
+  const script = `
+const locale = process.argv[1]
+const builtinCompare = String.prototype.localeCompare
+// 仅在测试子进程中模拟系统默认语言，不影响测试宿主或生产全局状态。
+String.prototype.localeCompare = function compareInSelectedLocale(other) { return builtinCompare.call(this, other, locale) }
+require(process.argv[2]).main([process.argv[3]])
+`
+  for (const locale of ['zh-CN', 'en-US']) {
+    const result = spawnSync(process.execPath, ['-e', script, locale, path.join(REPO_ROOT, 'scripts', 'verify-release-manifest.js'), releaseDir], { encoding: 'utf8', timeout: 120000 })
+    assert.strictEqual(result.status, 0, `manifest rejected under ${locale}: ${result.stderr || result.stdout}`)
+    assert.strictEqual(JSON.parse(result.stdout).ok, true)
+  }
+}
+
 // Verifies exact manifest coverage, browser resources, package coverage, and sensitive exclusions.
 function testReleaseManifest(tempRoot) {
   const outputRoot = path.join(tempRoot, 'builds')
   const first = buildDashboardRelease(REPO_ROOT, outputRoot)
   const manifest = verifyReleaseManifest(first.releaseDir)
+  testCrossLocaleManifest(first.releaseDir)
   const listed = new Set(manifest.files.map(item => item.path))
 
   assert(listed.has('packages/koishi-plugin-dashboard/lib/release.js'))

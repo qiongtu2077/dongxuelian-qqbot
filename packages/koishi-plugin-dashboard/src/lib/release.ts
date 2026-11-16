@@ -77,6 +77,11 @@ function sha256File(filePath: string): string {
   return hash.digest('hex')
 }
 
+// 比较路径的 Unicode 编码顺序，避免不同系统语言改变中文文件的清单顺序。
+function compareReleaseFiles(left: ReleaseFile, right: ReleaseFile): number {
+  return left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+}
+
 // Lists every payload file in stable relative-path order, excluding the self-referential manifest.
 function listReleaseFiles(root: string): ReleaseFile[] {
   const files: ReleaseFile[] = []
@@ -97,7 +102,7 @@ function listReleaseFiles(root: string): ReleaseFile[] {
     }
   }
   walk(root)
-  return files.sort((left, right) => left.path.localeCompare(right.path))
+  return files.sort(compareReleaseFiles)
 }
 
 // Hashes the immutable manifest payload fields in a deterministic order.
@@ -218,8 +223,9 @@ function verifyReleaseManifest(releaseRoot: string): ReleaseManifest {
   const { manifestHash, ...manifestBase } = manifest
   if (computeManifestHash(manifestBase) !== manifestHash) throw new Error('发布清单哈希不一致')
   const actualFiles = listReleaseFiles(root)
-  if (JSON.stringify(actualFiles) !== JSON.stringify(manifest.files)) throw new Error('发布物文件清单不一致')
-  if (crypto.createHash('sha256').update(JSON.stringify(actualFiles)).digest('hex') !== manifest.contentHash) throw new Error('发布内容哈希不一致')
+  // version=1 的既有清单按创建机器语言排序；逐项内容比较与内容哈希分别校验。
+  if (JSON.stringify(actualFiles) !== JSON.stringify([...manifest.files].sort(compareReleaseFiles))) throw new Error('发布物文件清单不一致')
+  if (crypto.createHash('sha256').update(JSON.stringify(manifest.files)).digest('hex') !== manifest.contentHash) throw new Error('发布内容哈希不一致')
   verifyBrowserAssets(root, manifest)
   return manifest
 }
