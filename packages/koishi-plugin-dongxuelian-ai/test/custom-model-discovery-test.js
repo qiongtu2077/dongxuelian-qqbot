@@ -63,6 +63,7 @@ async function testSanitizedErrors() {
 
 // 顺序执行模型发现测试并输出稳定结果。
 async function main() {
+  assert.strictEqual(require('node:net').getDefaultAutoSelectFamilyAttemptTimeout(), 2000, '模型请求应给每个 IP 两秒连接时间')
   testUrlCandidates()
   await testUrlSecurity()
   await testDiscovery()

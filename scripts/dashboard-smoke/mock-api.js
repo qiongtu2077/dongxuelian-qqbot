@@ -82,6 +82,7 @@ const mockState = {
   serverModeSource: 'resource-control/config.json',
   maintenance: false,
   participation: { version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} },
+  groupNames: { 10001: '东雪莲测试群', 20002: '另一个测试群' },
   resourceCancelAttempts: 0,
   resourceScenario: 'idle',
   openAiKeyConfigured: true,
@@ -409,7 +410,15 @@ function apiMock(method, pathname, body) {
     groupUserWhitelist: { label: '混合白名单', data: { groups: ['10001'], users: ['20002'] } },
   })
   if (method === 'PUT' && pathname === '/whitelist') return writeOk('whitelist saved')
-  if (method === 'GET' && pathname === '/groups') return ok({ ok: true, groups: { 10001: '东雪莲测试群', 20002: '另一个测试群' } })
+  if (method === 'GET' && pathname === '/groups') return ok({ ok: true, groups: mockState.groupNames })
+  if (method === 'POST' && pathname === '/groups/import') {
+    for (const id of body.body.groupIds) if (!(id in mockState.groupNames)) mockState.groupNames[id] = ''
+    return ok({ ok: true, groups: mockState.groupNames })
+  }
+  if (method === 'PUT' && pathname === '/groups') {
+    mockState.groupNames[body.body.groupId] = body.body.name
+    return ok({ ok: true, groups: mockState.groupNames, message: '群名已保存' })
+  }
 
   if (method === 'GET' && pathname === '/bot/status') return ok({ running: true, workers: 1, qq: '123456' })
   if (method === 'GET' && pathname === '/protocol/status') return ok({ supported: true, selected: mockState.protocol, switching: false, installed: true, conflict: false })

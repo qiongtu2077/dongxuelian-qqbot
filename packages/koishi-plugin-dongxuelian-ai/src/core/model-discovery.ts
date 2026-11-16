@@ -10,6 +10,10 @@ const {
 const dns = require('dns').promises as typeof import('dns').promises
 const net = require('net') as typeof import('net')
 
+// 每个 IP 留出两秒建立 TCP 连接；沿用多地址切换，避免默认 250ms 提前掐断跨境连接。
+// 管理入口加载本模块后，模型发现和后续能力检测使用同一进程默认值。
+net.setDefaultAutoSelectFamilyAttemptTimeout(2000)
+
 interface FetchResponseLike {
   ok: boolean
   status: number

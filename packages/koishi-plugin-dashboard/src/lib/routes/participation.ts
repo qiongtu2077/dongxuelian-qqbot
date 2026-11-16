@@ -15,6 +15,55 @@ const policy = loadManagementModule('core.participationPolicy')
 interface UpdateBody { kind: 'private' | 'group' | 'group-abusive'; enabled: boolean; groupId?: string }
 interface WriteTarget { name: string; filePath: string; content: Buffer }
 
+const GROUP_NAMES_FILE = 'dashboard-group-names.json'
+const MAX_GROUP_NAME_LENGTH = 128
+let groupNameImportQueue: Promise<void> = Promise.resolve()
+
+// --- 群名导入与手动备注 ---
+
+// 只读取本地保存的群名；空字符串也表示已经导入，刷新时不再查询 QQ。
+function readSavedGroupNames(): Record<string, string> {
+  const value = readFeatureFile(GROUP_NAMES_FILE, {})
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('已保存群名格式无效')
+  for (const [id, name] of Object.entries(value)) {
+    if (!policy.GROUP_ID_PATTERN.test(id) || typeof name !== 'string' || name.length > MAX_GROUP_NAME_LENGTH) throw new Error('已保存群号或群名无效')
+  }
+  return value as Record<string, string>
+}
+
+// 在配置事务内保存群名并回读校验，失败时保留原有备注。
+function saveGroupNames(groups: Record<string, string>): void {
+  executeConfigTransaction({
+    dataDir: DATA_DIR,
+    targets: [target(GROUP_NAMES_FILE, groups)],
+    refresh: () => { readSavedGroupNames() },
+    verify: () => {
+      if (JSON.stringify(readSavedGroupNames()) !== JSON.stringify(groups)) throw new Error('群名写入校验失败')
+    },
+  })
+}
+
+// 串行导入缺失群名，异步读取后重新合并，避免覆盖同时提交的手动名称。
+function importGroupNames(ids: string[]): Promise<{ groups: Record<string, string>; message?: string }> {
+  const operation = groupNameImportQueue.then(async () => {
+    const saved = readSavedGroupNames()
+    const missing = ids.filter(id => !Object.prototype.hasOwnProperty.call(saved, id))
+    if (!missing.length) return { groups: saved }
+    let directory: Record<string, string> = {}
+    let message: string | undefined
+    try { directory = await readGroupNames() }
+    catch { message = '群名读取失败，已保留群号，请手动填写名称。' }
+    const groups = readSavedGroupNames()
+    for (const id of missing) {
+      if (!Object.prototype.hasOwnProperty.call(groups, id)) groups[id] = (directory[id] || '').slice(0, MAX_GROUP_NAME_LENGTH)
+    }
+    saveGroupNames(groups)
+    return { groups, message }
+  })
+  groupNameImportQueue = operation.then(() => {}, () => {})
+  return operation
+}
+
 // --- 功能默认值与原子保存 ---
 
 // 读取已有功能文件，缺失文件沿用该功能明确的默认数据。
@@ -88,11 +137,46 @@ function handleGetParticipation(req: IncomingMessage, res: ServerResponse): void
   catch (error) { json(res, { ok: false, message: getErrorMessage(error) }, 500) }
 }
 
-// 独立读取群名，QQ 离线不会影响参与开关配置的读取和保存。
-async function handleGetGroupNames(req: IncomingMessage, res: ServerResponse): Promise<void> {
+// 读取持久群名，不查询 QQ，也不会覆盖管理员修改的名称。
+function handleGetGroupNames(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
-  try { json(res, { ok: true, groups: await readGroupNames() }) }
-  catch (error) { json(res, { ok: false, message: getErrorMessage(error) }, 502) }
+  try { json(res, { ok: true, groups: readSavedGroupNames() }) }
+  catch (error) { json(res, { ok: false, message: getErrorMessage(error) }, 500) }
+}
+
+// 仅为已加入总开关列表且尚未保存名称的群读取一次 QQ 群名。
+function handleImportGroupNames(req: IncomingMessage, res: ServerResponse): void {
+  if (!requireAdmin(req, res)) return
+  collectBody(req, res, async text => {
+    let body: { groupIds?: unknown } | null
+    try { body = JSON.parse(text) } catch { return json(res, { ok: false, message: '请求必须是有效 JSON' }, 400) }
+    try {
+      const current = policy.readParticipationPolicy()
+      if (!body || !Array.isArray(body.groupIds) || body.groupIds.length > 1000 || body.groupIds.some(id => typeof id !== 'string' || !policy.GROUP_ID_PATTERN.test(id) || !(id in current.groups || id in current.abusiveGroups))) {
+        return json(res, { ok: false, message: '请提供已加入列表的有效群号' }, 400)
+      }
+      json(res, { ok: true, ...await importGroupNames([...new Set(body.groupIds as string[])]) })
+    } catch (error) { json(res, { ok: false, message: getErrorMessage(error) }, 500) }
+  })
+}
+
+// 编辑控制台名称，只更新本地备注，不调用 QQ 改名接口。
+function handlePutGroupName(req: IncomingMessage, res: ServerResponse): void {
+  if (!requireAdmin(req, res)) return
+  collectBody(req, res, text => {
+    let body: { groupId?: unknown; name?: unknown } | null
+    try { body = JSON.parse(text) } catch { return json(res, { ok: false, message: '请求必须是有效 JSON' }, 400) }
+    if (!body || typeof body.groupId !== 'string' || !policy.GROUP_ID_PATTERN.test(body.groupId) || typeof body.name !== 'string' || body.name.trim().length > MAX_GROUP_NAME_LENGTH) {
+      return json(res, { ok: false, message: '请提供有效群号和不超过 128 字的群名' }, 400)
+    }
+    try {
+      const current = policy.readParticipationPolicy()
+      if (!(body.groupId in current.groups || body.groupId in current.abusiveGroups)) return json(res, { ok: false, message: '请先将群加入总开关列表' }, 400)
+      const groups = { ...readSavedGroupNames(), [body.groupId]: body.name.trim() }
+      saveGroupNames(groups)
+      json(res, { ok: true, groups, message: '群名已保存' })
+    } catch (error) { json(res, { ok: false, message: getErrorMessage(error) }, 500) }
+  })
 }
 
 // 只允许管理员提交明确的布尔开关和有效数字群号。
@@ -115,6 +199,8 @@ function handlePutParticipation(req: IncomingMessage, res: ServerResponse): void
 
 export const routes = {
   'GET /dashboard/api/groups': handleGetGroupNames,
+  'POST /dashboard/api/groups/import': handleImportGroupNames,
+  'PUT /dashboard/api/groups': handlePutGroupName,
   'GET /dashboard/api/participation': handleGetParticipation,
   'PUT /dashboard/api/participation': handlePutParticipation,
 }

@@ -61,7 +61,7 @@ async function main() {
     } else {
       await installApiMock(page)
       await runClicks(page)
-      if (process.env.DASHBOARD_SMOKE_PROTOCOL_ONLY !== '1' && expectedCancelConflicts !== 1) throw new Error('Expected exactly one rejected cancellation in the error-dialog scenario')
+      if (process.env.DASHBOARD_SMOKE_PROTOCOL_ONLY !== '1' && process.env.DASHBOARD_SMOKE_PARTICIPATION_ONLY !== '1' && expectedCancelConflicts !== 1) throw new Error('Expected exactly one rejected cancellation in the error-dialog scenario')
     }
     if (responseErrors.length) throw new Error('Browser response errors:\n' + responseErrors.join('\n'))
     if (consoleErrors.length) throw new Error('Browser console errors:\n' + consoleErrors.join('\n'))

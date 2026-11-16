@@ -139,7 +139,19 @@ async function verifyParticipationControls(page) {
   await waitForText(page, '东雪莲测试群')
   await clickVisibleSelector(page, '.participation-group-editor .participation-total-switch .participation-track')
   await page.waitForFunction(sel => document.querySelector(sel)?.checked === true && !document.querySelector(sel)?.disabled, {}, groupSwitch)
-  await page.waitForFunction(() => document.querySelector('.participation-group-number')?.textContent.includes('10001 · 东雪莲测试群'))
+  await page.waitForFunction(() => document.querySelector('input[aria-label="群 10001 名称"]')?.value === '东雪莲测试群')
+  await page.click('input[aria-label="群 10001 名称"]', { clickCount: 3 })
+  await page.keyboard.type('我的群备注')
+  await clickVisibleSelector(page, 'button[aria-label="保存群 10001 名称"]')
+  await waitForText(page, '群名已保存')
+  await page.reload({ waitUntil: 'networkidle0' })
+  await page.waitForFunction(() => document.querySelector('input[aria-label="群 10001 名称"]')?.value === '我的群备注')
+  await page.type('#participation-group-id', '10001')
+  // 恢复测试目录名称，后续白名单和资源页继续验证同一份本地群目录。
+  await page.click('input[aria-label="群 10001 名称"]', { clickCount: 3 })
+  await page.keyboard.type('东雪莲测试群')
+  await clickVisibleSelector(page, 'button[aria-label="保存群 10001 名称"]')
+  await waitForText(page, '群名已保存')
   await page.waitForFunction(sel => document.querySelector(sel)?.checked === false, {}, abusiveSwitch)
   await clickVisibleSelector(page, '.participation-group-row .participation-abusive-switch .participation-track')
   await page.waitForFunction(sel => document.querySelector(sel)?.checked === true && !document.querySelector(sel)?.disabled, {}, abusiveSwitch)
@@ -450,6 +462,10 @@ async function runClicks(page) {
   await waitForText(page, '功能介绍')
   if (process.env.DASHBOARD_SMOKE_PROTOCOL_ONLY === '1') {
     await verifyProtocolSwitch(page)
+    return
+  }
+  if (process.env.DASHBOARD_SMOKE_PARTICIPATION_ONLY === '1') {
+    await verifyControlPanel(page)
     return
   }
   await verifyLegacyAgentTabColdStart(page)

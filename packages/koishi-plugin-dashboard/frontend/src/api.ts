@@ -166,6 +166,12 @@ export async function fetchModes() { return get('/modes') }
 export async function fetchWhitelist(): Promise<ApiResult<WhitelistMap | null>> { return get<WhitelistMap>('/whitelist', true) }
 // 读取当前机器人所在群的名称，沿用控制台的管理员鉴权。
 export async function fetchGroupNames(): Promise<ApiResult<GroupNamesResponse | null>> { return get<GroupNamesResponse>('/groups', true) }
+
+// 首次加入群时读取名称，此后只使用服务端保存的备注。
+export async function importGroupNames(groupIds: string[]): Promise<ApiResult<GroupNamesResponse | null>> { return post<GroupNamesResponse>('/groups/import', { groupIds }, true) }
+
+// 保存控制台群名，不修改 QQ 群的实际名称。
+export async function saveGroupName(groupId: string, name: string): Promise<ApiResult<GroupNamesResponse | null>> { return put<GroupNamesResponse>('/groups', { groupId, name }, true) }
 export async function updateWhitelist(type: string, data: unknown): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/whitelist', { type, data }, true) }
 export async function fetchFeatures(): Promise<ApiResult<FeatureInfo[] | null>> { return get<FeatureInfo[]>('/features') }
 export async function fetchCommands(): Promise<ApiResult<CommandGroup[] | null>> { return get<CommandGroup[]>('/commands') }

@@ -20,7 +20,11 @@
     </div>
     <div v-if="groups.length" class="participation-groups">
       <div v-for="group in groups" :key="group.id" class="participation-group-row">
-        <span class="participation-group-number">{{ group.id }}<span v-if="groupNames[group.id]" class="participation-group-name"> · {{ groupNames[group.id] }}</span></span>
+        <div class="participation-group-identity">
+          <span class="participation-group-number">{{ group.id }}</span>
+          <input v-model="nameDrafts[group.id]" class="participation-name-input" :aria-label="`群 ${group.id} 名称`" maxlength="128" placeholder="填写群名" :disabled="loading || saving || loadFailed" @keydown.enter.prevent="saveName(group.id)" />
+          <button v-if="nameDrafts[group.id] !== (groupNames[group.id] || '')" type="button" class="btn btn-sm btn-ghost" :aria-label="`保存群 ${group.id} 名称`" :disabled="loading || saving || loadFailed" @click="saveName(group.id)">保存</button>
+        </div>
         <div class="participation-group-actions">
           <label class="participation-switch participation-abusive-switch">
             <span>嘴臭开关</span>
@@ -36,6 +40,7 @@
         </div>
       </div>
     </div>
+    <p class="participation-note">群名仅在导入时读取一次，可修改后保存；不会修改 QQ 群名称。</p>
     <p class="participation-note">关闭后，本群消息、戳一戳、通知和排队任务后续发送均停止。重新开启保留已有功能设置。</p>
     <p class="participation-note">嘴臭开关默认关闭。开启后覆盖本群所有人格，正常聊天、道歉和主动插话也持续嘴臭；关闭后恢复原有人格与回复规则。</p>
     <div v-if="loading" class="participation-note" role="status">正在读取参与开关…</div>
@@ -58,7 +63,7 @@
 
 <script setup lang="ts">
 import { computed, inject, onMounted, ref } from 'vue'
-import { fetchParticipation, saveParticipation } from '../api'
+import { fetchParticipation, importGroupNames, saveGroupName, saveParticipation } from '../api'
 import { errorMessage, messageFromData } from '../types'
 import type { MessageState, ShowAdminDialog } from '../types'
 import { isParticipationGroupId, listParticipationGroups } from '../services/participation-model'
@@ -69,6 +74,7 @@ const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
 const { groupNames, refreshGroupNames } = useGroupNames()
 const policy = ref<ParticipationPolicy>({ version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} })
 const groupId = ref('')
+const nameDrafts = ref<Record<string, string>>({})
 const loading = ref(true)
 const saving = ref(false)
 const loadFailed = ref(false)
@@ -77,6 +83,42 @@ const validGroupId = computed(() => isParticipationGroupId(groupId.value))
 const selectedEnabled = computed(() => policy.value.groups[groupId.value] === true)
 const selectedAbusiveEnabled = computed(() => policy.value.abusiveGroups[groupId.value] === true)
 const groups = computed(() => listParticipationGroups(policy.value))
+
+// 只为新加入的群导入名称；原有名称和其他行尚未保存的输入均保留。
+async function loadNames(): Promise<void> {
+  await refreshGroupNames(true)
+  const missing = groups.value.map(group => group.id).filter(id => !Object.prototype.hasOwnProperty.call(groupNames.value, id))
+  if (missing.length) {
+    const response = await importGroupNames(missing)
+    if (!response.ok || !response.data?.groups) throw new Error(messageFromData(response.data, '群名导入失败'))
+    groupNames.value = response.data.groups
+    if (response.data.message) message.value = { type: 'err', text: response.data.message }
+  }
+  for (const group of groups.value) {
+    if (!(group.id in nameDrafts.value)) nameDrafts.value[group.id] = groupNames.value[group.id] || ''
+  }
+}
+
+// 名称保存成功后才更新已保存值；失败保留输入，并支持管理员验证后重试。
+async function saveName(id: string, retried = false): Promise<void> {
+  const name = (nameDrafts.value[id] || '').trim()
+  if (saving.value) return
+  if (name === (groupNames.value[id] || '')) { nameDrafts.value[id] = name; return }
+  saving.value = true
+  message.value = null
+  try {
+    const response = await saveGroupName(id, name)
+    if (response.code === 'ADMIN_REQUIRED' && !retried && showAdminDialog) {
+      showAdminDialog('修改群名需要管理员密码', () => saveName(id, true))
+      return
+    }
+    if (!response.ok || !response.data?.groups) throw new Error(messageFromData(response.data, '群名保存失败'))
+    groupNames.value = response.data.groups
+    nameDrafts.value[id] = response.data.groups[id] || ''
+    message.value = { type: 'ok', text: '群名已保存' }
+  } catch (error) { message.value = { type: 'err', text: errorMessage(error) } }
+  finally { saving.value = false }
+}
 
 // 读取真实配置；鉴权或读取失败时禁用开关，防止用默认值覆盖服务器。
 async function load(): Promise<void> {
@@ -91,8 +133,9 @@ async function load(): Promise<void> {
     }
     if (!response.ok || !response.data?.policy) throw new Error(messageFromData(response.data, '参与开关读取失败'))
     policy.value = response.data.policy
-    void refreshGroupNames()
     message.value = null
+    // 名称读取失败只影响备注，不禁用已经成功读取的总开关。
+    try { await loadNames() } catch (error) { message.value = { type: 'err', text: errorMessage(error) } }
   } catch (error) {
     loadFailed.value = true
     message.value = { type: 'err', text: errorMessage(error) }
@@ -112,6 +155,7 @@ async function save(change: ParticipationChange, retried = false): Promise<void>
     if (!response.ok || !response.data?.policy) throw new Error(messageFromData(response.data, '参与开关保存失败'))
     policy.value = response.data.policy
     message.value = { type: 'ok', text: messageFromData(response.data, '参与开关已保存并生效') }
+    if (change.kind !== 'private' && groups.value.some(group => !(group.id in nameDrafts.value))) await loadNames()
   } catch (error) { message.value = { type: 'err', text: errorMessage(error) } }
   finally { saving.value = false }
 }
@@ -150,6 +194,8 @@ onMounted(load)
 .participation-groups { margin-top: 16px; border-top: 1px solid var(--border); }
 .participation-group-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .participation-group-number { font-family: monospace; font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
+.participation-group-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; flex: 1; }
+.participation-name-input { width: 220px; max-width: 100%; min-width: 100px; padding: 6px 8px; font-family: var(--font-body, sans-serif); }
 .participation-group-name { font-family: var(--font-body, sans-serif); color: var(--text3); }
 .participation-group-actions { display: flex; align-items: center; justify-content: flex-end; gap: 24px; margin-left: auto; }
 .participation-private { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }

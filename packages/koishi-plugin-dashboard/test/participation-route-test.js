@@ -30,11 +30,12 @@ function loadRoutes(dataDir, policy, state) {
     '../config-transaction': { executeConfigTransaction: options => executeConfigTransaction({
       ...options,
       hooks: { beforeStage(stage, name) {
-        if (state.fail && stage === 'replacing' && name === 'bot-participation.json') throw new Error('injected policy write failure')
+        if (stage === 'replacing' && (state.fail && name === 'bot-participation.json' || state.failNames && name === 'dashboard-group-names.json')) throw new Error('injected config write failure')
       } },
     }) },
     '../group-directory': { readGroupNames: async () => {
       state.groupReads = (state.groupReads || 0) + 1
+      if (state.groupWait) await state.groupWait
       if (state.groupError) throw new Error('QQ 离线')
       return { 10001: '东雪莲测试群' }
     } },
@@ -53,21 +54,62 @@ function request(routes, method, body) {
   return result
 }
 
-// 验证群名接口独立鉴权，读取失败不会改写开关配置。
+// 验证群名导入一次、手动修改持久化、鉴权、离线占位及事务失败回滚。
 async function testGroupNamesRoute(routes, state) {
-  // 捕获异步目录路由最终响应。
-  function readGroups() {
-    return new Promise(resolve => routes['GET /dashboard/api/groups']({}, { end: resolve }))
+  // 捕获异步导入和同步读取、保存的最终响应。
+  function call(method = 'GET', body = {}, suffix = '') {
+    return new Promise(resolve => routes[`${method} /dashboard/api/groups${suffix}`]({ body: typeof body === 'string' ? body : JSON.stringify(body) }, { end: resolve }))
   }
   state.authorized = false
-  assert.equal((await readGroups()).status, 403)
+  assert.equal((await call()).status, 403)
+  assert.equal((await call('POST', { groupIds: ['10001'] }, '/import')).status, 403)
+  assert.equal((await call('PUT', { groupId: '10001', name: '备注' })).status, 403)
   assert.equal(state.groupReads || 0, 0)
   state.authorized = true
-  assert.deepEqual((await readGroups()).data.groups, { 10001: '东雪莲测试群' })
+  assert.deepEqual({ ...(await call()).data.groups }, {})
+  assert.equal(state.groupReads || 0, 0, '普通读取不能请求 QQ')
+  for (const body of ['{', null, {}, { groupIds: ['01'] }, { groupIds: ['99999'] }]) assert.equal((await call('POST', body, '/import')).status, 400)
+  assert.deepEqual({ ...(await call('POST', { groupIds: ['10001'] }, '/import')).data.groups }, { 10001: '东雪莲测试群' })
+  assert.equal(state.groupReads, 1)
+  const saved = await call('PUT', { groupId: '10001', name: ' 自定义群名 <名称> ' })
+  assert.equal(saved.status, 200)
+  assert.equal(saved.data.groups['10001'], '自定义群名 <名称>')
+  state.failNames = true
+  assert.equal((await call('PUT', { groupId: '10001', name: '不能保存' })).status, 500)
+  assert.equal((await call()).data.groups['10001'], '自定义群名 <名称>')
+  state.failNames = false
+  for (const body of ['{', null, { groupId: '99999', name: '未知群' }, { groupId: '__proto__', name: 'x' }, { groupId: '10001', name: '长'.repeat(129) }, { groupId: '10001', name: 1 }]) assert.equal((await call('PUT', body)).status, 400)
   const before = request(routes, 'GET').data.policy
   state.groupError = true
-  assert.equal((await readGroups()).status, 502)
-  assert.deepEqual(request(routes, 'GET').data.policy, before)
+  assert.equal((await call()).data.groups['10001'], '自定义群名 <名称>')
+  await call('POST', { groupIds: ['10001'] }, '/import')
+  assert.equal(state.groupReads, 1, '刷新或重复导入不能覆盖手动名称')
+  request(routes, 'PUT', { kind: 'group-abusive', groupId: '10002', enabled: false })
+  const offline = await call('POST', { groupIds: ['10002'] }, '/import')
+  assert.equal(offline.data.groups['10002'], '')
+  assert.match(offline.data.message, /手动填写/)
+  await call('POST', { groupIds: ['10002'] }, '/import')
+  assert.equal(state.groupReads, 2, '离线导入后也不应反复请求 QQ')
+  assert.equal((await call('PUT', { groupId: '10001', name: '' })).status, 200)
+  await call('POST', { groupIds: ['10001'] }, '/import')
+  assert.equal(state.groupReads, 2, '手动清空的名称不能自动恢复')
+  request(routes, 'PUT', { kind: 'group-abusive', groupId: '10004', enabled: false })
+  state.groupError = false
+  let release
+  state.groupWait = new Promise(resolve => { release = resolve })
+  const inFlight = call('POST', { groupIds: ['10004'] }, '/import')
+  const duplicate = call('POST', { groupIds: ['10004'] }, '/import')
+  await Promise.resolve()
+  await call('PUT', { groupId: '10004', name: '导入期间手动编辑' })
+  release()
+  await Promise.all([inFlight, duplicate])
+  state.groupWait = null
+  assert.equal((await call()).data.groups['10004'], '导入期间手动编辑')
+  assert.equal(state.groupReads, 3, '并发导入同一群只能读取一次')
+  // 名称操作独立于开关；只比较原有群，不包含测试中显式加入的群。
+  const after = request(routes, 'GET').data.policy
+  delete after.abusiveGroups['10002']; delete after.abusiveGroups['10004']
+  assert.deepEqual(after, before)
 }
 
 // 用真实本机 WebSocket 验证 OneBot 请求、Token、echo 匹配、群名解析和连接释放。

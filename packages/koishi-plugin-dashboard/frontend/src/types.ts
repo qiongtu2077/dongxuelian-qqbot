@@ -96,6 +96,7 @@ export type WhitelistMap = Record<string, WhitelistEntry>
 export interface GroupNamesResponse {
   ok: boolean
   groups: Record<string, string>
+  message?: string
 }
 
 export function errorMessage(error: unknown, fallback = '请求失败'): string {
