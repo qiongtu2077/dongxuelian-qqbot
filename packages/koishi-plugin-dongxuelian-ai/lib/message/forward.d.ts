@@ -18,6 +18,9 @@ interface ForwardSession {
     bot?: {
         selfId?: string;
     };
+    quote?: {
+        content?: string;
+    };
 }
 interface ResolveForwardOptions {
     callGetForwardMsg?: ForwardGetter;

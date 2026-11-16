@@ -31,6 +31,7 @@ interface ForwardSession {
   selfId?: string
   author?: { id?: string }
   bot?: { selfId?: string }
+  quote?: { content?: string }
 }
 
 interface ForwardSegment {
@@ -184,9 +185,11 @@ async function normalizeForwardNode(node: unknown, getForwardMsg: ForwardGetter,
   return makeSummaryNode(nickname, messageText)
 }
 
+// 展开当前消息或其引用中的转发正文，供两个 OneBot 协议共用。
 async function resolveForwardSummary(session: ForwardSession, content: unknown, ctx: ForwardContext | null | undefined, options: ResolveForwardOptions = {}): Promise<string> {
   const getForwardMsg = options.callGetForwardMsg || callGetForwardMsg
-  const forwardId = extractForwardId(content)
+  // 适配器把 reply 移到 session.quote；当前消息没有转发时才读取该引用。
+  const forwardId = extractForwardId(content) || extractForwardId(session.quote?.content)
   if (!forwardId) return ''
 
   const forwardData = await getForwardMsg(forwardId)
