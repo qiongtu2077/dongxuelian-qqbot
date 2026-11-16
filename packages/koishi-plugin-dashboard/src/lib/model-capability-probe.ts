@@ -76,7 +76,7 @@ async function probeCapability(baseURL: string, model: string, key: string, capa
   if (active >= 2) await new Promise<void>(resolve => waiters.push(resolve))
   else active += 1
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 6000)
+  const timer = setTimeout(() => controller.abort(), 30000)
   try {
     const request = await buildProbe(baseURL, model, capability)
     const url = await discovery.validateCustomDiscoveryUrl(request.url)

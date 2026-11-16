@@ -93,6 +93,11 @@ export interface WhitelistEntry extends JsonObject {
 
 export type WhitelistMap = Record<string, WhitelistEntry>
 
+export interface GroupNamesResponse {
+  ok: boolean
+  groups: Record<string, string>
+}
+
 export function errorMessage(error: unknown, fallback = '请求失败'): string {
   if (error instanceof Error) return error.message
   if (error && typeof error === 'object' && 'message' in error) return String((error as { message?: unknown }).message || fallback)

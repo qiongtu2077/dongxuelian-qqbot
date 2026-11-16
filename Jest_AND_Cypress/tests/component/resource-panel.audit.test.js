@@ -11,6 +11,7 @@ jest.mock('../../../packages/koishi-plugin-dashboard/frontend/src/api', () => ({
   fetchResourceStatus: jest.fn(),
   fetchResourceTasks: jest.fn(),
   fetchReportAnalysis: jest.fn(),
+  fetchGroupNames: jest.fn().mockResolvedValue({ ok: true, data: { ok: true, groups: {} } }),
   isAdminRequired: jest.fn(res => res?.code === 'ADMIN_REQUIRED' || res?.data?.code === 'ADMIN_REQUIRED'),
   setResourceMode: jest.fn(),
   setResourceMaintenance: jest.fn(),
@@ -93,6 +94,20 @@ describe('ResourcePanel 管理员操作与确认闭环', () => {
   })
 
   afterEach(() => jest.useRealTimers())
+
+  test('日报群号和任务来源显示群名，日报列表支持按群名搜索', async () => {
+    dashboardApi.fetchGroupNames.mockResolvedValueOnce({ ok: true, data: { ok: true, groups: { 10001: '日报测试群' } } })
+    dashboardApi.fetchResourceStatus.mockResolvedValue({ ok: true, data: resourceStatus({ precompute: { coverage: [
+      { channelKey: '10001', coverageRate: 1 }, { channelKey: '10002', coverageRate: 1 },
+    ] } }) })
+    dashboardApi.fetchResourceTasks.mockResolvedValue({ ok: true, data: { tasks: [{ ...TASK, notify: { target: 'qq-group', channelKey: '10001' } }] } })
+    const wrapper = await mountResource()
+    expect(wrapper.find('.resource-precompute-card').text()).toContain('10001 · 日报测试群')
+    expect(wrapper.find('.resource-task-content').text()).toContain('来源：群 10001 · 日报测试群')
+    await wrapper.find('.precompute-search').setValue('日报测试群')
+    expect(wrapper.findAll('.resource-precompute-card .resource-row')).toHaveLength(1)
+    wrapper.unmount()
+  })
 
   test.each(OPERATIONS)('$name 管理员过期后只重试原操作一次并成功', async operation => {
     let resume
@@ -342,7 +357,7 @@ describe('ResourcePanel 管理员操作与确认闭环', () => {
     const wrapper = await mountResource()
     const summaries = wrapper.findAll('.resource-event-summary')
     expect(summaries[0].text()).toContain('媒体处理')
-    expect(summaries[0].text()).toContain('媒体分析任务已完成')
+    expect(summaries[0].text()).toContain('媒体处理任务已完成')
     expect(summaries[0].text()).toContain('10-05 20:22:56')
     expect(summaries[0].text()).not.toContain('media_task_done')
     expect(summaries[1].text()).toContain('资源满足要求，允许执行。')

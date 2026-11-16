@@ -78,7 +78,7 @@ async function probeCapability(baseURL, model, key, capability) {
     else
         active += 1;
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
         const request = await buildProbe(baseURL, model, capability);
         const url = await discovery.validateCustomDiscoveryUrl(request.url);

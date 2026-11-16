@@ -148,8 +148,7 @@
           v-model="precomputeQuery"
           class="precompute-search"
           type="search"
-          inputmode="numeric"
-          placeholder="搜索群号"
+          placeholder="搜索群号或群名称"
           aria-label="搜索日报预计算群号"
         />
         <div class="resource-metric-row"><span>coverage</span><b>{{ numberValue(precompute.coverageCount) }}</b></div>
@@ -157,7 +156,7 @@
         <div v-if="filteredCoverage.length" class="resource-list compact">
           <div v-for="item in filteredCoverage" :key="coverageKey(item)" class="resource-row">
             <div>
-              <b>{{ display(item.channelKey) }}</b>
+              <b>{{ groupLabel(display(item.channelKey)) }}</b>
               <small>{{ percentLabel(item.coverageRate) }} · {{ display(item.updatedAt) }}</small>
             </div>
           </div>
@@ -286,7 +285,7 @@
                 <td>{{ taskCategoryDisplay(task.kind) }}</td>
                 <td class="resource-task-content">
                   <b>{{ taskContentDisplay(task) }}</b>
-                  <small class="resource-task-secondary">{{ taskSourceDisplay(task) }}</small>
+                  <small class="resource-task-secondary">{{ taskSourceDisplay(task, groupNames) }}</small>
                 </td>
                 <td class="resource-task-time" :title="taskTimeDisplay(task.updatedAt || task.createdAt, true)">{{ taskTimeDisplay(task.updatedAt || task.createdAt) }}</td>
                 <td>
@@ -308,7 +307,7 @@
                       <div><dt>状态</dt><dd>{{ taskStatusDisplay(task).label }}（{{ display(task.status) }}）</dd></div>
                       <div><dt>内部类型</dt><dd>{{ display(task.kind) }}</dd></div>
                       <div><dt>处理步骤</dt><dd>{{ taskStepDisplay(task) }} · {{ display(task.step) }}</dd></div>
-                      <div><dt>来源</dt><dd>{{ taskSourceDisplay(task) }}</dd></div>
+                      <div><dt>来源</dt><dd>{{ taskSourceDisplay(task, groupNames) }}</dd></div>
                       <div><dt>提交者</dt><dd>{{ display(task.userId, '未记录') }}</dd></div>
                       <div><dt>处理器</dt><dd>{{ display(task.claimedBy, '未记录') }}</dd></div>
                       <div><dt>创建时间</dt><dd>{{ taskTimeDisplay(task.createdAt, true) }}</dd></div>
@@ -400,12 +399,14 @@ import { asArray, asRecord, errorMessage, type JsonRecord, type MessageState, ty
 import { activityLeaseDisplay, botModeDisplay, canCancel, coverageKey, dateTimeDisplay, display, eventDetail, eventKey, formatInterval, mbLabel, mediaQueueDisplay, mediaSummaryDisplay, memoryUsedValue, numberValue, percentLabel, resourceEventDisplay, resourceEventSourceDisplay, resourceStateDisplay, round, serverModeDisplay, sizeMbLabel, taskCategoryDisplay, taskContentDisplay, taskErrorDisplay, taskKindDisplay, taskSourceDisplay, taskStatusDisplay, taskStepDisplay, taskTimeDisplay, workerDisplay } from '../services/resource-model'
 import ResourceDiagnosticsPanel from './ResourceDiagnosticsPanel.vue'
 import ReportAnalysisDetail from './ReportAnalysisDetail.vue'
+import { useGroupNames } from '../services/group-names'
 
 export default {
   name: 'ResourcePanel',
   components: { ResourceDiagnosticsPanel, ReportAnalysisDetail },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
+    const { groupNames, groupLabel, refreshGroupNames } = useGroupNames()
     const status = ref<JsonRecord>({})
     const tasks = ref<JsonRecord[]>([])
     const taskFilters = [
@@ -488,7 +489,7 @@ export default {
       const query = normalizedPrecomputeQuery.value
       if (!query) return coverage.value
       return coverage.value.filter(item => [
-        item.channelKey,
+        groupLabel(String(item.channelKey || '')),
         item.date,
         item.file,
       ].some(value => String(value || '').toLowerCase().includes(query)))
@@ -735,6 +736,7 @@ export default {
       }
       try {
         await loadStatus()
+        void refreshGroupNames()
         await Promise.all([loadTasks(), loadEvents(), loadMemoryHistory()])
       } catch (error) {
         message.value = { type: 'err', text: errorMessage(error, '刷新失败') }
@@ -909,6 +911,8 @@ export default {
       diskFilesystem,
       diskEntries,
       coverage,
+      groupNames,
+      groupLabel,
       filteredCoverage,
       diskUsageLabel,
       diskAvailableLabel,

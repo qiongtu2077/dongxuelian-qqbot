@@ -7,6 +7,7 @@ import type {
   ApiResult,
   CommandGroup,
   FeatureInfo,
+  GroupNamesResponse,
   JsonObject,
   StatusData,
   WhitelistMap,
@@ -163,6 +164,8 @@ export async function fetchPersonaDetail(name: string) { return get('/personas?n
 export async function fetchPersonaDiagnostics() { return get('/persona-diagnostics') }
 export async function fetchModes() { return get('/modes') }
 export async function fetchWhitelist(): Promise<ApiResult<WhitelistMap | null>> { return get<WhitelistMap>('/whitelist', true) }
+// 读取当前机器人所在群的名称，沿用控制台的管理员鉴权。
+export async function fetchGroupNames(): Promise<ApiResult<GroupNamesResponse | null>> { return get<GroupNamesResponse>('/groups', true) }
 export async function updateWhitelist(type: string, data: unknown): Promise<ApiResult<ApiMessageData | null>> { return put<ApiMessageData>('/whitelist', { type, data }, true) }
 export async function fetchFeatures(): Promise<ApiResult<FeatureInfo[] | null>> { return get<FeatureInfo[]>('/features') }
 export async function fetchCommands(): Promise<ApiResult<CommandGroup[] | null>> { return get<CommandGroup[]>('/commands') }
@@ -301,7 +304,8 @@ export async function discoverAiProviderModels(providerId: string, apiKey: strin
 
 // 只将供应商与模型标识交给服务端，复用已保存 Key 检测全部四项能力。
 export async function detectAiModelCapabilities(providerId: string, modelId: string): Promise<ApiResult<AiPriorityResponse | null>> {
-  return post<AiPriorityResponse>('/ai-model-api/detect', { providerId, modelId }, true, 45000)
+  // 四项能力最多两项并发，每项等待 30 秒，为两轮请求及配置保存预留时间。
+  return post<AiPriorityResponse>('/ai-model-api/detect', { providerId, modelId }, true, 90000)
 }
 
 // 移除本系统保存的 Key、模型池和优先级引用，保留历史用量。

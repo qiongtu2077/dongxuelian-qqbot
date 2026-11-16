@@ -4,6 +4,9 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { PassThrough } = require('node:stream')
+const vm = require('node:vm')
+const { createRequire } = require('node:module')
+const { mock } = require('node:test')
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-management-'))
 process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
 const auth = require('../lib/auth')
@@ -109,10 +112,67 @@ async function testDeleteAndRollback() {
   assert(!deleted.text.includes(secret))
 }
 
+// 用虚拟时间验证慢于六秒的有效返回能通过，三十秒无响应才取消且释放并发槽位。
+async function testProbeTimeout() {
+  mock.timers.enable({ apis: ['setTimeout'] })
+  const filename = path.join(__dirname, '../lib/model-capability-probe.js')
+  const nativeRequire = createRequire(filename)
+  const module = { exports: {} }
+  const signals = []
+  let stalled = false
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
+    module, exports: module.exports, Buffer, URL, FormData, Blob, AbortController, setTimeout, clearTimeout,
+    require: name => name === 'koishi-plugin-dongxuelian-ai/lib/public/management-runtime'
+      ? { loadManagementModule: name => name === 'core.modelDiscovery' ? { validateCustomDiscoveryUrl: async url => new URL(url) } : { AI_CAPABILITIES: capabilities } }
+      : nativeRequire(name),
+    fetch: (url, init) => new Promise((resolve, reject) => {
+      signals.push(init.signal)
+      init.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      if (stalled) return
+      setTimeout(() => resolve(url.pathname.endsWith('/audio/speech')
+        ? new Response(Buffer.from('RIFF1234WAVE-audio'), { headers: { 'content-type': 'audio/wav' } })
+        : new Response(JSON.stringify(url.pathname.endsWith('/audio/transcriptions') ? { text: '' } : { choices: [{ message: { content: '红色' } }] }))), 7000)
+    }),
+  }, { filename })
+  // 等待原生图片构造与 Promise 链完成，不用真实秒数驱动测试。
+  async function waitForRequests(count) {
+    const deadline = Date.now() + 3000
+    while (signals.length < count) {
+      assert(Date.now() < deadline, 'probe requests did not start')
+      await new Promise(resolve => setImmediate(resolve))
+    }
+  }
+  try {
+    const model = { id: 'slow-model', name: 'slow-model', capabilities: [] }
+    const slow = module.exports.detectModelCapabilities('http://localhost/v1', model, secret)
+    await waitForRequests(2)
+    mock.timers.tick(7000)
+    await waitForRequests(4)
+    mock.timers.tick(7000)
+    const passed = await slow
+    assert.equal(passed.capabilities.length, 4, 'seven-second responses must remain eligible')
+    assert(signals.every(signal => !signal.aborted))
+
+    signals.length = 0
+    stalled = true
+    const blocked = module.exports.detectModelCapabilities('http://localhost/v1', model, secret)
+    await waitForRequests(2)
+    mock.timers.tick(29999)
+    assert(signals.every(signal => !signal.aborted))
+    mock.timers.tick(1)
+    await waitForRequests(4)
+    assert(signals.slice(0, 2).every(signal => signal.aborted))
+    mock.timers.tick(30000)
+    const timedOut = await blocked
+    assert(signals.every(signal => signal.aborted))
+    assert(capabilities.every(capability => timedOut.capabilityChecks[capability].reason === '能力检测超时，请重试'))
+  } finally { mock.timers.reset() }
+}
+
 // 顺序运行隔离场景并恢复全局网络桩，任何失败均清理测试目录。
 async function main() {
   const original = global.fetch
-  try { await testImportDetectReuse(); await testPendingAndAuth(); await testDeleteAndRollback(); console.log('provider management tests: OK') }
+  try { await testImportDetectReuse(); await testPendingAndAuth(); await testDeleteAndRollback(); await testProbeTimeout(); console.log('provider management tests: OK') }
   finally { global.fetch = original; fs.rmSync(dataDir, { recursive: true, force: true }) }
 }
 main().catch(error => { console.error(error); process.exitCode = 1 })

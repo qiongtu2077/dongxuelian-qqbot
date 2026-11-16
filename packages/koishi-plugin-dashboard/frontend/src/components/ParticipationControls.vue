@@ -5,6 +5,7 @@
     <div class="participation-group-editor">
       <label for="participation-group-id">群号</label>
       <input id="participation-group-id" v-model.trim="groupId" inputmode="numeric" maxlength="20" placeholder="输入要管理的 QQ 群号" />
+      <span v-if="groupNames[groupId]" class="participation-group-name">{{ groupNames[groupId] }}</span>
       <label class="participation-switch participation-abusive-switch">
         <span>嘴臭开关</span>
         <input type="checkbox" role="switch" aria-label="所填群号的嘴臭开关" :checked="selectedAbusiveEnabled" :disabled="loading || saving || loadFailed || !validGroupId" @change="changeAbusive(groupId, $event)" />
@@ -19,7 +20,7 @@
     </div>
     <div v-if="groups.length" class="participation-groups">
       <div v-for="group in groups" :key="group.id" class="participation-group-row">
-        <span class="participation-group-number">{{ group.id }}</span>
+        <span class="participation-group-number">{{ group.id }}<span v-if="groupNames[group.id]" class="participation-group-name"> · {{ groupNames[group.id] }}</span></span>
         <div class="participation-group-actions">
           <label class="participation-switch participation-abusive-switch">
             <span>嘴臭开关</span>
@@ -62,8 +63,10 @@ import { errorMessage, messageFromData } from '../types'
 import type { MessageState, ShowAdminDialog } from '../types'
 import { isParticipationGroupId, listParticipationGroups } from '../services/participation-model'
 import type { ParticipationChange, ParticipationPolicy } from '../services/participation-model'
+import { useGroupNames } from '../services/group-names'
 
 const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
+const { groupNames, refreshGroupNames } = useGroupNames()
 const policy = ref<ParticipationPolicy>({ version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} })
 const groupId = ref('')
 const loading = ref(true)
@@ -88,6 +91,7 @@ async function load(): Promise<void> {
     }
     if (!response.ok || !response.data?.policy) throw new Error(messageFromData(response.data, '参与开关读取失败'))
     policy.value = response.data.policy
+    void refreshGroupNames()
     message.value = null
   } catch (error) {
     loadFailed.value = true
@@ -145,7 +149,8 @@ onMounted(load)
 .participation-group-editor > input { flex: 1; min-width: 180px; max-width: 320px; }
 .participation-groups { margin-top: 16px; border-top: 1px solid var(--border); }
 .participation-group-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
-.participation-group-number { font-family: monospace; font-size: 14px; }
+.participation-group-number { font-family: monospace; font-size: 14px; min-width: 0; overflow-wrap: anywhere; }
+.participation-group-name { font-family: var(--font-body, sans-serif); color: var(--text3); }
 .participation-group-actions { display: flex; align-items: center; justify-content: flex-end; gap: 24px; margin-left: auto; }
 .participation-private { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
 .participation-private h2 { margin-bottom: 4px; }

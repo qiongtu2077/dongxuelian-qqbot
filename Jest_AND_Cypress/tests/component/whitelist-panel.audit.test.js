@@ -5,11 +5,13 @@ import * as dashboardApi from '../../../packages/koishi-plugin-dashboard/fronten
 jest.mock('../../../packages/koishi-plugin-dashboard/frontend/src/api', () => ({
   fetchWhitelist: jest.fn(),
   updateWhitelist: jest.fn(),
+  fetchGroupNames: jest.fn(),
 }))
 
 describe('WhitelistPanel 删除与刷新闭环', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    dashboardApi.fetchGroupNames.mockResolvedValue({ ok: true, data: { ok: true, groups: { 123456: '测试群名称' } } })
     dashboardApi.fetchWhitelist.mockResolvedValue({
       ok: true,
       data: { userBlacklist: { label: '用户黑名单', data: ['123456'] } },
@@ -112,6 +114,23 @@ describe('WhitelistPanel 删除与刷新闭环', () => {
 
     expect(wrapper.text()).toContain('读取名单失败')
     expect(wrapper.text()).not.toContain('已刷新')
+    wrapper.unmount()
+  })
+
+  test('群号后显示真实群名，按群名搜索并删除时仍提交原始群号', async () => {
+    jest.spyOn(window, 'confirm').mockReturnValue(true)
+    dashboardApi.fetchWhitelist.mockResolvedValue({ ok: true, data: {
+      random: { label: '群聊AI白名单', data: ['123456', '999999'] },
+      userBlacklist: { label: '用户黑名单', data: ['123456'] },
+    } })
+    const wrapper = mount(WhitelistPanel, { global: { provide: { showAdminDialog: jest.fn() } } })
+    await flushPromises()
+    expect(wrapper.findAll('.grp').map(row => row.text())).toEqual(['123456 · 测试群名称删除', '999999删除', '123456删除'])
+    await wrapper.find('input[type="search"]').setValue('测试群名称')
+    expect(wrapper.findAll('.grp')).toHaveLength(1)
+    await wrapper.find('.grp button').trigger('click')
+    await flushPromises()
+    expect(dashboardApi.updateWhitelist).toHaveBeenCalledWith('random', ['999999'])
     wrapper.unmount()
   })
 })

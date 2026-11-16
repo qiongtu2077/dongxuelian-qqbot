@@ -10,7 +10,7 @@
         v-model="groupSearch"
         class="whitelist-search"
         type="search"
-        placeholder="搜索群号"
+        placeholder="搜索群号或群名称"
       />
       <span v-if="refreshMsg" style="font-size:12px;color:var(--success);animation:fadeIn .2s">{{ refreshMsg }}</span>
       <button class="btn btn-sm" @click="manualRefresh" :disabled="refreshing">
@@ -33,7 +33,7 @@
 
     <!-- 列表 -->
     <div v-for="item in getVisibleItems(wl)" :key="item.key" class="grp" style="display:flex;justify-content:space-between;align-items:center">
-      <span style="font-family:monospace;font-size:14px">{{ item.label }}</span>
+      <span style="font-family:monospace;font-size:14px;min-width:0;overflow-wrap:anywhere">{{ item.label }}</span>
       <button class="btn btn-sm" style="background:color-mix(in srgb, var(--error) 20%, transparent);color:var(--error)" @click="removeDisplayItem(key, item)">删除</button>
     </div>
 
@@ -55,6 +55,7 @@ import { fetchWhitelist, updateWhitelist } from '../api'
 import type { MessageState, ShowAdminDialog, WhitelistBuckets, WhitelistData, WhitelistEntry, WhitelistMap } from '../types'
 import { errorMessage, isRecord, messageFromData } from '../types'
 import SelectBox from './SelectBox.vue'
+import { useGroupNames } from '../services/group-names'
 
 interface WhitelistDisplayItem {
   key: string
@@ -70,6 +71,7 @@ export default {
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const lists = ref<WhitelistMap>({})
+    const { groupLabel, refreshGroupNames } = useGroupNames()
     const groupSearch = ref('')
     const newValues = reactive<Record<string, string>>({})
     const newTypes = reactive<Record<string, 'groups' | 'users'>>({})
@@ -94,6 +96,7 @@ export default {
         }
         if (res.ok && res.data) {
           lists.value = res.data
+          void refreshGroupNames()
           loadError.value = ''
           return true
         } else {
@@ -117,6 +120,7 @@ export default {
     async function manualRefresh() {
       refreshing.value = true
       const success = await load(true)
+      if (success) await refreshGroupNames(true)
       refreshing.value = false
       if (success) {
         refreshMsg.value = '已刷新'
@@ -156,7 +160,7 @@ export default {
       if (Array.isArray(wl.data)) {
         return wl.data.map((raw, index) => ({
           key: `array:${index}:${raw}`,
-          label: raw,
+          label: wl === lists.value.userBlacklist ? raw : groupLabel(raw),
           raw,
           index,
           bucket: 'array',
@@ -165,7 +169,7 @@ export default {
       const items: WhitelistDisplayItem[] = []
       wl.data?.groups?.forEach((raw, index) => items.push({
         key: `groups:${index}:${raw}`,
-        label: '[群] ' + raw,
+        label: '[群] ' + groupLabel(raw),
         raw,
         index,
         bucket: 'groups',

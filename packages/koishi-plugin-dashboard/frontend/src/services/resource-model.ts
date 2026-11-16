@@ -264,10 +264,10 @@ export function taskContentDisplay(task: JsonRecord): string {
 }
 
 // 根据通知目标区分群聊和私聊，其他频道只展示实际记录的来源。
-export function taskSourceDisplay(task: JsonRecord): string {
+export function taskSourceDisplay(task: JsonRecord, groupNames: Record<string, string> = {}): string {
   const notify = asRecord(task.notify)
   const channel = String(notify.channelKey || task.channelKey || '')
-  if (notify.target === 'qq-group' && channel) return `来源：群 ${channel}`
+  if (notify.target === 'qq-group' && channel) return `来源：群 ${channel}${groupNames[channel] ? ` · ${groupNames[channel]}` : ''}`
   if (notify.target === 'qq-private' && channel) return `来源：私聊 ${channel}`
   if (channel.startsWith('private:')) return `来源：私聊 ${channel.slice(8)}`
   if (channel === 'dashboard' || notify.target === 'dashboard') return '来源：控制台'

@@ -6,6 +6,7 @@ const os = require('node:os')
 const path = require('node:path')
 const vm = require('node:vm')
 const { createRequire } = require('node:module')
+const { WebSocketServer } = require('ws')
 const { executeConfigTransaction } = require('../lib/config-transaction')
 
 // 加载真实路由、配置校验和事务，仅隔离 HTTP 外壳与管理员鉴权。
@@ -32,6 +33,11 @@ function loadRoutes(dataDir, policy, state) {
         if (state.fail && stage === 'replacing' && name === 'bot-participation.json') throw new Error('injected policy write failure')
       } },
     }) },
+    '../group-directory': { readGroupNames: async () => {
+      state.groupReads = (state.groupReads || 0) + 1
+      if (state.groupError) throw new Error('QQ 离线')
+      return { 10001: '东雪莲测试群' }
+    } },
   }
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
     module: result, exports: result.exports, Buffer,
@@ -47,8 +53,62 @@ function request(routes, method, body) {
   return result
 }
 
+// 验证群名接口独立鉴权，读取失败不会改写开关配置。
+async function testGroupNamesRoute(routes, state) {
+  // 捕获异步目录路由最终响应。
+  function readGroups() {
+    return new Promise(resolve => routes['GET /dashboard/api/groups']({}, { end: resolve }))
+  }
+  state.authorized = false
+  assert.equal((await readGroups()).status, 403)
+  assert.equal(state.groupReads || 0, 0)
+  state.authorized = true
+  assert.deepEqual((await readGroups()).data.groups, { 10001: '东雪莲测试群' })
+  const before = request(routes, 'GET').data.policy
+  state.groupError = true
+  assert.equal((await readGroups()).status, 502)
+  assert.deepEqual(request(routes, 'GET').data.policy, before)
+}
+
+// 用真实本机 WebSocket 验证 OneBot 请求、Token、echo 匹配、群名解析和连接释放。
+async function testGroupDirectory() {
+  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await new Promise(resolve => server.once('listening', resolve))
+  const filename = path.join(__dirname, '../lib/group-directory.js')
+  const nativeRequire = createRequire(filename)
+  const module = { exports: {} }
+  let malformed = false
+  server.on('connection', (socket, req) => {
+    assert.equal(req.headers.authorization, 'Bearer local-onebot-secret')
+    socket.on('message', raw => {
+      const request = JSON.parse(raw.toString())
+      assert.equal(request.action, 'get_group_list')
+      assert.deepEqual(request.params, {})
+      socket.send(JSON.stringify({ post_type: 'meta_event' }))
+      socket.send(JSON.stringify({ echo: 'another-request', status: 'failed', retcode: 1 }))
+      socket.send(JSON.stringify({ echo: request.echo, status: 'ok', retcode: 0, data: malformed ? [{ group_id: 10001 }] : [
+        { group_id: 10001, group_name: '东雪莲测试群' }, { group_id: 10002, group_name: '<群名> & 测试' },
+      ] }))
+    })
+  })
+  vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
+    module, exports: module.exports, setTimeout, clearTimeout,
+    require: name => name === './snowluma-client'
+      ? { readOnebotTarget: () => ({ endpoint: new URL(`ws://127.0.0.1:${server.address().port}`), token: 'local-onebot-secret' }) }
+      : nativeRequire(name),
+  }, { filename })
+  try {
+    assert.deepEqual({ ...await module.exports.readGroupNames() }, { 10001: '东雪莲测试群', 10002: '<群名> & 测试' })
+    malformed = true
+    await assert.rejects(module.exports.readGroupNames(), /群名称读取失败/)
+  } finally {
+    for (const socket of server.clients) socket.terminate()
+    await new Promise(resolve => server.close(resolve))
+  }
+}
+
 // 验证默认关闭、首次启用原子初始化、热读取、鉴权及写入失败回滚。
-function main() {
+async function main() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'participation-route-'))
   const previous = process.env.DONGXUELIAN_AI_DATA_DIR
   process.env.DONGXUELIAN_AI_DATA_DIR = dataDir
@@ -87,6 +147,8 @@ function main() {
     state.fail = false
     assert.equal(request(routes, 'PUT', { kind: 'group', groupId: '10001', enabled: true }).status, 200)
     assert.equal(policy.isGroupParticipationEnabled('10001'), true)
+    await testGroupNamesRoute(routes, state)
+    await testGroupDirectory()
     assert.deepEqual(read('ai-random-whitelist.json'), ['10002'])
     assert.deepEqual(read('ai-repeat-enabled.json'), { 10001: true, 10002: false })
     assert.deepEqual(read('video-blacklist.json'), { groups: ['10002'], users: ['99'] })
@@ -146,4 +208,4 @@ function main() {
   }
 }
 
-main()
+main().catch(error => { console.error(error); process.exitCode = 1 })

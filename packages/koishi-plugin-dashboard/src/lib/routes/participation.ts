@@ -8,6 +8,7 @@ const { json, collectBody, getErrorMessage } = require('../utils') as typeof imp
 const { requireAdmin } = require('../auth') as typeof import('../auth')
 const { DATA_DIR } = require('../paths') as typeof import('../paths')
 const { executeConfigTransaction } = require('../config-transaction') as typeof import('../config-transaction')
+const { readGroupNames } = require('../group-directory') as typeof import('../group-directory')
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime') as typeof import('koishi-plugin-dongxuelian-ai/lib/public/management-runtime')
 const policy = loadManagementModule('core.participationPolicy')
 
@@ -87,6 +88,13 @@ function handleGetParticipation(req: IncomingMessage, res: ServerResponse): void
   catch (error) { json(res, { ok: false, message: getErrorMessage(error) }, 500) }
 }
 
+// 独立读取群名，QQ 离线不会影响参与开关配置的读取和保存。
+async function handleGetGroupNames(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!requireAdmin(req, res)) return
+  try { json(res, { ok: true, groups: await readGroupNames() }) }
+  catch (error) { json(res, { ok: false, message: getErrorMessage(error) }, 502) }
+}
+
 // 只允许管理员提交明确的布尔开关和有效数字群号。
 function handlePutParticipation(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
@@ -106,6 +114,7 @@ function handlePutParticipation(req: IncomingMessage, res: ServerResponse): void
 }
 
 export const routes = {
+  'GET /dashboard/api/groups': handleGetGroupNames,
   'GET /dashboard/api/participation': handleGetParticipation,
   'PUT /dashboard/api/participation': handlePutParticipation,
 }

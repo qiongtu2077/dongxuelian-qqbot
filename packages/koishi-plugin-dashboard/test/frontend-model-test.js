@@ -225,6 +225,7 @@ function testResourceModel(resource) {
   assert.strictEqual(resource.taskContentDisplay({ kind: 'external_video_download', id: 'json_data_quot_prompt_secret' }), '下载 B 站视频')
   assert.strictEqual(resource.taskContentDisplay({ kind: 'external_video_download', displaySummary: { bvId: 'BV1xx411c7mD' } }), '下载 B 站视频 · BV1xx411c7mD')
   assert.strictEqual(resource.taskSourceDisplay({ channelKey: '1072587329', notify: { target: 'qq-group', channelKey: '1072587329' } }), '来源：群 1072587329')
+  assert.strictEqual(resource.taskSourceDisplay({ notify: { target: 'qq-group', channelKey: '1072587329' } }, { 1072587329: '真实群名' }), '来源：群 1072587329 · 真实群名')
   assert.strictEqual(resource.taskSourceDisplay({ channelKey: '123', notify: { target: 'qq-private', channelKey: '123' } }), '来源：私聊 123')
   assert.strictEqual(resource.taskTimeDisplay('2026-10-05T11:44:36.984Z'), '10-05 19:44:36')
   assert.strictEqual(resource.taskTimeDisplay('2026-10-05T23:44:36.984Z', true), '2026-10-06 07:44:36（北京时间）')

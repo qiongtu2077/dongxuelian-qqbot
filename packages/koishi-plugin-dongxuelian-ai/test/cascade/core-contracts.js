@@ -42,6 +42,7 @@ async function runCoreContracts(context) {
     path.join(LIB, 'core', 'participation-policy.js'),
     path.join(LIB, 'lifecycle', 'participation-guard.js'),
     path.resolve(LIB, '../../koishi-plugin-dashboard/lib/routes/participation.js'),
+    path.resolve(LIB, '../../koishi-plugin-dashboard/lib/group-directory.js'),
     path.join(LIB, 'core', 'image-content.js'),
     ...['image-manifest', 'image-batch'].map(name => path.join(LIB, 'media', 'image', name + '.js')),
     ...['models', 'input', 'settings', 'repositories', 'client', 'page-screenshot', 'renderer', 'body-content', 'issue-renderer', 'pull-card', 'themes', 'runtime'].map(name => path.join(LIB, 'github-preview', name + '.js')),
@@ -237,6 +238,7 @@ async function runCoreContracts(context) {
   duplicateScanFiles.push('core/participation-policy.js', 'lifecycle/participation-guard.js')
   duplicateScanFiles.push('core/model-thinking.js')
   duplicateScanFiles.push('../../koishi-plugin-dashboard/lib/routes/participation.js')
+  duplicateScanFiles.push('../../koishi-plugin-dashboard/lib/group-directory.js')
   duplicateScanFiles.push('diagnostics/rare-voice-diagnostics.js')
   duplicateScanFiles.push('media/image/image-source.js', 'media/image/image-request.js', 'media/image/image-turn.js', 'media/image/image-random-demand.js', 'media/image/image-manifest.js', 'core/image-content.js', 'media/image/image-batch.js')
   duplicateScanFiles.push('diagnostics/model-connectivity.js')

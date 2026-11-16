@@ -232,8 +232,8 @@ function resourceScenarioStatus(name) {
       coverageCount: 2,
       slotCount: 3,
       coverage: [
-        { date: todayShanghaiDate(), channelKey: 'group_10001', coverageRate: 0.8, updatedAt: '12:00' },
-        { date: todayShanghaiDate(), channelKey: 'group_20002', coverageRate: 0.35, updatedAt: '12:05' },
+        { date: todayShanghaiDate(), channelKey: '10001', coverageRate: 0.8, updatedAt: '12:00' },
+        { date: todayShanghaiDate(), channelKey: '20002', coverageRate: 0.35, updatedAt: '12:05' },
       ],
     },
     maintenance: mockState.maintenance,
@@ -409,6 +409,7 @@ function apiMock(method, pathname, body) {
     groupUserWhitelist: { label: '混合白名单', data: { groups: ['10001'], users: ['20002'] } },
   })
   if (method === 'PUT' && pathname === '/whitelist') return writeOk('whitelist saved')
+  if (method === 'GET' && pathname === '/groups') return ok({ ok: true, groups: { 10001: '东雪莲测试群', 20002: '另一个测试群' } })
 
   if (method === 'GET' && pathname === '/bot/status') return ok({ running: true, workers: 1, qq: '123456' })
   if (method === 'GET' && pathname === '/protocol/status') return ok({ supported: true, selected: mockState.protocol, switching: false, installed: true, conflict: false })

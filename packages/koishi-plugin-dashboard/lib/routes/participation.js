@@ -7,6 +7,7 @@ const { json, collectBody, getErrorMessage } = require('../utils');
 const { requireAdmin } = require('../auth');
 const { DATA_DIR } = require('../paths');
 const { executeConfigTransaction } = require('../config-transaction');
+const { readGroupNames } = require('../group-directory');
 const { loadManagementModule } = require('koishi-plugin-dongxuelian-ai/lib/public/management-runtime');
 const policy = loadManagementModule('core.participationPolicy');
 // --- 功能默认值与原子保存 ---
@@ -89,6 +90,17 @@ function handleGetParticipation(req, res) {
         json(res, { ok: false, message: getErrorMessage(error) }, 500);
     }
 }
+// 独立读取群名，QQ 离线不会影响参与开关配置的读取和保存。
+async function handleGetGroupNames(req, res) {
+    if (!requireAdmin(req, res))
+        return;
+    try {
+        json(res, { ok: true, groups: await readGroupNames() });
+    }
+    catch (error) {
+        json(res, { ok: false, message: getErrorMessage(error) }, 502);
+    }
+}
 // 只允许管理员提交明确的布尔开关和有效数字群号。
 function handlePutParticipation(req, res) {
     if (!requireAdmin(req, res))
@@ -116,6 +128,7 @@ function handlePutParticipation(req, res) {
     });
 }
 exports.routes = {
+    'GET /dashboard/api/groups': handleGetGroupNames,
     'GET /dashboard/api/participation': handleGetParticipation,
     'PUT /dashboard/api/participation': handlePutParticipation,
 };

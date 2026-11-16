@@ -1,4 +1,4 @@
-import { fetchFallbackChains, updateSelfId, verifyAdmin } from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
+import { detectAiModelCapabilities, fetchAiModelApiConfig, updateSelfId, verifyAdmin } from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
 
 // 创建足以模拟浏览器 fetch Response 的响应对象。
 function response(status, data) {
@@ -15,14 +15,14 @@ describe('主控制台 API 请求封装', () => {
     jest.restoreAllMocks()
   })
 
-  test('Fallback 读取使用真实 GET 路径并携带访问令牌', async () => {
+  test('模型配置读取使用真实 GET 路径并携带访问令牌', async () => {
     localStorage.setItem('dashboard_token', 'access-token')
-    global.fetch.mockResolvedValue(response(200, { chains: {}, defaults: {} }))
+    global.fetch.mockResolvedValue(response(200, { config: {}, catalog: [] }))
 
-    const result = await fetchFallbackChains()
+    const result = await fetchAiModelApiConfig()
 
     expect(result.ok).toBe(true)
-    expect(global.fetch).toHaveBeenCalledWith('/dashboard/api/fallback', expect.objectContaining({
+    expect(global.fetch).toHaveBeenCalledWith('/dashboard/api/ai-model-api/config', expect.objectContaining({
       headers: expect.objectContaining({ Authorization: 'Bearer access-token' }),
     }))
     expect(global.fetch.mock.calls[0][1].method).toBeUndefined()
@@ -48,7 +48,7 @@ describe('主控制台 API 请求封装', () => {
     window.addEventListener('auth-expired', listener)
     global.fetch.mockResolvedValue(response(401, { message: 'expired' }))
 
-    const result = await fetchFallbackChains()
+    const result = await fetchAiModelApiConfig()
 
     expect(result.ok).toBe(false)
     expect(localStorage.getItem('dashboard_token')).toBeNull()
@@ -69,5 +69,27 @@ describe('主控制台 API 请求封装', () => {
     expect(localStorage.getItem('dashboard_token')).toBe('valid-access-token')
     expect(listener).not.toHaveBeenCalled()
     window.removeEventListener('auth-expired', listener)
+  })
+
+  test('能力检测允许两轮各 30 秒的请求完成，并在 90 秒时终止无响应请求', async () => {
+    jest.useFakeTimers()
+    try {
+      global.fetch.mockImplementation((_url, { signal }) => new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        setTimeout(() => resolve(response(200, { ok: true })), 61000)
+      }))
+      const pending = detectAiModelCapabilities('custom-test', 'model')
+      await jest.advanceTimersByTimeAsync(60000)
+      expect(global.fetch.mock.calls[0][1].signal.aborted).toBe(false)
+      await jest.advanceTimersByTimeAsync(1000)
+      expect((await pending).ok).toBe(true)
+
+      global.fetch.mockImplementation((_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      }))
+      const timedOut = detectAiModelCapabilities('custom-test', 'model')
+      await jest.advanceTimersByTimeAsync(90000)
+      expect((await timedOut).data.message).toBe('请求超时')
+    } finally { jest.useRealTimers() }
   })
 })
