@@ -198,9 +198,13 @@ async function runBoundaryCases(t) {
         && mocked.calls.length === (hook === '_onRequestAttempt' ? 0 : 1) && notifications.length === 0)
     })
   }
-  await withScoring([{ status: 402, json: { error: { message: 'insufficient balance' } } }, scored()], async ({ scoring, mocked }) => {
+  await withScoring([{ status: 402, json: { error: { message: 'Payment required' } } }, scored()], async ({ scoring, mocked }) => {
     t.checkEqual('retaliation permanent rejection safely returns zero', await scoring.calculateRetaliationScore('输入', 'u', new Map(), 'g'), 0)
     t.checkEqual('retaliation permanent rejection does not expand or fall back', mocked.calls.length, 1)
+  })
+  await withScoring([{ status: 402, json: { error: { code: 'insufficient_balance', message: 'insufficient balance' } } }, scored()], async ({ scoring, mocked }) => {
+    t.checkEqual('retaliation confirmed balance failure reaches usable backup', await scoring.calculateRetaliationScore('输入', 'u', new Map(), 'g'), 65)
+    t.checkEqual('retaliation balance failure skips expansion and uses next priority', mocked.calls.map(call => call.requestBody.model).join(','), CHAIN.slice(0, 2).map(step => step.model).join(','))
   })
   await withScoring([{ status: 429 }, scored()], async ({ scoring, mocked }) => {
     t.checkEqual('retaliation retryable non-truncation goes to next node', await scoring.calculateRetaliationScore('输入', 'u', new Map(), 'g'), 65)
