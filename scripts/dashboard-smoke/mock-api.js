@@ -73,6 +73,9 @@ function jsonResponse(data, status = 200) {
 }
 
 const mockState = {
+  protocol: 'napcat',
+  slConsent: false,
+  slConnected: false,
   voiceEnabled: false,
   voiceAssetId: '',
   serverMode: 'large',
@@ -408,6 +411,14 @@ function apiMock(method, pathname, body) {
   if (method === 'PUT' && pathname === '/whitelist') return writeOk('whitelist saved')
 
   if (method === 'GET' && pathname === '/bot/status') return ok({ running: true, workers: 1, qq: '123456' })
+  if (method === 'GET' && pathname === '/protocol/status') return ok({ supported: true, selected: mockState.protocol, switching: false, installed: true, conflict: false })
+  if (method === 'POST' && pathname === '/protocol/switch') {
+    mockState.protocol = body.body.provider
+    return ok({ status: { supported: true, selected: mockState.protocol, installed: true, switching: false, conflict: false }, message: '协议切换已完成' })
+  }
+  if (method === 'GET' && pathname === '/protocol/sl/login') return ok({ agreements: { version: '1234567890abcdef', consentRequired: !mockState.slConsent, documents: [{ id: 'eula', title: '测试用户协议', text: 'Mock agreement for browser tests' }] }, accounts: mockState.slConnected ? [{ uin: '123456', nickname: 'Mock QQ' }] : [], processes: [{ pid: 23456, status: 'loaded' }] })
+  if (method === 'POST' && pathname === '/protocol/sl/consent') { mockState.slConsent = true; return ok({ success: true }) }
+  if (method === 'POST' && pathname === '/protocol/sl/connect') { mockState.slConnected = true; return ok({ connected: true, message: 'SnowLuma 已登录，机器人 OneBot 连接已恢复' }) }
   if (method === 'GET' && pathname === '/maintenance') return ok({ enabled: false })
   if (method === 'GET' && pathname === '/participation') return ok({ ok: true, policy: mockState.participation })
   if (method === 'PUT' && pathname === '/participation') {

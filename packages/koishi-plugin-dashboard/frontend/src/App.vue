@@ -17,6 +17,7 @@
     <div class="app" :class="{ 'sidebar-collapsed': !sidebarExpanded }">
       <div class="app-head">
         <h1>LianBoard 控制中心</h1>
+        <ProtocolSwitcher @switched="doSwitchTab('control', true)" />
         <span class="active-view-label">{{ activeTabLabel }}</span>
       </div>
       <ThemeSwitcher :visible="themePickerOpen" :themes="themes" :current="theme" @select="setTheme" @close="themePickerOpen = false" />
@@ -55,6 +56,7 @@ import LogPanel from './components/LogPanel.vue'
 import GalleryPanel from './components/GalleryPanel.vue'
 import AgentPanel from './components/AgentPanel.vue'
 import ResourcePanel from './components/ResourcePanel.vue'
+import ProtocolSwitcher from './components/ProtocolSwitcher.vue'
 
 const componentMap: Record<string, Component> = {
   deploy: DeployPanel, control: ControlPanel, 'ai-model-api': AiModelApiConfigPanel,
@@ -162,14 +164,15 @@ defineOptions({ name: 'DashboardApp' })
     provide('showAdminDialog', showAdminDialog)
     provide('isElectronDeployer', isElectronDeployer)
 
-    function doSwitchTab(id: string) {
+    // 服务切换完成后必须展示登录页，不受普通导航的短暂防连点锁影响。
+    function doSwitchTab(id: string, confirmedProtocolChange = false) {
       if (id === 'agent') {
         window.location.href = '/agent/'
         return
       }
       if (id === activeTab.value) return
       if (!tabs.value.some(item => item.id === id)) return
-      if (tabSwitchLocked) return
+      if (tabSwitchLocked && !confirmedProtocolChange) return
       tabSwitchLocked = true
       if (tabSwitchUnlockTimer) clearTimeout(tabSwitchUnlockTimer)
       tabSwitchUnlockTimer = setTimeout(() => { tabSwitchLocked = false; tabSwitchUnlockTimer = null }, 150)

@@ -452,6 +452,23 @@ async function testResourceReadApisRequireAccessOnly() {
   assert.strictEqual(parseJsonResponse(modeWriteRes).code, 'ADMIN_REQUIRED')
 }
 
+// 验证切换、协议确认、QQ 接入和桌面票据均拒绝只有访问令牌的请求。
+async function testProtocolApisRequireAdmin() {
+  process.env.GLOBAL_LOCAL_MODE = ''
+  const headers = { authorization: 'Bearer ' + auth.createToken() }
+  for (const [method, pathname] of [
+    ['POST', '/dashboard/api/protocol/switch'],
+    ['GET', '/dashboard/api/protocol/sl/login'],
+    ['POST', '/dashboard/api/protocol/sl/consent'],
+    ['POST', '/dashboard/api/protocol/sl/connect'],
+    ['POST', '/dashboard/api/protocol/sl/desktop'],
+  ]) {
+    const result = await dispatchJson(method, pathname, { provider: 'sl' }, headers)
+    assert.strictEqual(result.statusCode, 403)
+    assert.strictEqual(parseJsonResponse(result).code, 'ADMIN_REQUIRED')
+  }
+}
+
 // Verifies resource mode updates require admin and round-trip through mode + status endpoints.
 async function testResourceModeRoundTripRequiresAdminAndUpdatesStatus() {
   resetDataDir()
@@ -701,6 +718,7 @@ async function run() {
   testResourceTaskSummaryWhitelist()
   await testResourceCancelReportsSpecificFailure()
   await testResourceReadApisRequireAccessOnly()
+  await testProtocolApisRequireAdmin()
   testDailyReportAnalysisRoute()
   await testResourceModeRoundTripRequiresAdminAndUpdatesStatus()
   await testCustomProviderValidationRejectsUnsafeInput()

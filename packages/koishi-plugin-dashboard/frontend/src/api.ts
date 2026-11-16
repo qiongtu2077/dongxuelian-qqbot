@@ -201,6 +201,14 @@ export async function startNapcat() { return post('/deploy/napcat-start', {}, tr
 export async function napcatDeployStatus() { return get('/deploy/napcat-status') }
 // 等待 NapCat 与原本运行的机器人恢复连接，避免取消仍在进行的恢复。
 export async function restartNapcat() { return post('/napcat/restart', {}, true, 120000) }
+
+// Linux QQ 协议服务与 SnowLuma 登录入口。
+export async function fetchProtocolStatus() { return get('/protocol/status') }
+export async function changeProtocol(provider: 'napcat' | 'sl') { return post('/protocol/switch', { provider }, true, 150000) }
+export async function fetchSlLogin() { return get('/protocol/sl/login', true, 30000) }
+export async function acceptSlConsent(version: string) { return post('/protocol/sl/consent', { version }, true, 30000) }
+export async function connectSl() { return post('/protocol/sl/connect', {}, true, 90000) }
+export async function openSlDesktop() { return post('/protocol/sl/desktop', {}, true, 30000) }
 // 读取管理员可见的群聊与全局私聊总开关。
 export async function fetchParticipation(): Promise<ApiResult<ParticipationResponse | null>> { return get<ParticipationResponse>('/participation', true) }
 // 保存一个开关，首次开启群时由后端原子初始化功能默认值。

@@ -29,7 +29,7 @@
       <div v-if="resultMsg" class="msg" :class="resultMsg.type" style="margin-top:16px">{{ resultMsg.text }}</div>
     </div>
 
-    <div class="card">
+    <div v-if="selectedProtocol !== 'sl'" class="card">
       <div>
         <h2 style="margin:0 0 16px">网络协议与终端配置</h2>
         <div style="font-size:14px;color:var(--text2);margin-bottom:20px;display:flex;align-items:center;gap:8px">
@@ -92,6 +92,8 @@
       </div>
     </div>
 
+    <SnowLumaLogin v-else />
+
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center">
         <div>
@@ -132,6 +134,8 @@ import { botStatus, startBot, stopBot, fetchMaintenance, setMaintenance, fetchQQ
 import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 import ParticipationControls from './ParticipationControls.vue'
+import SnowLumaLogin from './SnowLumaLogin.vue'
+import { selectedProtocol } from '../services/protocol-state'
 
 interface BotStatusData {
   loading: boolean
@@ -142,7 +146,7 @@ interface BotStatusData {
 
 export default {
   name: 'ControlPanel',
-  components: { ParticipationControls },
+  components: { ParticipationControls, SnowLumaLogin },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
 
@@ -401,7 +405,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, restartingNapcat, napcatRestartMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, doRestartNapcat, toggleMaintenance, saveThrottleConfig, sshUser }
+    return { selectedProtocol, status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, restartingNapcat, napcatRestartMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, doRestartNapcat, toggleMaintenance, saveThrottleConfig, sshUser }
   }
 }
 </script>

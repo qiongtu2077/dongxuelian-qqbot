@@ -216,6 +216,7 @@ http://服务器IP:5150/dashboard/
 - 本地 Electron 模式：由 Windows 部署器打开时自动绕过 Web 密码页，适合普通用户本地部署。
 - Bot 控制：查看状态、启动/停止 Koishi、本地停止、维护模式、每群总开关、全局私聊开关、节流配置、日志配置。
 - QQ 管理：展示 NapCat Token、代理 NapCat WebUI、查看或修改机器人 QQ 号、重启 NapCat。
+- Linux 协议切换：控制台顶部可选择 NapCat 或 SnowLuma (SL)，切换前先完整停止当前协议，systemd 门禁同时阻止旧入口与开机自启产生双登录。SL 使用 v2.4.2 独立运行时与 QQ 数据目录，控制台内完成协议确认、远程桌面扫码、账号核对、OneBot 配置和机器人重连。安装脚本为 `scripts/install-snowluma-service.sh`；运行时和 noVNC 静态文件需先准备在 `/root/SnowLuma/`，不覆盖现有 NapCat 安装与登录数据。
 - 模型配置：切换 provider、model、base URL，支持内置和自定义供应商。
 - API Keys：管理 OpenAI/OpenCode、DeepSeek、DashScope、GLM、小米 MiMo 等 Key。
 - 模型用量：按文字、识图、语音识别、语音合成分别查询，支持当天、昨天、近 7/14/30 天、全部记录和自定义日期区间；汇总、趋势、供应商/模型分布及每日明细共用同一区间。起止日期按北京时间整天统计，包含起止当天；历史记录仅有每日汇总，不提供小时或分钟筛选。

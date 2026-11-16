@@ -62,6 +62,7 @@ const { napcatProxy } = require('./lib/napcat-proxy') as {
   napcatProxy(req: IncomingMessage, res: ServerResponse, reqPath: string, body?: string | null, options?: { token?: string }): void
 }
 const router = require('./lib/router') as { dispatch(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL): boolean }
+const { serveSlDesktop, installSlDesktop } = require('./lib/sl-desktop') as typeof import('./lib/sl-desktop')
 
 const STATIC_MIME_TYPES: Record<string, string> = {
   '.html': 'text/html',
@@ -129,6 +130,7 @@ const server = http.createServer(async (req, res) => {
     return napcatProxy(req, res, pathname + url.search)
   }
 
+  if (serveSlDesktop(req, res, pathname)) return
   if (router.dispatch(req, res, pathname, url)) return
 
   if (pathname === '/dashboard') {
@@ -206,6 +208,7 @@ export = {
 }
 
 if (require.main === module) {
+  installSlDesktop(server)
   ensureInitialCredentials()
   if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
 

@@ -35,6 +35,7 @@ const { waitKoishiPortFree } = require('../deploy-state') as { waitKoishiPortFre
 const { restartNapcatService } = require('../napcat-service') as {
   restartNapcatService(serviceName: string, port: number, koishiDir: string, onebotPort: number): Promise<{ botReconnected: boolean }>
 }
+const { assertNapcatSelected } = require('../protocol-runtime') as typeof import('../protocol-runtime')
 
 interface PortState {
   status: string
@@ -302,6 +303,9 @@ function handleGetNapcatStatus(req: IncomingMessage, res: ServerResponse): void 
 // 重启受托管 NapCat，并恢复原本运行的机器人的实际 OneBot 连接。
 function handlePostNapcatRestart(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
+  try { assertNapcatSelected() } catch (error) {
+    return json(res, { ok: false, code: 'PROTOCOL_CONFLICT', message: getErrorMessage(error) }, 409)
+  }
   const qq = resolveNapcatRestartQq()
   if (!qq) return json(res, { ok: false, message: '未配置 QQ 号，请设置 DASHBOARD_QQ_NUMBER/QQ_NUMBER 或在 koishi.yml 写入 selfId' }, 400)
   const qqExecutable = getLinuxNapcatQQExecutable()

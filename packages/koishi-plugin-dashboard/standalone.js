@@ -9,6 +9,7 @@ const { isLocalAuthBypass, requireAdmin, shouldGenerateResetTokenOnStartup, getR
 const { getNapcatToken } = require('./lib/napcat');
 const { napcatProxy } = require('./lib/napcat-proxy');
 const router = require('./lib/router');
+const { serveSlDesktop, installSlDesktop } = require('./lib/sl-desktop');
 const STATIC_MIME_TYPES = {
     '.html': 'text/html',
     '.js': 'application/javascript',
@@ -67,6 +68,8 @@ const server = http.createServer(async (req, res) => {
             return;
         return napcatProxy(req, res, pathname + url.search);
     }
+    if (serveSlDesktop(req, res, pathname))
+        return;
     if (router.dispatch(req, res, pathname, url))
         return;
     if (pathname === '/dashboard') {
@@ -143,6 +146,7 @@ const server = http.createServer(async (req, res) => {
     res.end('Not Found');
 });
 if (require.main === module) {
+    installSlDesktop(server);
     ensureInitialCredentials();
     if (shouldGenerateResetTokenOnStartup() && !getResetToken())
         generateResetToken();

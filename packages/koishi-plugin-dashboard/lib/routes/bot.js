@@ -11,6 +11,7 @@ const { readLoggingConfig, writeLoggingConfig, getFilteredLogEntries } = require
 const { resolveKoishiListenPort } = require('../tools');
 const { waitKoishiPortFree } = require('../deploy-state');
 const { restartNapcatService } = require('../napcat-service');
+const { assertNapcatSelected } = require('../protocol-runtime');
 function parseJsonObject(body) {
     const data = JSON.parse(body || '{}');
     return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
@@ -292,6 +293,12 @@ function handleGetNapcatStatus(req, res) {
 function handlePostNapcatRestart(req, res) {
     if (!requireAdmin(req, res))
         return;
+    try {
+        assertNapcatSelected();
+    }
+    catch (error) {
+        return json(res, { ok: false, code: 'PROTOCOL_CONFLICT', message: getErrorMessage(error) }, 409);
+    }
     const qq = resolveNapcatRestartQq();
     if (!qq)
         return json(res, { ok: false, message: '未配置 QQ 号，请设置 DASHBOARD_QQ_NUMBER/QQ_NUMBER 或在 koishi.yml 写入 selfId' }, 400);

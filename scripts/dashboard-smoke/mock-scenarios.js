@@ -409,6 +409,29 @@ async function verifyMobileSidebar(page) {
   await waitForText(page, '指令速查')
 }
 
+/** 验证顶部双向切换、协议确认门禁、SL 登录和 NapCat 界面的恢复。 */
+async function verifyProtocolSwitch(page) {
+  await page.select('#qq-protocol', 'sl')
+  await waitForText(page, 'SnowLuma 登录')
+  await waitForText(page, '阅读并确认协议')
+  const disabled = await page.$eval('.sl-login button.btn:not(.btn-ghost)', button => button.disabled)
+  if (!disabled) throw new Error('Agreement must be explicitly accepted before continuing')
+  await page.click('.consent-check input')
+  await clickText(page, '确认并继续')
+  await waitForText(page, '完成登录并连接 OneBot')
+  await clickText(page, '完成登录并连接 OneBot')
+  await waitForText(page, '机器人 OneBot 连接已恢复')
+  await page.screenshot({ path: path.join(ROOT, 'tmp', 'sl-login-browser.png'), fullPage: true })
+  await page.setViewport({ width: 380, height: 900, deviceScaleFactor: 1 })
+  await ensureSidebarCollapsed(page)
+  await page.waitForFunction(() => document.documentElement.scrollWidth <= window.innerWidth)
+  await page.screenshot({ path: path.join(ROOT, 'tmp', 'sl-login-mobile.png'), fullPage: true })
+  await page.setViewport({ width: 1440, height: 1100, deviceScaleFactor: 1 })
+  await page.select('#qq-protocol', 'napcat')
+  await waitForText(page, '网络协议与终端配置')
+  await page.waitForFunction(() => document.querySelector('#qq-protocol').value === 'napcat')
+}
+
 /** Runs the complete mocked Dashboard click-smoke scenario. */
 async function runClicks(page) {
   await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' })
@@ -423,6 +446,10 @@ async function runClicks(page) {
   await waitForText(page, '先完成部署')
   await clickText(page, '跳过部署引导并进入控制台')
   await waitForText(page, '功能介绍')
+  if (process.env.DASHBOARD_SMOKE_PROTOCOL_ONLY === '1') {
+    await verifyProtocolSwitch(page)
+    return
+  }
   await verifyLegacyAgentTabColdStart(page)
 
   await verifyDeployPanel(page)
@@ -433,6 +460,7 @@ async function runClicks(page) {
   await waitForText(page, '功能介绍')
 
   await verifyControlPanel(page)
+  await verifyProtocolSwitch(page)
 
   await clickSidebarTab(page, '指令速查')
   await waitForText(page, '/help')
