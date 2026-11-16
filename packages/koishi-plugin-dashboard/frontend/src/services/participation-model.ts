@@ -2,6 +2,7 @@ export interface ParticipationPolicy {
   version: 1
   privateEnabled: boolean
   groups: Record<string, boolean>
+  abusiveGroups: Record<string, boolean>
 }
 
 export interface ParticipationResponse {
@@ -10,7 +11,7 @@ export interface ParticipationResponse {
   message?: string
 }
 
-export type ParticipationChange = { kind: 'private'; enabled: boolean } | { kind: 'group'; groupId: string; enabled: boolean }
+export type ParticipationChange = { kind: 'private'; enabled: boolean } | { kind: 'group' | 'group-abusive'; groupId: string; enabled: boolean }
 
 // 与后端保持相同的数字群号边界，避免提交空值或完整链接。
 export function isParticipationGroupId(value: string): boolean {
@@ -18,6 +19,7 @@ export function isParticipationGroupId(value: string): boolean {
 }
 
 // 只列出已经配置过的群；没有配置的群始终默认关闭。
-export function listParticipationGroups(policy: ParticipationPolicy): Array<{ id: string; enabled: boolean }> {
-  return Object.entries(policy.groups).map(([id, enabled]) => ({ id, enabled })).sort((a, b) => a.id.localeCompare(b.id, 'zh-CN', { numeric: true }))
+export function listParticipationGroups(policy: ParticipationPolicy): Array<{ id: string; enabled: boolean; abusiveEnabled: boolean }> {
+  const ids = new Set([...Object.keys(policy.groups), ...Object.keys(policy.abusiveGroups)])
+  return [...ids].map(id => ({ id, enabled: policy.groups[id] === true, abusiveEnabled: policy.abusiveGroups[id] === true })).sort((a, b) => a.id.localeCompare(b.id, 'zh-CN', { numeric: true }))
 }

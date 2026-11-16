@@ -5,7 +5,13 @@
     <div class="participation-group-editor">
       <label for="participation-group-id">群号</label>
       <input id="participation-group-id" v-model.trim="groupId" inputmode="numeric" maxlength="20" placeholder="输入要管理的 QQ 群号" />
-      <label class="participation-switch">
+      <label class="participation-switch participation-abusive-switch">
+        <span>嘴臭开关</span>
+        <input type="checkbox" role="switch" aria-label="所填群号的嘴臭开关" :checked="selectedAbusiveEnabled" :disabled="loading || saving || loadFailed || !validGroupId" @change="changeAbusive(groupId, $event)" />
+        <span class="participation-track" aria-hidden="true"></span>
+        <span>{{ selectedAbusiveEnabled ? '已开启' : '已关闭' }}</span>
+      </label>
+      <label class="participation-switch participation-total-switch">
         <input type="checkbox" role="switch" aria-label="所填群号的总开关" :checked="selectedEnabled" :disabled="loading || saving || loadFailed || !validGroupId" @change="changeGroup(groupId, $event)" />
         <span class="participation-track" aria-hidden="true"></span>
         <span>{{ selectedEnabled ? '已开启' : '已关闭' }}</span>
@@ -14,14 +20,23 @@
     <div v-if="groups.length" class="participation-groups">
       <div v-for="group in groups" :key="group.id" class="participation-group-row">
         <span class="participation-group-number">{{ group.id }}</span>
-        <label class="participation-switch">
-          <input type="checkbox" role="switch" :aria-label="`群 ${group.id} 总开关`" :checked="group.enabled" :disabled="loading || saving || loadFailed" @change="changeGroup(group.id, $event)" />
-          <span class="participation-track" aria-hidden="true"></span>
-          <span>{{ group.enabled ? '已开启' : '已关闭' }}</span>
-        </label>
+        <div class="participation-group-actions">
+          <label class="participation-switch participation-abusive-switch">
+            <span>嘴臭开关</span>
+            <input type="checkbox" role="switch" :aria-label="`群 ${group.id} 嘴臭开关`" :checked="group.abusiveEnabled" :disabled="loading || saving || loadFailed" @change="changeAbusive(group.id, $event)" />
+            <span class="participation-track" aria-hidden="true"></span>
+            <span>{{ group.abusiveEnabled ? '已开启' : '已关闭' }}</span>
+          </label>
+          <label class="participation-switch participation-total-switch">
+            <input type="checkbox" role="switch" :aria-label="`群 ${group.id} 总开关`" :checked="group.enabled" :disabled="loading || saving || loadFailed" @change="changeGroup(group.id, $event)" />
+            <span class="participation-track" aria-hidden="true"></span>
+            <span>{{ group.enabled ? '已开启' : '已关闭' }}</span>
+          </label>
+        </div>
       </div>
     </div>
     <p class="participation-note">关闭后，本群消息、戳一戳、通知和排队任务后续发送均停止。重新开启保留已有功能设置。</p>
+    <p class="participation-note">嘴臭开关默认关闭。开启后覆盖本群所有人格，正常聊天、道歉和主动插话也持续嘴臭；关闭后恢复原有人格与回复规则。</p>
     <div v-if="loading" class="participation-note" role="status">正在读取参与开关…</div>
     <div v-if="message" class="msg" :class="message.type" role="status">{{ message.text }}</div>
     <button v-if="loadFailed" type="button" class="btn btn-sm btn-ghost" @click="load">重新加载</button>
@@ -49,7 +64,7 @@ import { isParticipationGroupId, listParticipationGroups } from '../services/par
 import type { ParticipationChange, ParticipationPolicy } from '../services/participation-model'
 
 const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
-const policy = ref<ParticipationPolicy>({ version: 1, privateEnabled: false, groups: {} })
+const policy = ref<ParticipationPolicy>({ version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} })
 const groupId = ref('')
 const loading = ref(true)
 const saving = ref(false)
@@ -57,6 +72,7 @@ const loadFailed = ref(false)
 const message = ref<MessageState | null>(null)
 const validGroupId = computed(() => isParticipationGroupId(groupId.value))
 const selectedEnabled = computed(() => policy.value.groups[groupId.value] === true)
+const selectedAbusiveEnabled = computed(() => policy.value.abusiveGroups[groupId.value] === true)
 const groups = computed(() => listParticipationGroups(policy.value))
 
 // 读取真实配置；鉴权或读取失败时禁用开关，防止用默认值覆盖服务器。
@@ -104,6 +120,14 @@ function changeGroup(id: string, event: Event): void {
   void save({ kind: 'group', groupId: id, enabled })
 }
 
+// 嘴臭独立于总开关保存，不改动该群原有的人格绑定或参与状态。
+function changeAbusive(id: string, event: Event): void {
+  const input = event.target as HTMLInputElement
+  const enabled = input.checked
+  input.checked = policy.value.abusiveGroups[id] === true
+  void save({ kind: 'group-abusive', groupId: id, enabled })
+}
+
 // 全局私聊变更与群开关独立保存。
 function changePrivate(event: Event): void {
   const input = event.target as HTMLInputElement
@@ -122,6 +146,7 @@ onMounted(load)
 .participation-groups { margin-top: 16px; border-top: 1px solid var(--border); }
 .participation-group-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .participation-group-number { font-family: monospace; font-size: 14px; }
+.participation-group-actions { display: flex; align-items: center; justify-content: flex-end; gap: 24px; margin-left: auto; }
 .participation-private { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
 .participation-private h2 { margin-bottom: 4px; }
 .participation-private p { margin-bottom: 0; }
@@ -133,4 +158,8 @@ input:checked + .participation-track { background: var(--success); }
 input:checked + .participation-track::after { transform: translateX(18px); }
 input:focus-visible + .participation-track { outline: 2px solid var(--accent); outline-offset: 3px; }
 input:disabled + .participation-track { opacity: .5; cursor: not-allowed; }
+@media (max-width: 560px) {
+  .participation-group-row { flex-wrap: wrap; gap: 10px; }
+  .participation-group-actions { width: 100%; gap: 16px; }
+}
 </style>

@@ -1,7 +1,7 @@
 #!/bin/bash
 # 重启 Koishi Bot（服务器端）
 # 用法: ssh root@host "bash <YOUR_APP_DIR>/restart.sh"
-# 可通过环境变量覆盖: KOISHI_APP_DIR, KOISHI_PORT
+# 可通过环境变量覆盖: KOISHI_APP_DIR, KOISHI_PORT；显式离线部署可设置 LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=1
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 APP_DIR="${KOISHI_APP_DIR:-$SCRIPT_DIR}"
@@ -197,12 +197,16 @@ for i in $(seq 1 20); do
   if systemctl is-active --quiet lian-koishi && \
      ss -tlnp | grep -q ":$KOISHI_PORT" && \
      ps aux | grep -q 'koishi/lib/worker' && \
-     echo "$LOG_TAIL" | grep -q 'adapter connect to server' && \
+     { [ "${LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE:-0}" = "1" ] || echo "$LOG_TAIL" | grep -q 'adapter connect to server'; } && \
      validate_resource_worker_generation; then
     echo "启动成功 ✓（${i}秒）"
     echo "  port listening"
     echo "  http healthy"
-    echo "  adapter connected"
+    if echo "$LOG_TAIL" | grep -q 'adapter connect to server'; then
+      echo "  adapter connected"
+    else
+      echo "  adapter waiting for QQ login (explicit offline deployment)"
+    fi
     echo "  worker generation healthy"
     exit 0
   fi

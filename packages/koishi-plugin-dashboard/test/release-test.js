@@ -99,6 +99,8 @@ esac
 manifest="$TEST_APP_DIR/.lian-releases/current/release-manifest.json"
 current="$(readlink -f "$TEST_APP_DIR/.lian-releases/current" 2>/dev/null || true)"
 release_id="$(basename "$current")"
+onebot_listening=true
+if [ "\${MOCK_ONEBOT_OFFLINE:-0}" = "1" ]; then onebot_listening=false; fi
 printf 'curl:%s\\n' "$release_id" >> "$TEST_APP_DIR/activation-command.log"
 if [ "\${FAIL_ALL_HEALTH:-0}" = "1" ]; then exit 22; fi
 if [ -n "\${FAIL_HEALTH_RELEASE_ID:-}" ] && [ "$(basename "$current")" = "$FAIL_HEALTH_RELEASE_ID" ]; then exit 22; fi
@@ -111,7 +113,7 @@ if [ -n "\${FAIL_STABILITY_HEALTH_RELEASE_ID:-}" ] && [ "$release_id" = "$FAIL_S
 fi
 if [ -f "$manifest" ]; then
   hash="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).manifestHash)" "$manifest")"
-  printf '{"ok":true,"dashboard":{"healthy":true},"release":{"manifestHash":"%s"},"bot":{"listening":true},"worker":{"processes":1},"onebot":{"listening":true}}\\n' "$hash"
+  printf '{"ok":true,"dashboard":{"healthy":true},"release":{"manifestHash":"%s"},"bot":{"listening":true},"worker":{"processes":1},"onebot":{"listening":%s}}\\n' "$hash" "$onebot_listening"
 else
   printf '{"ok":true,"dashboard":{"healthy":true},"release":null,"bot":{"listening":true},"worker":{"processes":1},"onebot":{"listening":true}}\\n'
 fi
@@ -163,6 +165,14 @@ function testReleaseManifest(tempRoot) {
   assert(listed.has('packages/koishi-plugin-dashboard/frontend/dist/index.html'))
   assert(listed.has('scripts/activate-dashboard-release.sh'))
   assert(listed.has('scripts/install-koishi-service.sh'))
+  const forcedPersona = 'koishi-plugin-dongxuelian-ai/data/ai-skills/modes/SKILL.persona-forced-abusive.md'
+  const personaSource = fs.readFileSync(path.join(REPO_ROOT, 'packages', forcedPersona), 'utf8')
+  // 发布目录与运行时副本必须包含完整的新人格，首次启动才能向共享目录补齐种子。
+  for (const base of ['packages', 'node_modules']) {
+    const relative = `${base}/${forcedPersona}`
+    assert(listed.has(relative), `forced abusive persona missing from release: ${relative}`)
+    assert.strictEqual(fs.readFileSync(path.join(first.releaseDir, relative), 'utf8'), personaSource)
+  }
   for (const packageName of RELEASE_PACKAGES) {
     assert(listed.has(`packages/${packageName}/package.json`), `${packageName} package metadata missing`)
     assert(listed.has(`node_modules/${packageName}/package.json`), `${packageName} runtime copy missing`)
@@ -239,6 +249,8 @@ function runActivation(app, releaseId, fakeBin, failures = {}) {
     `export FAIL_ALL_HEALTH=${shellQuote(failures.allHealth ? '1' : '0')}`,
     `export FAIL_LOGROTATE=${shellQuote(failures.logrotate ? '1' : '0')}`,
     `export FAIL_SWITCH=${shellQuote(failures.switch ? '1' : '0')}`,
+    `export MOCK_ONEBOT_OFFLINE=${shellQuote(failures.onebotOffline ? '1' : '0')}`,
+    `export LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=${shellQuote(failures.allowOnebotOffline ? '1' : '0')}`,
   ].join('; ')
   const baselineHash = failures.baselineHash || app.baselineHash
   const command = `${envPrefix}; exec ${shellQuote(toBashPath(activation))} ${shellQuote(toBashPath(app.appDir))} ${shellQuote(releaseId)} ${shellQuote(toBashPath(app.resultFile))} ${shellQuote(baselineHash)}`
@@ -295,6 +307,23 @@ function testActivationScenarios(tempRoot, releases) {
   assert.strictEqual(successResult.manifestHash, releases.newRelease.manifest.manifestHash)
   assert.strictEqual(fs.existsSync(path.join(successApp.appDir, '.lian-releases', 'deploy.lock')), false)
   assertActivationOrder(readActivationCommandLog(successApp.appDir), newId)
+
+  // 默认发布仍要求连接；显式离线发布允许未登录，但不放宽应用健康失败后的回滚。
+  const offlineApp = prepareVersionedApp(tempRoot, 'activation-offline-allowed', releases)
+  const offline = runActivation(offlineApp, newId, fakeBin, { onebotOffline: true, allowOnebotOffline: true })
+  assert.strictEqual(offline.status, 0, offline.stderr || offline.stdout)
+  assert.strictEqual(activeReleaseId(offlineApp.appDir), newId)
+  assert.strictEqual(JSON.parse(fs.readFileSync(offlineApp.resultFile, 'utf8')).state, 'success')
+  assertActivationOrder(readActivationCommandLog(offlineApp.appDir), newId)
+  const strictOfflineApp = prepareVersionedApp(tempRoot, 'activation-offline-rejected', releases)
+  const strictOffline = runActivation(strictOfflineApp, newId, fakeBin, { onebotOffline: true })
+  assert.notStrictEqual(strictOffline.status, 0, 'normal activation accepted offline OneBot')
+  assert.strictEqual(activeReleaseId(strictOfflineApp.appDir), oldId)
+  const unhealthyOfflineApp = prepareVersionedApp(tempRoot, 'activation-offline-unhealthy', releases)
+  const unhealthyOffline = runActivation(unhealthyOfflineApp, newId, fakeBin, { onebotOffline: true, allowOnebotOffline: true, healthReleaseId: newId })
+  assert.notStrictEqual(unhealthyOffline.status, 0, 'offline allowance bypassed application health failure')
+  assert.strictEqual(activeReleaseId(unhealthyOfflineApp.appDir), oldId)
+  assert.strictEqual(JSON.parse(fs.readFileSync(unhealthyOfflineApp.resultFile, 'utf8')).rolledBack, true)
 
   const lockedApp = prepareVersionedApp(tempRoot, 'activation-locked', releases)
   const lockDir = path.join(lockedApp.appDir, '.lian-releases', 'deploy.lock')

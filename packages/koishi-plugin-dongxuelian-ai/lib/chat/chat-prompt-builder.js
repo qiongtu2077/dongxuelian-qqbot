@@ -78,9 +78,15 @@ function createChatPromptSearchRuleMessage(configForSearch = {}, searchCap = {})
         content: '【联网搜索规则】你已开启联网搜索。当用户询问实时或外部页面内容时，必须先通过可用工具取得依据再回答，禁止凭记忆编造，也不能声称自己已经搜索、读取网页或看过评论区却没有工具结果。工具没有拿到可靠依据时，用当前人格自然表达依据不足，不要套固定兜底句。',
     };
 }
-function createChatPromptRandomContextMessage(randomTriggered) {
+// 随机插话默认克制；群强制嘴臭开启时只保留短回复与当前话题约束。
+function createChatPromptRandomContextMessage(randomTriggered, forcedAbusive = false) {
     if (!randomTriggered)
         return null;
+    if (forcedAbusive)
+        return {
+            role: 'system',
+            content: '这次是在群聊里主动插话。群嘴臭开关已开启，必须用当前强制嘴臭人格，针对当前发言直接带脏话开喷，一到两句说完；不能切回友善、礼貌或不带脏字的阴阳模式。',
+        };
     return {
         role: 'system',
         content: [

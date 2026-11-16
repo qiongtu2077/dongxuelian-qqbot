@@ -141,6 +141,8 @@ function copyReleasePayload(repoRoot: string, releaseRoot: string): void {
     copyReleaseEntry(repoRoot, releaseRoot, `${packageRoot}/lib`, true)
     for (const optional of ['assets', 'templates']) copyReleaseEntry(repoRoot, releaseRoot, `${packageRoot}/${optional}`)
   }
+  // 仅携带仓库内的人格与工具种子，运行配置、密钥和对话数据继续留在共享 data。
+  copyReleaseEntry(repoRoot, releaseRoot, 'packages/koishi-plugin-dongxuelian-ai/data/ai-skills', true)
   const dashboardRoot = `packages/${DASHBOARD_PACKAGE}`
   for (const file of ['index.js', 'index.d.ts', 'standalone.js', 'standalone.d.ts']) copyReleaseEntry(repoRoot, releaseRoot, `${dashboardRoot}/${file}`, true)
   for (const entry of ['frontend/src', 'frontend/public', 'frontend/dist', 'frontend/index.html', 'frontend/package.json', 'frontend/vite.config.ts', 'frontend/tsconfig.json']) copyReleaseEntry(repoRoot, releaseRoot, `${dashboardRoot}/${entry}`, true)

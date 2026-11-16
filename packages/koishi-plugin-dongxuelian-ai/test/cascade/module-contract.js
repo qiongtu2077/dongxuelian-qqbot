@@ -257,7 +257,7 @@ async function runModuleContract(context) {
   const index = modules.index
 
   const expectedExports = {
-    participationPolicy: ['validateParticipationPolicy', 'readParticipationPolicy', 'isGroupParticipationEnabled', 'isSessionParticipationEnabled', 'isOneBotActionAllowed'],
+    participationPolicy: ['validateParticipationPolicy', 'readParticipationPolicy', 'isGroupParticipationEnabled', 'isGroupAbusiveEnabled', 'isSessionParticipationEnabled', 'isOneBotActionAllowed'],
     participationGuard: ['installParticipationGuard', 'ParticipationDisabledError'],
     dashboardParticipation: [],
     githubModels: ['assertGithubWork', 'waitGithubWork'],

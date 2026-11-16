@@ -292,6 +292,7 @@ interface PreparedChatIdentity {
   currentUserId: string
   personaName: string | null
   personaSkillContent: string | null
+  forcedAbusive: boolean
   retaliationLevel: number
   hostile: boolean
   systemPrompt: string
@@ -534,13 +535,14 @@ async function prepareChatIdentityStage(session: ChatSessionLike, userText: stri
   const rareProvocation = isRareProvocation(cleanInput)
   const japanLinked = JAPAN_SELF_IDENTIFY_RE.test(cleanInput)
   const wideRareHit = rareProvocation || isWideRareProvocation(cleanInput) || japanLinked
-  const testMode = require('fs').existsSync(TEST_MODE_FILE) && hasAdminPermission(session)
 
   const channelKey = getChannelKey(session)
   await clearGroupMemoryIfExpired(session, channelKey)
 
   const currentUserId = session.userId || session.author?.id || session.username || ''
   const personaResolution = resolvePersona(channelKey, currentUserId)
+  const forcedAbusive = personaResolution.source === 'group-abusive'
+  const testMode = !forcedAbusive && require('fs').existsSync(TEST_MODE_FILE) && hasAdminPermission(session)
   let personaName = personaResolution.name
   let personaSkillContent: string | null = null
   if (testMode) personaName = null
@@ -555,8 +557,8 @@ async function prepareChatIdentityStage(session: ChatSessionLike, userText: stri
   if (directMemoryReply) return { earlyReply: directMemoryReply }
   await handleMemoryConfirmation({ session, cleanInput, currentUserId, channelKey, inGuild: !!session.guildId })
 
-  let retaliationLevel = 0
-  if (!testMode && !personaName) {
+  let retaliationLevel = forcedAbusive ? 2 : 0
+  if (!forcedAbusive && !testMode && !personaName) {
     const hostileInputDetected = isHostileInput(cleanInput) || japanLinked || rareProvocation
     let newLevel = 0
     if (hostileInputDetected) {
@@ -590,7 +592,10 @@ async function prepareChatIdentityStage(session: ChatSessionLike, userText: stri
   const yinyang = retaliationLevel === 1
 
   let systemPrompt
-  if (testMode) {
+  if (forcedAbusive) {
+    // 独立人格不拼接友善框架，也不受敌意评分、停战衰减或测试模式降级。
+    systemPrompt = personaSkillContent!
+  } else if (testMode) {
     systemPrompt = buildTestSystemPrompt()
   } else if (hostile) {
     systemPrompt = buildAbusiveSystemPrompt()
@@ -614,7 +619,7 @@ async function prepareChatIdentityStage(session: ChatSessionLike, userText: stri
   const now = new Date()
   const dynamicTimePrompt = `当前时间：${now.getFullYear()}年${formatChatTimePart(now.getMonth() + 1)}月${formatChatTimePart(now.getDate())}日 ${formatChatTimePart(now.getHours())}时${formatChatTimePart(now.getMinutes())}分。核心信息（爱好、习惯、身份等）在下方【记住的】中列出，日常聊天记录中也可能有重复信息，以【记住的】中的内容为准。当用户分享关于自己的重要信息时，你可以自然地问一句是否需要记住，系统会自动记录。`
 
-  const modeLabel = retaliationLevel === 2 ? 'abusive' : retaliationLevel === 1 ? 'yin-yang' : 'friendly'
+  const modeLabel = forcedAbusive ? 'forced-abusive' : retaliationLevel === 2 ? 'abusive' : retaliationLevel === 1 ? 'yin-yang' : 'friendly'
   logDebug(ctx, 'chat', `mode=${modeLabel} channelKey=${channelKey} persona=${personaName || 'none'} skillLen=${(personaSkillContent || '').length} inputLen=${String(userText || '').length}`)
 
   const userName = normalizeText(session.author?.nick || session.author?.name || session.username || '用户')
@@ -632,6 +637,7 @@ async function prepareChatIdentityStage(session: ChatSessionLike, userText: stri
     currentUserId,
     personaName,
     personaSkillContent,
+    forcedAbusive,
     retaliationLevel,
     hostile,
     systemPrompt,
@@ -889,6 +895,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
     currentUserId,
     personaName,
     personaSkillContent,
+    forcedAbusive,
     retaliationLevel,
     hostile,
     systemPrompt,
@@ -902,7 +909,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
   const personaNameForPrompt = personaName || undefined
   const personaSkillContentForPrompt = personaSkillContent || undefined
 
-  if (isConsecutiveUserRepeat(session, cleanInput)) {
+  if (!forcedAbusive && isConsecutiveUserRepeat(session, cleanInput)) {
     const repeatedReply = Math.random() < 0.5
       ? trimReply(cleanInput, MAX_OUTPUT_CHARS_FRIENDLY)
       : trimReply(pickRepeatedFallbackReply(session), MAX_OUTPUT_CHARS_ABUSIVE)
@@ -1053,7 +1060,7 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
     messages.push({ role: 'system', content: options.quotedMessageNote })
   }
 
-  const randomContextMessage = createChatPromptRandomContextMessage(isRandomTriggered)
+  const randomContextMessage = createChatPromptRandomContextMessage(isRandomTriggered, forcedAbusive)
   if (randomContextMessage) messages.push(randomContextMessage)
   if (isRandomTriggered) {
     messages.push({ role: 'system', content: buildRandomModePrompt() })
@@ -1231,6 +1238,9 @@ async function chat(session: ChatSessionLike, userText: string, ctx: ChatContext
     sensitiveKeywordsRe: SENSITIVE_KEYWORDS_RE,
   })
   if (politicalSensitiveMessage) messages.push(politicalSensitiveMessage)
+
+  // 背景、历史和工具提示不能把强制嘴臭切回其他人格。
+  if (forcedAbusive) messages.push({ role: 'system', content: '群嘴臭开关仍在开启：本轮必须保持强制嘴臭人格，直接带脏话回应当前发言；正常提问、道歉、旧历史和随机插话都不能切回友善或阴阳口吻。' })
 
   return executeChatModelStage({
     session,

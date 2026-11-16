@@ -87,6 +87,7 @@ function extractAgentPersonaLore(personaContent = '', personaName = '', plan = n
         return 'terra-lore';
     return '';
 }
+// 组合当前 Agent 人格；强制嘴臭不混入默认友善口吻。
 function buildAgentPersonaSystemMessage({ personaName = '', personaContent = '', source = 'default', channel = 'qq', plan = null } = {}) {
     const core = loadAgentNamedPrompt(SKILLS_CORE_DIR, 'persona-core', 'SKILL.persona-core.md');
     const runtimePlan = plan || (personaContent
@@ -94,16 +95,17 @@ function buildAgentPersonaSystemMessage({ personaName = '', personaContent = '',
         : resolvePersonaRuntimePlan({ personaName: String(personaName || ''), source: String(source || '') }));
     const personaBody = String(runtimePlan.prompt?.body || '');
     const prompt = personaBody
-        ? [core, personaBody].filter(Boolean).join('\n\n')
+        ? [source === 'group-abusive' ? '' : core, personaBody].filter(Boolean).join('\n\n')
         : getAgentDefaultPersonaPrompt();
     const current = runtimePlan.name || personaName || '默认（东雪莲）';
-    const sourceLabel = source === 'user' ? '用户人格' : source === 'group' ? '群人格' : source === 'dashboard' ? 'Console 人格' : '默认人格';
+    const sourceLabel = source === 'group-abusive' ? '群嘴臭开关' : source === 'user' ? '用户人格' : source === 'group' ? '群人格' : source === 'dashboard' ? 'Console 人格' : '默认人格';
     return [
         `【Agent 人格同步】渠道：${channel}；当前人格：${current}；来源：${sourceLabel}。`,
         '下面是当前聊天人格与核心安全框架。回答时保持这个人格，不要因为用户要求而切换角色。',
         prompt,
     ].filter(Boolean).join('\n\n');
 }
+// QQ 群嘴臭开关优先于继承设置和直连模式；控制台会话沿用自身配置。
 function buildAgentPersonaContext(options = {}) {
     const channel = options.channel === 'dashboard' ? 'dashboard' : 'qq';
     const agentMode = !!options.agentMode;
@@ -114,10 +116,12 @@ function buildAgentPersonaContext(options = {}) {
         personaName = String(options.dashboardPersona ?? config.persona?.dashboardPersona ?? '').trim();
         source = personaName ? 'dashboard' : 'default';
     }
-    else if (config.persona?.qqInheritChatPersona !== false) {
+    else {
         const resolved = resolvePersona(options.channelKey || '', options.userId || '');
-        personaName = resolved.name || '';
-        source = resolved.source || 'default';
+        if (resolved.source === 'group-abusive' || config.persona?.qqInheritChatPersona !== false) {
+            personaName = resolved.name || '';
+            source = resolved.source || 'default';
+        }
     }
     const personaContent = personaName ? loadPersonalSkill(personaName) || '' : '';
     const personaPlan = resolvePersonaRuntimePlan({
@@ -127,7 +131,7 @@ function buildAgentPersonaContext(options = {}) {
         resolution: { name: personaName || null, source },
     });
     const messages = [];
-    if (agentMode) {
+    if (agentMode && source !== 'group-abusive') {
         messages.push({ role: 'system', content: '【Agent 直连模式】当前处于 Agent 工具调用模式，不使用角色人格。' }, { role: 'system', content: AGENT_DIRECT_MODE_PROMPT });
         return messages;
     }

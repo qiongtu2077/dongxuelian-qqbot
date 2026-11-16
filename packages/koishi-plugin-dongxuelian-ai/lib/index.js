@@ -440,7 +440,7 @@ function apply(ctx) {
         const groupPersonaName = getGroupPersonaName(channelKey);
         const randomPersonaHighRisk = isPersonaSwitchRisky({ source: personaResolution.source, name: currentPersonaNameText }, groupPersonaName);
         const personaWillContent = currentPersonaName ? loadPersonalSkill(currentPersonaName) || undefined : undefined;
-        const nameMentioned = !currentPersonaName && nameMentionedForBotMode;
+        const nameMentioned = (!currentPersonaName || personaResolution.source === 'group-abusive') && nameMentionedForBotMode;
         const explicitBotInteraction = directAt || nameMentioned || isPrivate || quotedBotSelf;
         if (quotedBotSelf && !directAt)
             markExplicitInteraction('quoted-self');

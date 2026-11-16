@@ -375,7 +375,7 @@ function main() {
     const participation = loadService('participation-model')
     assert.strictEqual(participation.isParticipationGroupId('123456'), true)
     for (const id of ['', '01', '-1', '1.2', '__proto__', '1'.repeat(21)]) assert.strictEqual(participation.isParticipationGroupId(id), false)
-    assert.deepStrictEqual(participation.listParticipationGroups({ version: 1, privateEnabled: false, groups: { 10002: false, 10001: true } }), [{ id: '10001', enabled: true }, { id: '10002', enabled: false }])
+    assert.deepStrictEqual(participation.listParticipationGroups({ version: 1, privateEnabled: false, groups: { 10002: false, 10001: true }, abusiveGroups: { 10001: true, 10003: true } }), [{ id: '10001', enabled: true, abusiveEnabled: true }, { id: '10002', enabled: false, abusiveEnabled: false }, { id: '10003', enabled: false, abusiveEnabled: true }])
     testAiModelApiModel(loadService('ai-model-api-model'))
     testCapabilityDetectionDisplay(loadService('ai-capability-display'))
     testUsageRangeModel(loadService('usage-range-model'))

@@ -55,7 +55,7 @@ exit 0
 if [ -f "$SYSTEMD_RESTARTED" ]; then printf 'LISTEN 0 128 127.0.0.1:5140 0.0.0.0:*\\n'; fi
 `)
   writeExecutable(path.join(binDir, 'ps'), '#!/bin/bash\nprintf "root 1 0 0 koishi/lib/worker\\n"\n')
-  writeExecutable(path.join(binDir, 'tail'), '#!/bin/bash\nprintf "adapter connect to server\\n"\n')
+  writeExecutable(path.join(binDir, 'tail'), '#!/bin/bash\nif [ "${MOCK_ADAPTER_OFFLINE:-0}" = "1" ]; then printf "adapter connect ECONNREFUSED\\n"; else printf "adapter connect to server\\n"; fi\n')
   writeExecutable(path.join(binDir, 'sleep'), '#!/bin/bash\nexit 0\n')
   return binDir
 }
@@ -86,7 +86,7 @@ function testKoishiServiceContract() {
 }
 
 // Runs the real restart script against command stubs and verifies that systemd performs the start.
-function testRestartCommandStub(tempRoot) {
+function testRestartCommandStub(tempRoot, { offline = false, allowOffline = false } = {}) {
   const appDir = path.join(tempRoot, 'app')
   const dataDir = path.join(appDir, 'data')
   const scriptDir = path.join(appDir, 'scripts')
@@ -106,10 +106,17 @@ function testRestartCommandStub(tempRoot) {
     `export DONGXUELIAN_AI_DATA_DIR=${shellQuote(toBashPath(dataDir))}`,
     `export COMMAND_LOG=${shellQuote(toBashPath(commandLog))}`,
     `export SYSTEMD_RESTARTED=${shellQuote(toBashPath(restartedMarker))}`,
+    `export MOCK_ADAPTER_OFFLINE=${offline ? '1' : '0'}`,
+    `export LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=${allowOffline ? '1' : '0'}`,
     `exec ${shellQuote(toBashPath(path.join(scriptDir, 'restart-bot.sh')))}`,
   ].join('; ')
   const result = runBash(command)
-  assert.strictEqual(result.status, 0, result.stderr || result.stdout)
+  if (offline && !allowOffline) assert.notStrictEqual(result.status, 0, 'normal restart accepted an offline adapter')
+  else assert.strictEqual(result.status, 0, result.stderr || result.stdout)
+  if (offline && allowOffline) {
+    assert.match(result.stdout, /adapter waiting for QQ login/)
+    assert.doesNotMatch(result.stdout, /adapter connected/)
+  }
   const invocations = fs.readFileSync(commandLog, 'utf8').trim().split(/\r?\n/)
   assert(invocations.includes('stop lian-koishi'), `missing systemd stop: ${invocations.join(', ')}`)
   assert(invocations.includes('restart lian-koishi'), `missing systemd restart: ${invocations.join(', ')}`)
@@ -123,7 +130,11 @@ function main() {
   try {
     testRestartScriptContract()
     testKoishiServiceContract()
-    if (hasWorkingBash()) testRestartCommandStub(tempRoot)
+    if (hasWorkingBash()) {
+      testRestartCommandStub(path.join(tempRoot, 'connected'))
+      testRestartCommandStub(path.join(tempRoot, 'offline-rejected'), { offline: true })
+      testRestartCommandStub(path.join(tempRoot, 'offline-allowed'), { offline: true, allowOffline: true })
+    }
     console.log(hasWorkingBash() ? 'restart-bot systemd tests passed' : 'restart-bot static tests passed; command-stub scenario skipped because bash is unavailable')
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })

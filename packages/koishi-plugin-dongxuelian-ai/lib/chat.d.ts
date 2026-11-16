@@ -124,6 +124,7 @@ interface PreparedChatIdentity {
     currentUserId: string;
     personaName: string | null;
     personaSkillContent: string | null;
+    forcedAbusive: boolean;
     retaliationLevel: number;
     hostile: boolean;
     systemPrompt: string;

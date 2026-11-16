@@ -2,6 +2,7 @@ export interface ParticipationPolicy {
     version: 1;
     privateEnabled: boolean;
     groups: Record<string, boolean>;
+    abusiveGroups: Record<string, boolean>;
 }
 export interface ParticipationSession {
     event?: {
@@ -17,5 +18,6 @@ export declare const GROUP_ID_PATTERN: RegExp;
 export declare function validateParticipationPolicy(value: unknown): ParticipationPolicy;
 export declare function readParticipationPolicy(): ParticipationPolicy;
 export declare function isGroupParticipationEnabled(groupId: string | number): boolean;
+export declare function isGroupAbusiveEnabled(groupId: string | number): boolean;
 export declare function isSessionParticipationEnabled(session: ParticipationSession): boolean;
 export declare function isOneBotActionAllowed(action: string, params: Record<string, unknown>): boolean;

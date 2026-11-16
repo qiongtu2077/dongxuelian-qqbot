@@ -59,6 +59,7 @@ interface RemoteDeployTask {
   manifestHash?: string
   contentHash?: string
   baselineManifestHash?: string
+  allowOnebotOffline?: boolean
   remoteResultConfirmed?: boolean
   rolledBack?: boolean
   rollbackState?: 'not_needed' | 'success' | 'failed'
@@ -345,6 +346,7 @@ function handlePostSafeDeployRun(req: IncomingMessage, res: ServerResponse): voi
   collectBody(req, res, (body) => {
     try {
       const input = JSON.parse(body) as Record<string, unknown>
+      if (input.allowOnebotOffline !== undefined && typeof input.allowOnebotOffline !== 'boolean') throw new Error('允许 QQ 未登录部署必须是布尔值')
       const repoRoot = path.join(PLUGIN_ROOT, '..', '..')
       const preview = remoteRelease.validateRemoteReleasePreview({ repoRoot, releasesRoot: LOCAL_RELEASES_DIR, previewsDir: DEPLOY_PREVIEWS_DIR, previewId: input.previewId, confirmed: input.confirmed })
       const release = preview.release
@@ -359,19 +361,22 @@ function handlePostSafeDeployRun(req: IncomingMessage, res: ServerResponse): voi
       task.manifestHash = release.manifestHash
       task.contentHash = release.contentHash
       task.baselineManifestHash = preview.target.release.manifestHash
+      task.allowOnebotOffline = input.allowOnebotOffline === true
       writeRemoteDeployTask(task)
-      fs.writeFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), `使用已确认预览 ${preview.previewId} 的冻结发布物\n`, 'utf8')
+      fs.writeFileSync(path.join(DEPLOY_TASKS_DIR, taskId + '.log'), `使用已确认预览 ${preview.previewId} 的冻结发布物\n${task.allowOnebotOffline ? '本次明确允许 QQ 未登录，仍检查服务、发布身份、端口和资源 worker 健康状态\n' : ''}`, 'utf8')
       json(res, { ok: true, taskId })
 
       const remoteReleaseRoot = dh.remoteJoin(task.appDir, '.lian-releases')
       const remoteNext = dh.remoteJoin(remoteReleaseRoot, release.releaseId + '.next')
       const remoteResult = dh.remoteJoin(task.appDir, 'data', 'deploy-tasks', taskId + '.remote.json')
       const unitName = 'lian-release-' + release.releaseId.replace(/[^a-z0-9-]/g, '-')
+      // 只为本次受管理员保护的发布单元设置环境，不改变服务的永久连接要求。
+      const activationEnvironment = task.allowOnebotOffline ? ' --setenv=LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=1' : ''
       const commands = [
         { stage: 'prepare_remote_version', command: dh.sshCommand(task.server, `mkdir -p ${shellQuote(remoteReleaseRoot)} ${shellQuote(path.dirname(remoteResult))} && rm -rf ${shellQuote(remoteNext)}`), timeout: 30000 },
         { stage: 'upload_release', command: dh.scpCommand(release.releaseDir, dh.scpRemoteTarget(task.server, remoteNext), { recursive: true }), timeout: 10 * 60 * 1000 },
         { stage: 'verify_remote_manifest', command: dh.sshCommand(task.server, `node ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'verify-release-manifest.js'))} ${shellQuote(remoteNext)}`), timeout: 3 * 60 * 1000 },
-        { stage: 'start_detached_activation', command: dh.sshCommand(task.server, `systemd-run --unit=${shellQuote(unitName)} --collect --quiet --no-block --property=Type=oneshot --property=TimeoutStartSec=1800 /bin/bash ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'activate-dashboard-release.sh'))} ${shellQuote(task.appDir)} ${shellQuote(release.releaseId)} ${shellQuote(remoteResult)} ${shellQuote(task.baselineManifestHash)}`), timeout: 30000 },
+        { stage: 'start_detached_activation', command: dh.sshCommand(task.server, `systemd-run --unit=${shellQuote(unitName)} --collect --quiet --no-block --property=Type=oneshot --property=TimeoutStartSec=1800${activationEnvironment} /bin/bash ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'activate-dashboard-release.sh'))} ${shellQuote(task.appDir)} ${shellQuote(release.releaseId)} ${shellQuote(remoteResult)} ${shellQuote(task.baselineManifestHash)}`), timeout: 30000 },
       ]
       runSafeDeployCommands(task, commands, () => {
         setRemoteDeployStage(task, 'target_activation')
@@ -400,7 +405,7 @@ function handleGetDeployProgress(req: IncomingMessage, res: ServerResponse, path
     try { fs.readSync(fd, buffer, 0, buffer.length, start) } finally { fs.closeSync(fd) }
     const raw = buffer.toString('utf8').trim()
     const lines = raw ? raw.split('\n') : []
-    return json(res, { ok: true, lines, state: task.state, stage: task.stage, error: task.error, warnings: task.warnings || [], rolledBack: task.rolledBack, rollbackState: task.rollbackState, previewId: task.previewId, releaseId: task.releaseId, startedAt: task.startedAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt, expiresAt: task.expiresAt })
+    return json(res, { ok: true, lines, state: task.state, stage: task.stage, error: task.error, warnings: task.warnings || [], rolledBack: task.rolledBack, rollbackState: task.rollbackState, allowOnebotOffline: task.allowOnebotOffline === true, previewId: task.previewId, releaseId: task.releaseId, startedAt: task.startedAt, updatedAt: task.updatedAt, finishedAt: task.finishedAt, expiresAt: task.expiresAt })
   } catch (error) { return json(res, { ok: false, message: sanitizeDeployError(error), code: 'DEPLOY_PROGRESS_READ_FAILED' }, 500) }
 }
 

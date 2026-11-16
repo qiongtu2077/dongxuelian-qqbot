@@ -95,10 +95,12 @@ wait_for_runtime() {
     if [ -n "$expected_manifest" ]; then
       status_json="$(curl -fsS http://127.0.0.1:5150/dashboard/api/release-status 2>/dev/null || true)"
       if [ -z "$status_json" ]; then continue; fi
-      if node - "$expected_manifest" "$status_json" <<'NODE'
+      if node - "$expected_manifest" "$status_json" "${LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE:-0}" <<'NODE'
 try {
   const status = JSON.parse(process.argv[3])
-  process.exit(status.ok && status.dashboard && status.dashboard.healthy && status.release && status.release.manifestHash === process.argv[2] && status.bot && status.bot.listening && status.worker && status.worker.processes > 0 && status.onebot && status.onebot.listening ? 0 : 1)
+  // 仅明确允许离线部署时不要求 QQ 已登录，其他健康与发布身份检查保持完整。
+  const onebotReady = status.onebot && (status.onebot.listening || process.argv[4] === '1')
+  process.exit(status.ok && status.dashboard && status.dashboard.healthy && status.release && status.release.manifestHash === process.argv[2] && status.bot && status.bot.listening && status.worker && status.worker.processes > 0 && onebotReady ? 0 : 1)
 } catch { process.exit(1) }
 NODE
       then return 0; fi

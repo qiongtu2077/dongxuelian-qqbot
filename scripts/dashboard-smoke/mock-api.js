@@ -78,7 +78,7 @@ const mockState = {
   serverMode: 'large',
   serverModeSource: 'resource-control/config.json',
   maintenance: false,
-  participation: { version: 1, privateEnabled: false, groups: {} },
+  participation: { version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} },
   resourceCancelAttempts: 0,
   resourceScenario: 'idle',
   openAiKeyConfigured: true,
@@ -414,6 +414,7 @@ function apiMock(method, pathname, body) {
     const change = body.body
     if (change.groupId === '99900') return ok({ ok: false, message: '模拟保存失败' })
     if (change.kind === 'private') mockState.participation.privateEnabled = change.enabled
+    else if (change.kind === 'group-abusive') mockState.participation.abusiveGroups[change.groupId] = change.enabled
     else mockState.participation.groups[change.groupId] = change.enabled
     return ok({ ok: true, policy: mockState.participation, message: '参与开关已保存并生效' })
   }

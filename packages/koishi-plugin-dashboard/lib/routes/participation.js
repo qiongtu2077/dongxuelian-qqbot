@@ -54,6 +54,8 @@ function saveParticipationUpdate(body) {
     const targets = [];
     if (body.kind === 'private')
         next.privateEnabled = body.enabled;
+    else if (body.kind === 'group-abusive')
+        next.abusiveGroups[body.groupId] = body.enabled;
     else {
         const id = body.groupId;
         const configured = Object.prototype.hasOwnProperty.call(next.groups, id);
@@ -100,12 +102,13 @@ function handlePutParticipation(req, res) {
             return json(res, { ok: false, message: '请求必须是有效 JSON' }, 400);
         }
         const body = value;
-        if (!body || (body.kind !== 'private' && body.kind !== 'group') || typeof body.enabled !== 'boolean' || (body.kind === 'group' && (typeof body.groupId !== 'string' || !policy.GROUP_ID_PATTERN.test(body.groupId)))) {
+        if (!body || (body.kind !== 'private' && body.kind !== 'group' && body.kind !== 'group-abusive') || typeof body.enabled !== 'boolean' || (body.kind !== 'private' && (typeof body.groupId !== 'string' || !policy.GROUP_ID_PATTERN.test(body.groupId)))) {
             return json(res, { ok: false, message: '请提供正确的开关类型、布尔状态和群号' }, 400);
         }
         try {
             const saved = saveParticipationUpdate(body);
-            json(res, { ok: true, policy: saved, message: body.kind === 'private' ? `全局私聊已${body.enabled ? '开启' : '关闭'}` : `群 ${body.groupId} 总开关已${body.enabled ? '开启' : '关闭'}` });
+            const label = body.kind === 'group-abusive' ? '嘴臭开关' : '总开关';
+            json(res, { ok: true, policy: saved, message: body.kind === 'private' ? `全局私聊已${body.enabled ? '开启' : '关闭'}` : `群 ${body.groupId} ${label}已${body.enabled ? '开启' : '关闭'}` });
         }
         catch (error) {
             json(res, { ok: false, message: getErrorMessage(error) }, 500);

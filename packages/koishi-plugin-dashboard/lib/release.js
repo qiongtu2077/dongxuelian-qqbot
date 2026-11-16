@@ -116,6 +116,8 @@ function copyReleasePayload(repoRoot, releaseRoot) {
         for (const optional of ['assets', 'templates'])
             copyReleaseEntry(repoRoot, releaseRoot, `${packageRoot}/${optional}`);
     }
+    // 仅携带仓库内的人格与工具种子，运行配置、密钥和对话数据继续留在共享 data。
+    copyReleaseEntry(repoRoot, releaseRoot, 'packages/koishi-plugin-dongxuelian-ai/data/ai-skills', true);
     const dashboardRoot = `packages/${DASHBOARD_PACKAGE}`;
     for (const file of ['index.js', 'index.d.ts', 'standalone.js', 'standalone.d.ts'])
         copyReleaseEntry(repoRoot, releaseRoot, `${dashboardRoot}/${file}`, true);

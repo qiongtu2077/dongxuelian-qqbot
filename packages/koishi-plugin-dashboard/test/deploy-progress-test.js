@@ -98,10 +98,10 @@ function updateTask(taskId, update) {
 }
 
 // Create a real task and complete preparation, upload and verification while retaining activation's callback.
-async function startTask() {
+async function startTask(options = {}) {
   assert.strictEqual(commands.length, 0, 'previous SSH callback leaked')
   remoteResult = new Error('SSH result unavailable')
-  const started = await callRoute('POST', '/dashboard/api/deploy/run', { previewId: 'fixture-preview', confirmed: true })
+  const started = await callRoute('POST', '/dashboard/api/deploy/run', { previewId: 'fixture-preview', confirmed: true, ...options })
   for (let index = 0; index < 3; index += 1) {
     const command = commands.shift()
     assert(command, 'preparation did not advance')
@@ -125,6 +125,22 @@ function progress(taskId) {
 }
 
 // --- 部署回执回归 ---
+
+// 离线部署只能由单次管理员请求显式开启，默认发布不得携带放宽连接要求的环境变量。
+async function testOfflineDeploymentOption() {
+  for (const options of [{}, { allowOnebotOffline: true }, { allowOnebotOffline: false }]) {
+    const { taskId, activation } = await startTask(options)
+    const allowed = options.allowOnebotOffline === true
+    assert.strictEqual(activation.command.includes('--setenv=LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=1'), allowed)
+    assert.strictEqual(readTask(taskId).allowOnebotOffline, allowed)
+    activation.callback(null, '', '')
+    remoteResult = result('success')
+    const completed = await progress(taskId)
+    assert.strictEqual(completed.state, 'success')
+    assert.strictEqual(completed.allowOnebotOffline, allowed)
+    passed += 1
+  }
+}
 
 // Verify a slow activation remains running and later records exact remote success.
 async function testSlowActivation() {
@@ -244,6 +260,7 @@ async function testReleaseRecordFailure() {
 // Run the real route regressions with isolated files and restore every replaced dependency and environment value.
 async function main() {
   try {
+    await testOfflineDeploymentOption()
     await testSlowActivation()
     await testDisconnectedActivation()
     await testLegacyAndDeadlineRecovery()

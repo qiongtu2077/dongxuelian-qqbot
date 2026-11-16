@@ -65,10 +65,15 @@ function main() {
   try {
     assert.equal(request(routes, 'GET').status, 403)
     assert.equal(request(routes, 'PUT', { kind: 'private', enabled: true }).status, 403)
+    assert.equal(request(routes, 'PUT', { kind: 'group-abusive', groupId: '10001', enabled: true }).status, 403)
     assert.equal(fs.readdirSync(dataDir).length, 0)
     state.authorized = true
-    assert.deepEqual(request(routes, 'GET').data.policy, { version: 1, privateEnabled: false, groups: {} })
+    assert.deepEqual(request(routes, 'GET').data.policy, { version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} })
     for (const body of ['{', {}, { kind: { toString: 1 }, enabled: true }, { kind: 'group', groupId: '01', enabled: true }, { kind: 'group', groupId: '1', enabled: 'true' }, { kind: 'group', groupId: '__proto__', enabled: true }]) assert.equal(request(routes, 'PUT', body).status, 400)
+    for (const body of [{ kind: 'group-abusive', enabled: true }, { kind: 'group-abusive', groupId: '__proto__', enabled: true }, { kind: 'group-abusive', groupId: '10001', enabled: 'true' }]) assert.equal(request(routes, 'PUT', body).status, 400)
+    // 旧配置明确迁移为嘴臭关闭，非法字段不被静默忽略。
+    assert.deepEqual(policy.validateParticipationPolicy({ version: 1, privateEnabled: false, groups: { 10001: true } }).abusiveGroups, {})
+    for (const abusiveGroups of [null, [], { 10001: 'true' }, { '__invalid__': true }]) assert.throws(() => policy.validateParticipationPolicy({ version: 1, privateEnabled: false, groups: {}, abusiveGroups }))
     write('ai-random-whitelist.json', ['10001', '10002'])
     write('ai-repeat-enabled.json', { 10001: false, 10002: false })
     write('video-blacklist.json', { groups: ['10001', '10002'], users: ['99'] })
@@ -94,6 +99,32 @@ function main() {
     request(routes, 'PUT', { kind: 'group', groupId: '10001', enabled: true })
     assert.deepEqual(read('ai-random-whitelist.json'), ['10001', '10002'])
     assert.equal(read('ai-repeat-enabled.json')['10001'], false)
+    const featureSnapshot = names.map(name => fs.readFileSync(path.join(dataDir, name), 'utf8'))
+    const savedBeforeAbusive = fs.readFileSync(policy.PARTICIPATION_POLICY_FILE, 'utf8')
+    state.fail = true
+    assert.equal(request(routes, 'PUT', { kind: 'group-abusive', groupId: '10001', enabled: true }).status, 500)
+    assert.equal(fs.readFileSync(policy.PARTICIPATION_POLICY_FILE, 'utf8'), savedBeforeAbusive)
+    assert.equal(policy.isGroupAbusiveEnabled('10001'), false)
+    state.fail = false
+    assert.match(request(routes, 'PUT', { kind: 'group-abusive', groupId: '10001', enabled: true }).data.message, /嘴臭开关已开启/)
+    assert.equal(policy.isGroupAbusiveEnabled('10001'), true)
+    assert.equal(policy.isGroupAbusiveEnabled('10002'), false)
+    assert.equal(policy.isGroupAbusiveEnabled('private:10001'), false)
+    assert.deepEqual(names.map(name => fs.readFileSync(path.join(dataDir, name), 'utf8')), featureSnapshot)
+    request(routes, 'PUT', { kind: 'group', groupId: '10001', enabled: false })
+    assert.equal(policy.isGroupAbusiveEnabled('10001'), true)
+    request(routes, 'PUT', { kind: 'group', groupId: '10001', enabled: true })
+    // 未参与的群可以单独预设嘴臭，不能因此绕过总开关或跳过首次启用默认值。
+    request(routes, 'PUT', { kind: 'group-abusive', groupId: '10003', enabled: true })
+    assert.equal(policy.isGroupParticipationEnabled('10003'), false)
+    assert.equal(policy.isGroupAbusiveEnabled('10003'), true)
+    request(routes, 'PUT', { kind: 'group', groupId: '10003', enabled: true })
+    assert.equal(read('ai-repeat-enabled.json')['10003'], true)
+    assert.equal(policy.isGroupAbusiveEnabled('10003'), true)
+    assert.equal(request(routes, 'GET').data.policy.abusiveGroups['10001'], true)
+    const copy = policy.readParticipationPolicy()
+    copy.abusiveGroups['10001'] = false
+    assert.equal(policy.isGroupAbusiveEnabled('10001'), true)
     assert.equal(request(routes, 'PUT', { kind: 'private', enabled: true }).data.policy.privateEnabled, true)
     assert.equal(policy.isSessionParticipationEnabled({ isDirect: true }), true)
     assert.equal(policy.isGroupParticipationEnabled('10002'), false)
@@ -101,6 +132,10 @@ function main() {
     assert.equal(policy.isSessionParticipationEnabled({ isDirect: true, guildId: '10001' }), false)
     delete require.cache[policyFile]
     assert.equal(require(policyFile).readParticipationPolicy().groups['10001'], true)
+    assert.equal(require(policyFile).isGroupAbusiveEnabled('10001'), true)
+    request(routes, 'PUT', { kind: 'group-abusive', groupId: '10001', enabled: false })
+    assert.equal(require(policyFile).isGroupAbusiveEnabled('10001'), false)
+    assert.equal(policy.isGroupParticipationEnabled('10001'), true)
     console.log('participation route tests passed: defaults, authorization, atomic initialization, rollback, persistence')
   } finally {
     if (previous === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR

@@ -126,8 +126,13 @@ function createChatPromptSearchRuleMessage(configForSearch: SearchRuleOptions = 
   }
 }
 
-function createChatPromptRandomContextMessage(randomTriggered: boolean): ChatPromptMessage | null {
+// 随机插话默认克制；群强制嘴臭开启时只保留短回复与当前话题约束。
+function createChatPromptRandomContextMessage(randomTriggered: boolean, forcedAbusive = false): ChatPromptMessage | null {
   if (!randomTriggered) return null
+  if (forcedAbusive) return {
+    role: 'system',
+    content: '这次是在群聊里主动插话。群嘴臭开关已开启，必须用当前强制嘴臭人格，针对当前发言直接带脏话开喷，一到两句说完；不能切回友善、礼貌或不带脏字的阴阳模式。',
+  }
   return {
     role: 'system',
     content: [

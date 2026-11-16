@@ -1,6 +1,6 @@
 /**
  * MODULE: 群聊与私聊参与策略。
- * 职责: 读取持久总开关，统一判断 QQ 会话和 OneBot 操作是否允许。
+ * 职责: 读取持久总开关与群嘴臭覆盖开关，统一判断 QQ 会话和 OneBot 操作是否允许。
  * 边界: 不发送消息、不调用模型、不修改功能配置；缺失配置默认全部关闭。
  * 状态: 按文件指纹缓存经过校验的配置，外部原子更新在下一次检查生效。
  */
@@ -12,6 +12,7 @@ export interface ParticipationPolicy {
   version: 1
   privateEnabled: boolean
   groups: Record<string, boolean>
+  abusiveGroups: Record<string, boolean>
 }
 
 export interface ParticipationSession {
@@ -25,7 +26,7 @@ export interface ParticipationSession {
 export const PARTICIPATION_POLICY_FILE = path.join(DATA_DIR, 'bot-participation.json')
 export const GROUP_ID_PATTERN = /^[1-9]\d{0,19}$/
 let cachedFingerprint = ''
-let cachedPolicy: ParticipationPolicy = { version: 1, privateEnabled: false, groups: {} }
+let cachedPolicy: ParticipationPolicy = { version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} }
 
 // --- 配置读取与校验 ---
 
@@ -41,7 +42,16 @@ export function validateParticipationPolicy(value: unknown): ParticipationPolicy
     if (!GROUP_ID_PATTERN.test(id) || typeof enabled !== 'boolean') throw new Error('群号或群总开关无效')
     groups[id] = enabled
   }
-  return { version: 1, privateEnabled: policy.privateEnabled, groups }
+  // 现有 version=1 文件没有嘴臭字段；缺失时明确按关闭处理。
+  const abusiveGroups: Record<string, boolean> = {}
+  if (policy.abusiveGroups !== undefined) {
+    if (!policy.abusiveGroups || typeof policy.abusiveGroups !== 'object' || Array.isArray(policy.abusiveGroups)) throw new Error('群嘴臭开关格式无效')
+    for (const [id, enabled] of Object.entries(policy.abusiveGroups)) {
+      if (!GROUP_ID_PATTERN.test(id) || typeof enabled !== 'boolean') throw new Error('群号或群嘴臭开关无效')
+      abusiveGroups[id] = enabled
+    }
+  }
+  return { version: 1, privateEnabled: policy.privateEnabled, groups, abusiveGroups }
 }
 
 // 返回独立配置副本；没有配置时默认关闭群聊和私聊。
@@ -50,7 +60,7 @@ export function readParticipationPolicy(): ParticipationPolicy {
   try { stat = fs.statSync(PARTICIPATION_POLICY_FILE) } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     cachedFingerprint = ''
-    return { version: 1, privateEnabled: false, groups: {} }
+    return { version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} }
   }
   if (!stat.isFile() || stat.size > 256 * 1024) throw new Error('参与开关配置文件无效或过大')
   const fingerprint = `${stat.mtimeMs}:${stat.size}:${stat.ino}`
@@ -58,7 +68,7 @@ export function readParticipationPolicy(): ParticipationPolicy {
     cachedPolicy = validateParticipationPolicy(JSON.parse(fs.readFileSync(PARTICIPATION_POLICY_FILE, 'utf8')))
     cachedFingerprint = fingerprint
   }
-  return { version: 1, privateEnabled: cachedPolicy.privateEnabled, groups: { ...cachedPolicy.groups } }
+  return { version: 1, privateEnabled: cachedPolicy.privateEnabled, groups: { ...cachedPolicy.groups }, abusiveGroups: { ...cachedPolicy.abusiveGroups } }
 }
 
 // --- 会话与发送判定 ---
@@ -66,6 +76,11 @@ export function readParticipationPolicy(): ParticipationPolicy {
 // 只有明确开启的群可以参与；不依赖主动回复白名单。
 export function isGroupParticipationEnabled(groupId: string | number): boolean {
   return readParticipationPolicy().groups[String(groupId)] === true
+}
+
+// 强制嘴臭只绑定数字群号，私聊和其他频道不继承来源群的状态。
+export function isGroupAbusiveEnabled(groupId: string | number): boolean {
+  return GROUP_ID_PATTERN.test(String(groupId)) && readParticipationPolicy().abusiveGroups[String(groupId)] === true
 }
 
 // 临时私聊即使带有来源群号，也必须先受全局私聊开关控制。
