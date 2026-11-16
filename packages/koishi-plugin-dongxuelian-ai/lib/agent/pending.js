@@ -57,7 +57,8 @@ function writePendingTool(tool) {
 }
 // Read one pending tool file and discard it when expired.
 function readPendingToolByFile(file, now = Date.now()) {
-    const tool = normalizePendingTool(readJsonFile(file, null));
+    // Preserve the same bounded image context when an approval resumes in another worker.
+    const tool = normalizePendingTool(readJsonFile(file, null, 8 * 1024 * 1024));
     if (!tool)
         return null;
     if (now > tool.expireAt) {

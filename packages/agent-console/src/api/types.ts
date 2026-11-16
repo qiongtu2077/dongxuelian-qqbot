@@ -123,6 +123,8 @@ export interface SaveAgentPersonaResponse extends ApiEnvelope {
 export interface ChatHistoryItem {
   role: 'user' | 'assistant' | 'system'
   content: string
+  images?: string[]
+  imageCount?: number
 }
 
 export interface AgentRoundRecord {

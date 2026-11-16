@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { api, getErrorMessage, setAccessToken, setAdminToken, verifyAdmin } from './api/client'
+import { buildChatHistory, readChatImages } from './chat-images'
 import type {
   AgentConfigResponse,
   AgentCronDraft,
@@ -19,7 +20,6 @@ import type {
   AgentToolDetailStats,
   AgentWorkspaceFileItem,
   AgentWorkspaceFilePreview,
-  ChatHistoryItem,
   PendingToolListItem,
 } from './api/types'
 import './styles.css'
@@ -35,6 +35,8 @@ type RoundRecord = {
 type ChatMessage = {
   role: 'user' | 'assistant' | 'system'
   content: string
+  images?: string[]
+  imageCount?: number
   pendingId?: string
   id?: string
   pending?: boolean
@@ -355,6 +357,11 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
   const [messages, setMessages] = useState<ChatMessage[]>(() => [])
   const [loadedHistoryKey, setLoadedHistoryKey] = useState(historyKey)
   const [input, setInput] = useState('')
+  const [images, setImages] = useState<string[]>([])
+  const [imageError, setImageError] = useState('')
+  const [readingImages, setReadingImages] = useState(false)
+  const imageReadRef = useRef(0)
+  const imageReadingRef = useRef(false)
   const [sending, setSending] = useState(false)
   const [mode, setMode] = useState<AgentMode>('build')
   const [enableThinking, setEnableThinking] = useState(false)
@@ -372,8 +379,12 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
 
   useEffect(() => {
     setSending(false)
+    setImages([])
+    setImageError('')
+    setReadingImages(false)
+    imageReadingRef.current = false
     // Changing persona or leaving chat stops this page's polling, while the worker owns the task.
-    return () => { chatRequestRef.current?.abort(); chatRequestRef.current = null }
+    return () => { chatRequestRef.current?.abort(); chatRequestRef.current = null; imageReadRef.current += 1 }
   }, [historyKey])
   useEffect(() => {
     if (!rememberHistory) {
@@ -389,8 +400,10 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
   useEffect(() => {
     if (loadedHistoryKey !== historyKey) return
     if (rememberHistory) {
-      localStorage.setItem(historyKey, JSON.stringify(messages.slice(-30)))
-      localStorage.setItem('agent_console_history', JSON.stringify(messages.slice(-30)))
+      // Image bytes stay in this chat's memory; storing base64 would exhaust Web Storage's quota.
+      const saved = JSON.stringify(messages.slice(-30).map(({ images: attached, ...item }) => ({ ...item, imageCount: attached?.length || item.imageCount })))
+      localStorage.setItem(historyKey, saved)
+      localStorage.setItem('agent_console_history', saved)
     } else {
       localStorage.removeItem(historyKey)
       localStorage.removeItem('agent_console_history')
@@ -407,17 +420,20 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
   }, [messages])
   /** Submits chat and keeps its pending message until the background worker returns the final result. */
   async function send() {
-    const text = input.trim()
-    if (!text || sending) return
-    const history: ChatHistoryItem[] = messages.slice(-12).map(item => ({ role: item.role, content: item.content }))
+    const text = input.trim() || (images.length ? '请查看图片。' : '')
+    if (!text || chatRequestRef.current || imageReadingRef.current) return
+    const attached = images
+    const history = buildChatHistory(messages, attached)
     const pendingMessageId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    setMessages(prev => [...prev, { role: 'user', content: text }, { role: 'system', content: '执行中...', id: pendingMessageId, pending: true }])
+    setMessages(prev => [...prev, { role: 'user', content: text, images: attached }, { role: 'system', content: '执行中...', id: pendingMessageId, pending: true }])
     setInput('')
+    setImages([])
+    setImageError('')
     setSending(true)
     const controller = new AbortController()
     chatRequestRef.current = controller
     try {
-      const result = await api.chat(text, history, enableThinking, agentMode, controller.signal)
+      const result = await api.chat(text, history, enableThinking, agentMode, controller.signal, attached.length ? attached : undefined)
       if (controller.signal.aborted) return
       setMessages(prev => {
         const base = prev.filter(item => item.id !== pendingMessageId)
@@ -438,6 +454,37 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
       }
     }
   }
+  /** Reads pasted image files and preserves ordinary text paste, including mixed clipboard content. */
+  async function onComposerPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'))
+    if (!files.length) return
+    event.preventDefault()
+    if (imageReadingRef.current) {
+      setImageError('图片正在读取，请稍候再粘贴')
+      return
+    }
+    const pastedText = event.clipboardData.getData('text/plain')
+    if (pastedText) {
+      const { selectionStart, selectionEnd } = event.currentTarget
+      setInput(prev => prev.slice(0, selectionStart) + pastedText + prev.slice(selectionEnd))
+    }
+    const version = ++imageReadRef.current
+    imageReadingRef.current = true
+    setReadingImages(true)
+    setImageError('')
+    try {
+      const added = await readChatImages(files, images)
+      if (version === imageReadRef.current) setImages(prev => [...prev, ...added])
+    } catch (error: unknown) {
+      if (version === imageReadRef.current) setImageError(getErrorMessage(error, '读取图片失败'))
+    } finally {
+      if (version === imageReadRef.current) {
+        imageReadingRef.current = false
+        setReadingImages(false)
+      }
+    }
+  }
+  /** Updates text and slash-command completion at the current cursor position. */
   function onInputChange(text: string) {
     setInput(text)
     const cursorPos = textareaRef?.selectionStart || 0
@@ -523,6 +570,8 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
             <div className="avatar">{message.role === 'user' ? '你' : message.role === 'assistant' ? '莲' : '…'}</div>
             <div className="bubble">
               {message.role === 'assistant' && renderRounds(message.rounds || [])}
+              {!!message.images?.length && <div className="message-images">{message.images.map((url, imageIndex) => <img key={imageIndex} src={url} alt={`图片 ${imageIndex + 1}`} />)}</div>}
+              {!message.images?.length && !!message.imageCount && <p className="muted">已发送 {message.imageCount} 张图片（原图未保存在本机历史中）</p>}
               <pre>{message.content}</pre>
               {message.pendingId && <span className="tag warn">等待确认 {message.pendingId}</span>}
             </div>
@@ -552,13 +601,21 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
             <span>记住本机历史</span>
           </label>
         </div>
+        {!!images.length && <div className="composer-images" aria-label="待发送图片">
+          {images.map((url, index) => <div className="composer-image" key={index}>
+            <img src={url} alt={`待发送图片 ${index + 1}`} />
+            <button type="button" aria-label={`移除图片 ${index + 1}`} disabled={readingImages} onClick={() => { setImages(prev => prev.filter((_, i) => i !== index)); setImageError('') }}>×</button>
+          </div>)}
+        </div>}
+        {readingImages && <p className="muted" role="status">正在读取图片…</p>}
+        {imageError && <p className="form-error" role="alert">{imageError}</p>}
         <div className="composer-input-wrapper">
-          <textarea ref={setTextareaRef} value={input} onChange={e => onInputChange(e.target.value)} onKeyDown={onComposerKeyDown} placeholder="/plan、/approve、@文件、#技能" />
+          <textarea ref={setTextareaRef} value={input} onChange={e => onInputChange(e.target.value)} onKeyDown={onComposerKeyDown} onPaste={onComposerPaste} placeholder="/plan、/approve、@文件、#技能；支持粘贴图片" />
           {renderCompletion()}
         </div>
         <div className="composer-actions">
-          <span>{input.length} 字</span>
-          <button onClick={send} disabled={sending || !input.trim()}>{sending ? '发送中' : '发送'}</button>
+          <span>{input.length} 字{images.length ? ` · ${images.length} 张图片` : ''}</span>
+          <button onClick={send} disabled={sending || readingImages || (!input.trim() && !images.length)}>{sending ? '发送中' : '发送'}</button>
         </div>
       </div>
     </section>

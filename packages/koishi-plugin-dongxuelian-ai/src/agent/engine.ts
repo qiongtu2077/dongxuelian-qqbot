@@ -5,7 +5,7 @@
  * 状态: 无模块级状态（每次 run() 新建循环局部变量）。
  */
 const { requestChatCompletions } = require('../core/api') as typeof import('../core/api')
-const { loadConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
+const { loadConfig, loadCapabilityConfig } = require('../core/runtime-config') as typeof import('../core/runtime-config')
 const { getToolDefinitions, executeTool, toolRegistry } = require('./tools/registry') as typeof import('./tools/registry')
 const { estimateTokens, externalizeToolResult, compactWithLLM } = require('./context') as typeof import('./context')
 const { recordCall } = require('./stats') as typeof import('./stats')
@@ -45,7 +45,7 @@ interface AgentToolCall {
 
 interface AgentMessage {
   role: string
-  content?: string | null
+  content?: ReturnType<typeof buildAgentMessages>[number]['content'] | null
   tool_calls?: AgentToolCall[]
   tool_call_id?: string
 }
@@ -139,6 +139,7 @@ interface ContextPolicy {
 
 interface RunAgentOptions {
   userMessage?: unknown
+  userImages?: unknown
   userName?: unknown
   userId?: unknown
   channelKey?: unknown
@@ -299,7 +300,7 @@ function compressOldToolResults(messages: AgentMessage[], currentRound: number):
     if (messages[i].role !== 'tool') continue
     toolMsgCount++
     if (toolMsgCount >= totalToolMsgs - 1) break
-    const content = messages[i].content || ''
+    const content = typeof messages[i].content === 'string' ? messages[i].content as string : ''
     if (content.length > COMPRESS_TOOL_RESULT_THRESHOLD) {
       messages[i] = { ...messages[i], content: content.slice(0, 400) + '\n...[已截断旧工具结果]...' }
     }
@@ -500,7 +501,7 @@ function normalizePreExecuteTools(value: unknown): Array<{ name?: string; args?:
   return Array.isArray(value) ? value as Array<{ name?: string; args?: unknown }> : []
 }
 
-async function runAgent({ userMessage, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false, resourceTaskId = '' }: RunAgentOptions): Promise<AgentRunResult> {
+async function runAgent({ userMessage, userImages, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false, resourceTaskId = '' }: RunAgentOptions): Promise<AgentRunResult> {
   const safeChannel = String(channel || 'qq')
   const safeUserMessage = String(userMessage || '')
   const safeUserName = String(userName || '')
@@ -517,13 +518,13 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
     tools = ensureToolDefinition(tools, toolName)
   }
   const allowedToolNames = new Set(tools.map(item => item.function && item.function.name).filter(Boolean))
-  const config = await loadConfig()
   const roots = safeChannel === 'dashboard' ? await getAgentPathAllowedRoots() : []
   const skillSummary = buildAgentSkillSummary(getEnabledSkills(), { query: safeUserMessage })
   const personaExtra = buildAgentPersonaContext({ channel: safeChannel, channelKey: safeChannelKey, userId: safeUserId, agentMode: !!agentMode })
   const workspaceExtra = await buildAgentWorkspaceContext({ userMessage: safeUserMessage, channel: safeChannel, roots })
   const allSystemExtra = mergeAgentSystemExtra(personaExtra, workspaceExtra, systemExtra, skillSummary ? [{ role: 'system', content: skillSummary }] : [], buildFileHintContext(safeChannelKey))
-  const messages: AgentMessage[] = buildAgentMessages({ userMessage: safeUserMessage, userName: safeUserName, tools, systemExtra: allSystemExtra as SystemMessage[], history, agentMode: !!agentMode })
+  const messages: AgentMessage[] = buildAgentMessages({ userMessage: safeUserMessage, userImages, userName: safeUserName, tools, systemExtra: allSystemExtra as SystemMessage[], history, agentMode: !!agentMode })
+  const config = await loadAgentMessageConfig(messages)
   const toolResults: ToolResultItem[] = []
   let toolCount = 0
   for (const item of normalizePreExecuteTools(preExecuteTools)) {
@@ -558,6 +559,12 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
   return agentResult
 }
 
+/** Chooses the configured vision queue whenever current or historical messages contain images. */
+function loadAgentMessageConfig(messages: AgentMessage[]): ReturnType<typeof loadConfig> {
+  return messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))
+    ? loadCapabilityConfig('vision') : loadConfig()
+}
+
 function pendingResumeRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
@@ -570,11 +577,11 @@ async function resumePending({ channelKey, userId, channel = 'qq', expectedId = 
   const executed = await pending.executePendingTool(safeChannelKey, safeUserId, safeChannel, String(expectedId || ''), { bot, isAdmin: !!isAdmin, resourceTaskId: safeResourceTaskId })
   if (!executed.pending) return executed
   const p = executed.pending
-  const config = await loadConfig()
   const tools = normalizeToolDefinitions(getToolDefinitions(safeChannel))
   const allowedToolNames = new Set(tools.map(item => item.function && item.function.name).filter(Boolean))
   const resume = pendingResumeRecord(p.resume)
   const messages: AgentMessage[] = Array.isArray(resume.messages) ? resume.messages.slice() as AgentMessage[] : []
+  const config = await loadAgentMessageConfig(messages)
   messages.push({ role: 'tool', tool_call_id: String(resume.toolCallId || p.id), content: await externalizeToolResult(executed.result || executed.message || '', p.toolName) })
   if (executed.ok) {
     recordCall(p.toolName, safeChannel, { ok: true, tokens: estimateTokens([{ role: 'tool', content: executed.result || '' }]) })

@@ -5,8 +5,10 @@
  * Boundary: no Agent execution, no queue state changes, no bot/session references.
  */
 const { redactSensitiveText } = require('../core/redactor');
+const { MAX_AGENT_IMAGE_BYTES } = require('../agent/messages');
 const RUN_INPUT_FIELDS = [
     'userMessage',
+    'userImages',
     'userName',
     'userId',
     'channelKey',
@@ -36,6 +38,9 @@ function toJsonSafe(value, depth = 0) {
         return undefined;
     const type = typeof value;
     if (type === 'string') {
+        // Image bytes must survive run, history and pending-tool snapshots without text truncation/redaction.
+        if (String(value).length <= Math.ceil(MAX_AGENT_IMAGE_BYTES / 3) * 4 + 64 && /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/.test(String(value)))
+            return String(value);
         const text = redactSensitiveText(String(value));
         return text.length > 20000 ? `${text.slice(0, 20000)}...[truncated]` : text;
     }

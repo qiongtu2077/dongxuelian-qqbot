@@ -3,7 +3,9 @@
  * 职责: 对日志、shell 输出、Agent 材料等用户可见文本做低成本脱敏。
  * 边界: 不判断权限、不解析业务结构。
  */
+/** Redacts text secrets while preserving the bytes of encoded image attachments. */
 declare function redactSensitiveText(text?: string): string;
+/** Redacts structured data, retaining native image parts through nested worker snapshots. */
 declare function redactSensitiveData(value: unknown, key?: string, depth?: number): unknown;
 declare const _default: {
     redactSensitiveText: typeof redactSensitiveText;

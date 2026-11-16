@@ -6,7 +6,7 @@
  * 状态: 无模块级状态（每次 run() 新建循环局部变量）。
  */
 const { requestChatCompletions } = require('../core/api');
-const { loadConfig } = require('../core/runtime-config');
+const { loadConfig, loadCapabilityConfig } = require('../core/runtime-config');
 const { getToolDefinitions, executeTool, toolRegistry } = require('./tools/registry');
 const { estimateTokens, externalizeToolResult, compactWithLLM } = require('./context');
 const { recordCall } = require('./stats');
@@ -142,7 +142,7 @@ function compressOldToolResults(messages, currentRound) {
         toolMsgCount++;
         if (toolMsgCount >= totalToolMsgs - 1)
             break;
-        const content = messages[i].content || '';
+        const content = typeof messages[i].content === 'string' ? messages[i].content : '';
         if (content.length > COMPRESS_TOOL_RESULT_THRESHOLD) {
             messages[i] = { ...messages[i], content: content.slice(0, 400) + '\n...[已截断旧工具结果]...' };
         }
@@ -338,7 +338,7 @@ function getScheduledContextPolicy(scheduledTask) {
 function normalizePreExecuteTools(value) {
     return Array.isArray(value) ? value : [];
 }
-async function runAgent({ userMessage, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false, resourceTaskId = '' }) {
+async function runAgent({ userMessage, userImages, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false, resourceTaskId = '' }) {
     const safeChannel = String(channel || 'qq');
     const safeUserMessage = String(userMessage || '');
     const safeUserName = String(userName || '');
@@ -358,13 +358,13 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
         tools = ensureToolDefinition(tools, toolName);
     }
     const allowedToolNames = new Set(tools.map(item => item.function && item.function.name).filter(Boolean));
-    const config = await loadConfig();
     const roots = safeChannel === 'dashboard' ? await getAgentPathAllowedRoots() : [];
     const skillSummary = buildAgentSkillSummary(getEnabledSkills(), { query: safeUserMessage });
     const personaExtra = buildAgentPersonaContext({ channel: safeChannel, channelKey: safeChannelKey, userId: safeUserId, agentMode: !!agentMode });
     const workspaceExtra = await buildAgentWorkspaceContext({ userMessage: safeUserMessage, channel: safeChannel, roots });
     const allSystemExtra = mergeAgentSystemExtra(personaExtra, workspaceExtra, systemExtra, skillSummary ? [{ role: 'system', content: skillSummary }] : [], buildFileHintContext(safeChannelKey));
-    const messages = buildAgentMessages({ userMessage: safeUserMessage, userName: safeUserName, tools, systemExtra: allSystemExtra, history, agentMode: !!agentMode });
+    const messages = buildAgentMessages({ userMessage: safeUserMessage, userImages, userName: safeUserName, tools, systemExtra: allSystemExtra, history, agentMode: !!agentMode });
+    const config = await loadAgentMessageConfig(messages);
     const toolResults = [];
     let toolCount = 0;
     for (const item of normalizePreExecuteTools(preExecuteTools)) {
@@ -400,6 +400,11 @@ async function runAgent({ userMessage, userName, userId, channelKey, channel = '
     onAgentReplyComplete({ userId: safeUserId, channel: safeChannel, messages }).catch(e => console.warn('[agent-engine] onAgentReplyComplete error:', getAgentEngineErrorMessage(e)));
     return agentResult;
 }
+/** Chooses the configured vision queue whenever current or historical messages contain images. */
+function loadAgentMessageConfig(messages) {
+    return messages.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url'))
+        ? loadCapabilityConfig('vision') : loadConfig();
+}
 function pendingResumeRecord(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -412,11 +417,11 @@ async function resumePending({ channelKey, userId, channel = 'qq', expectedId = 
     if (!executed.pending)
         return executed;
     const p = executed.pending;
-    const config = await loadConfig();
     const tools = normalizeToolDefinitions(getToolDefinitions(safeChannel));
     const allowedToolNames = new Set(tools.map(item => item.function && item.function.name).filter(Boolean));
     const resume = pendingResumeRecord(p.resume);
     const messages = Array.isArray(resume.messages) ? resume.messages.slice() : [];
+    const config = await loadAgentMessageConfig(messages);
     messages.push({ role: 'tool', tool_call_id: String(resume.toolCallId || p.id), content: await externalizeToolResult(executed.result || executed.message || '', p.toolName) });
     if (executed.ok) {
         recordCall(p.toolName, safeChannel, { ok: true, tokens: estimateTokens([{ role: 'tool', content: executed.result || '' }]) });

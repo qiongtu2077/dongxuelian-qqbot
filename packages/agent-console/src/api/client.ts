@@ -122,7 +122,7 @@ export const api = {
   saveConfig: (payload: SaveAgentConfigPayload) => request<SaveAgentConfigResponse>('/agent/config', { method: 'PUT', body: JSON.stringify(payload) }),
   personas: () => request<AgentPersonasResponse>('/agent/personas'),
   savePersona: (payload: AgentPersonaConfig) => request<SaveAgentPersonaResponse>('/agent/persona', { method: 'PUT', body: JSON.stringify(payload) }),
-  chat: async (message: string, history: ChatHistoryItem[], enableThinking = false, agentMode = true, signal?: AbortSignal) => followAgentTask(await request<AgentChatResponse>('/agent/chat', { method: 'POST', body: JSON.stringify({ message, history, enableThinking, agentMode }), signal }, 90000), readAgentTask, { signal }),
+  chat: async (message: string, history: ChatHistoryItem[], enableThinking = false, agentMode = true, signal?: AbortSignal, images?: string[]) => followAgentTask(await request<AgentChatResponse>('/agent/chat', { method: 'POST', body: JSON.stringify({ message, history, enableThinking, agentMode, images }), signal }, 90000), readAgentTask, { signal }),
   pending: () => request<PendingToolsResponse>('/tools/pending'),
   confirm: async (pendingId: string, signal?: AbortSignal) => followAgentTask(await request<AgentChatResponse>('/agent/confirm', { method: 'POST', body: JSON.stringify({ pendingId }), signal }, 90000), readAgentTask, { signal }),
   reject: (pendingId: string) => request<ApiEnvelope>('/agent/reject', { method: 'POST', body: JSON.stringify({ pendingId }) }),

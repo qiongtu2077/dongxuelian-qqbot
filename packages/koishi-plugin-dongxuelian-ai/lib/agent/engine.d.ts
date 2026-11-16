@@ -44,6 +44,7 @@ interface ContextPolicy {
 }
 interface RunAgentOptions {
     userMessage?: unknown;
+    userImages?: unknown;
     userName?: unknown;
     userId?: unknown;
     channelKey?: unknown;
@@ -80,7 +81,7 @@ interface ProgressMessage {
 type ProgressHandler = (message: ProgressMessage, round?: number) => unknown;
 declare function normalizeContextPolicy(policy?: unknown): ContextPolicy;
 declare function applyContextPolicyToTools(tools?: ToolDefinition[], contextPolicy?: unknown): ToolDefinition[];
-declare function runAgent({ userMessage, userName, userId, channelKey, channel, systemExtra, history, forceTools, preExecuteTools, onProgress, bot, enableThinking, agentMode, scheduledTask, contextPolicy, isAdmin, resourceTaskId }: RunAgentOptions): Promise<AgentRunResult>;
+declare function runAgent({ userMessage, userImages, userName, userId, channelKey, channel, systemExtra, history, forceTools, preExecuteTools, onProgress, bot, enableThinking, agentMode, scheduledTask, contextPolicy, isAdmin, resourceTaskId }: RunAgentOptions): Promise<AgentRunResult>;
 declare function resumePending({ channelKey, userId, channel, expectedId, onProgress, bot, isAdmin, resourceTaskId }: ResumePendingOptions): Promise<AgentRunResult | AgentPendingResult>;
 declare const _default: {
     run: typeof runAgent;

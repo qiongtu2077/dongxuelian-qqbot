@@ -169,6 +169,7 @@ interface AgentPlanCreateBody extends Record<string, unknown> {
 
 interface AgentChatBody extends Record<string, unknown> {
   message?: unknown
+  images?: unknown
   userName?: unknown
   userId?: unknown
   history?: unknown
@@ -830,22 +831,29 @@ function handleGetAgentSessions(req: IncomingMessage, res: ServerResponse): void
   } catch (e) { return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500) }
 }
 
+/** Validates text/image chat and submits a serializable task for the Agent worker. */
 function handlePostAgentChat(req: IncomingMessage, res: ServerResponse): void {
   if (!requireAdmin(req, res)) return
   collectBody(req, res, async (body) => {
     try {
       const data = JSON.parse(body || '{}') as AgentChatBody
-      const message = String(data.message || '').trim()
+      const agentMessages = loadManagementModule('agent.messages') as AgentMessagesModule
+      let images: string[]
+      let history: ReturnType<AgentMessagesModule['sanitizeAgentHistory']>
+      try {
+        images = agentMessages.sanitizeAgentImages(data.images)
+        history = agentMessages.sanitizeAgentHistory(data.history, images)
+      } catch (error) { return json(res, { ok: false, message: getErrorMessage(error) }, 400) }
+      const message = String(data.message || '').trim() || (images.length ? '请查看图片。' : '')
       const enableThinking = !!data.enableThinking
       const agentMode = !!data.agentMode
       if (!message) return json(res, { ok: false, message: '消息不能为空' }, 400)
       const agentConfig = (loadManagementModule('agent.config') as AgentConfigModule).getAgentConfig()
       const workerSubmission = loadManagementModule('agent.workerSubmission') as AgentWorkerSubmissionModule
       const agentPayload = loadManagementModule('resource.agentPayload') as AgentWorkerPayloadModule
-      const history = (loadManagementModule('agent.messages') as AgentMessagesModule).sanitizeAgentHistory(data.history)
       const searchRunOptions = (loadManagementModule('agent.router') as AgentRouterModule).buildExplicitSearchRunOptions(message)
       const agentRunInput = {
-        userMessage: message, userName: String(data.userName || 'Dashboard'), userId: String(data.userId || 'dashboard'),
+        userMessage: message, userImages: images, userName: String(data.userName || 'Dashboard'), userId: String(data.userId || 'dashboard'),
         channelKey: 'dashboard', channel: 'dashboard', history, enableThinking, agentMode, ...searchRunOptions,
       }
       const submission = workerSubmission.submitAgentWorkerTask({

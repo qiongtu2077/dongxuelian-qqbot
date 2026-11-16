@@ -103,6 +103,21 @@ async function testWriteRequests(client, calls) {
   assert.deepStrictEqual(JSON.parse(calls[3].init.body), { root: 'workspace', name: 'a.txt', content: 'hello' })
 }
 
+/** Verifies image-only submissions and follow-up image history reach the authenticated API intact. */
+async function testImageRequests(client, calls) {
+  const image = 'data:image/png;base64,clipboard-fixture'
+  const history = [{ role: 'user', content: '上一张图片', images: [image] }]
+  await client.api.chat('', history, false, true, undefined, [image])
+  assert.deepStrictEqual(JSON.parse(calls[0].init.body), {
+    message: '', history, enableThinking: false, agentMode: true, images: [image],
+  })
+  const { buildChatHistory, MAX_CHAT_IMAGES } = require('../src/chat-images.ts')
+  const budgeted = buildChatHistory(history, Array(MAX_CHAT_IMAGES).fill(image))
+  assert.strictEqual(budgeted[0].images, undefined)
+  assert(budgeted[0].content.includes('历史图片未附带'))
+  assert.deepStrictEqual(buildChatHistory(history, []), history)
+}
+
 /** Verifies path and query values are encoded exactly once. */
 async function testUrlEncoding(client, calls) {
   await client.api.files('C:\\工作 目录', '猫&狗')
@@ -256,6 +271,8 @@ async function main() {
     await testAuthentication(client, calls)
     resetBrowserState(calls)
     await testWriteRequests(client, calls)
+    resetBrowserState(calls)
+    await testImageRequests(client, calls)
     resetBrowserState(calls)
     await testUrlEncoding(client, calls)
     resetBrowserState(calls)

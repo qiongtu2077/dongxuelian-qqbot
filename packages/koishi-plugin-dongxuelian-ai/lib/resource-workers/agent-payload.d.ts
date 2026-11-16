@@ -1,6 +1,7 @@
 type AgentWorkerAction = 'run' | 'resume_pending';
 interface AgentRunWorkerInput {
     userMessage?: unknown;
+    userImages?: unknown;
     userName?: unknown;
     userId?: unknown;
     channelKey?: unknown;

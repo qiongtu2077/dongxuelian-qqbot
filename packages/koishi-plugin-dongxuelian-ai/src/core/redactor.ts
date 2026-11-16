@@ -11,8 +11,11 @@ const SK_RE = /\bsk-[A-Za-z0-9][A-Za-z0-9._-]{5,}\b/g
 const COOKIE_PAIR_RE = /\b([A-Za-z0-9_.-]*(?:sid|session|token|auth|cookie)[A-Za-z0-9_.-]*=)([^;\s]+)/ig
 const SENSITIVE_URL_PARAM_RE = /([?&](?:signature|sign|sig|token|access_token|api_key|apikey|key|secret|auth|session|sid)=)([^&#\s]+)/ig
 const SENSITIVE_KEY_RE = /(?:api[_-]?key|token|authorization|password|passwd|secret|cookie|set-cookie|admin[_-]?token)/i
+const IMAGE_DATA_URL_RE = /^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/]+={0,2}$/
 
+/** Redacts text secrets while preserving the bytes of encoded image attachments. */
 function redactSensitiveText(text: string = ''): string {
+  if (IMAGE_DATA_URL_RE.test(text)) return text
   return String(text || '')
     .replace(AUTH_BEARER_RE, '$1[redacted]')
     .replace(SECRET_VALUE_RE, '$1[redacted]')
@@ -22,6 +25,7 @@ function redactSensitiveText(text: string = ''): string {
     .replace(SENSITIVE_URL_PARAM_RE, '$1[redacted]')
 }
 
+/** Redacts structured data, retaining native image parts through nested worker snapshots. */
 function redactSensitiveData(value: unknown, key = '', depth = 0): unknown {
   if (value === null || value === undefined) return value
   if (key && SENSITIVE_KEY_RE.test(key)) return '[redacted]'
@@ -30,6 +34,13 @@ function redactSensitiveData(value: unknown, key = '', depth = 0): unknown {
   if (typeof value === 'boolean') return value
   if (typeof value === 'bigint') return String(value)
   if (typeof value === 'function' || typeof value === 'symbol') return undefined
+  // A pending-tool snapshot nests image_url one level beyond the ordinary object depth limit.
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const part = value as { type?: unknown; image_url?: { url?: unknown } }
+    if (part.type === 'image_url' && typeof part.image_url?.url === 'string' && IMAGE_DATA_URL_RE.test(part.image_url.url)) {
+      return { type: 'image_url', image_url: { url: part.image_url.url } }
+    }
+  }
   if (depth >= 8) return '[max-depth]'
   if (Array.isArray(value)) {
     return value

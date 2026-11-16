@@ -29,6 +29,7 @@ declare function handleGetAgentPushLog(req: IncomingMessage, res: ServerResponse
 declare function handleGetAgentCrons(req: IncomingMessage, res: ServerResponse): Promise<void>;
 declare function handlePostAgentCrons(req: IncomingMessage, res: ServerResponse): void;
 declare function handleGetAgentSessions(req: IncomingMessage, res: ServerResponse): void;
+/** Validates text/image chat and submits a serializable task for the Agent worker. */
 declare function handlePostAgentChat(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePostAgentConfirm(req: IncomingMessage, res: ServerResponse): void;
 declare function handlePostAgentReject(req: IncomingMessage, res: ServerResponse): void;

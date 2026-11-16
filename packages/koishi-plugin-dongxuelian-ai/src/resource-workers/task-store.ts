@@ -213,7 +213,8 @@ function parseResourceTask(value: unknown): ResourceTask | null {
 
 // 从任意状态目录读取任务文件。
 function readTaskFile(file: string): ResourceTask | null {
-  return parseResourceTask(readJsonFile<unknown>(file, null))
+  // A bounded Agent image request can contain up to 4 MB of bytes encoded as Base64.
+  return parseResourceTask(readJsonFile<unknown>(file, null, 8 * 1024 * 1024))
 }
 
 function normalizeKinds(kinds: string[] = []): string[] {

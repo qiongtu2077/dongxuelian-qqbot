@@ -7,19 +7,58 @@
 
 type AgentMessageRole = 'system' | 'user' | 'assistant'
 
-interface AgentMessage {
+interface AgentHistoryMessage {
   role: AgentMessageRole
   content: string
+  images?: string[]
+}
+
+type AgentContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+
+interface AgentMessage {
+  role: AgentMessageRole
+  content: string | AgentContentPart[]
 }
 
 interface BuildAgentMessagesInput {
   userMessage: string
+  userImages?: unknown
   userName?: string
   tools?: unknown[]
   systemExtra?: AgentMessage[]
   history?: unknown
   agentMode?: boolean
 }
+
+const MAX_AGENT_IMAGES = 4
+const MAX_AGENT_IMAGE_BYTES = 4 * 1024 * 1024
+
+// --- Image input validation ---
+
+/** Validates bounded, canonical image data URLs before they enter a worker or model request. */
+function sanitizeAgentImages(images: unknown = []): string[] {
+  if (!Array.isArray(images)) throw new TypeError('图片必须为数组')
+  if (images.length > MAX_AGENT_IMAGES) throw new RangeError('最多可附带 4 张图片')
+  let total = 0
+  return images.map(value => {
+    if (typeof value !== 'string' || value.length > Math.ceil(MAX_AGENT_IMAGE_BYTES / 3) * 4 + 64) throw new TypeError('图片数据无效或超过 4 MB')
+    const match = /^data:image\/(png|jpeg|webp|gif);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value)
+    if (!match) throw new TypeError('仅支持 PNG、JPEG、WebP 和 GIF 的 Base64 图片')
+    const buffer = Buffer.from(match[2], 'base64')
+    total += buffer.length
+    if (total > MAX_AGENT_IMAGE_BYTES) throw new RangeError('图片总大小不能超过 4 MB')
+    if (!buffer.length || buffer.toString('base64') !== match[2]) throw new TypeError('图片 Base64 数据无效')
+    // Match the declared MIME against the file signature rather than accepting arbitrary data URLs.
+    const valid = match[1] === 'png' ? buffer.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+      : match[1] === 'jpeg' ? buffer[0] === 255 && buffer[1] === 216 && buffer[2] === 255
+      : match[1] === 'gif' ? /^(GIF87a|GIF89a)$/.test(buffer.subarray(0, 6).toString('ascii'))
+      : buffer.subarray(0, 4).toString('ascii') === 'RIFF' && buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+    if (!valid) throw new TypeError('图片内容与声明格式不符')
+    return value
+  })
+}
+
+// --- Message construction ---
 
 const STATIC_SYSTEM: string[] = [
   '你可以使用工具辅助回答问题，如获取时间、精确计算、搜索、读取已启用 Skill、读取文件和查询日志。',
@@ -37,20 +76,42 @@ const STATIC_SYSTEM: string[] = [
   '需要确认的工具会暂停执行，用户确认后再继续，不要把“等待确认”当成已经完成。',
 ]
 
-function isAgentHistoryMessage(item: unknown): item is AgentMessage {
+/** Accepts only user/assistant history with a text field; client system prompts are excluded. */
+function isAgentHistoryMessage(item: unknown): item is AgentHistoryMessage {
   return !!item
     && typeof item === 'object'
     && ['user', 'assistant'].includes((item as { role?: string }).role || '')
     && typeof (item as { content?: unknown }).content === 'string'
 }
 
-function sanitizeAgentHistory(history: unknown = []): AgentMessage[] {
-  return Array.isArray(history)
-    ? history.slice(-10).filter(isAgentHistoryMessage).map(item => ({ role: item.role, content: item.content.slice(0, 2000) }))
-    : []
+/** Retains recent history images within the same budget as the current turn. */
+function sanitizeAgentHistory(history: unknown = [], currentImages: string[] = []): AgentHistoryMessage[] {
+  if (!Array.isArray(history)) return []
+  let count = currentImages.length
+  let bytes = currentImages.reduce((sum, url) => sum + Buffer.byteLength(url.slice(url.indexOf(',') + 1), 'base64'), 0)
+  return history.slice(-10).filter(isAgentHistoryMessage).reverse().map(item => {
+    const message: AgentHistoryMessage = { role: item.role, content: item.content.slice(0, 2000) }
+    const images = item.role === 'user' ? sanitizeAgentImages(item.images) : []
+    const size = images.reduce((sum, url) => sum + Buffer.byteLength(url.slice(url.indexOf(',') + 1), 'base64'), 0)
+    if (images.length && count + images.length <= MAX_AGENT_IMAGES && bytes + size <= MAX_AGENT_IMAGE_BYTES) {
+      message.images = images
+      count += images.length
+      bytes += size
+    } else if (images.length) {
+      message.content += '\n[历史图片未附带，需要原图时请用户重新粘贴。]'
+    }
+    return message
+  }).reverse()
 }
 
-function buildAgentMessages({ userMessage, userName, tools = [], systemExtra = [], history = [], agentMode = false }: BuildAgentMessagesInput): AgentMessage[] {
+/** Builds native multimodal user content while leaving text-only requests unchanged. */
+function imageContent(text: string, images: string[] = []): string | AgentContentPart[] {
+  return images.length ? [{ type: 'text', text }, ...images.map(url => ({ type: 'image_url' as const, image_url: { url } }))] : text
+}
+
+/** Combines trusted system context, sanitized history, and the current text/images. */
+function buildAgentMessages({ userMessage, userImages, userName, tools = [], systemExtra = [], history = [], agentMode = false }: BuildAgentMessagesInput): AgentMessage[] {
+  const images = sanitizeAgentImages(userImages)
   const system = STATIC_SYSTEM.filter(line =>
     !(agentMode && line.includes('保持当前人格风格'))
   )
@@ -58,9 +119,9 @@ function buildAgentMessages({ userMessage, userName, tools = [], systemExtra = [
   return [
     { role: 'system', content: system.join('\n') },
     ...systemExtra,
-    ...sanitizeAgentHistory(history),
-    { role: 'user', content: `<user>昵称：${userName || '用户'}\n${userMessage}\n</user>` },
+    ...sanitizeAgentHistory(history, images).map(item => ({ role: item.role, content: imageContent(item.content, item.images) })),
+    { role: 'user', content: imageContent(`<user>昵称：${userName || '用户'}\n${userMessage}\n</user>`, images) },
   ]
 }
 
-export = { buildAgentMessages, sanitizeAgentHistory }
+export = { buildAgentMessages, sanitizeAgentHistory, sanitizeAgentImages, MAX_AGENT_IMAGE_BYTES }

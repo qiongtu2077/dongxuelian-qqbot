@@ -713,13 +713,24 @@ function handleGetAgentSessions(req, res) {
         return json(res, { ok: false, message: getLegacyErrorMessage(e) }, 500);
     }
 }
+/** Validates text/image chat and submits a serializable task for the Agent worker. */
 function handlePostAgentChat(req, res) {
     if (!requireAdmin(req, res))
         return;
     collectBody(req, res, async (body) => {
         try {
             const data = JSON.parse(body || '{}');
-            const message = String(data.message || '').trim();
+            const agentMessages = loadManagementModule('agent.messages');
+            let images;
+            let history;
+            try {
+                images = agentMessages.sanitizeAgentImages(data.images);
+                history = agentMessages.sanitizeAgentHistory(data.history, images);
+            }
+            catch (error) {
+                return json(res, { ok: false, message: getErrorMessage(error) }, 400);
+            }
+            const message = String(data.message || '').trim() || (images.length ? '请查看图片。' : '');
             const enableThinking = !!data.enableThinking;
             const agentMode = !!data.agentMode;
             if (!message)
@@ -727,10 +738,9 @@ function handlePostAgentChat(req, res) {
             const agentConfig = loadManagementModule('agent.config').getAgentConfig();
             const workerSubmission = loadManagementModule('agent.workerSubmission');
             const agentPayload = loadManagementModule('resource.agentPayload');
-            const history = loadManagementModule('agent.messages').sanitizeAgentHistory(data.history);
             const searchRunOptions = loadManagementModule('agent.router').buildExplicitSearchRunOptions(message);
             const agentRunInput = {
-                userMessage: message, userName: String(data.userName || 'Dashboard'), userId: String(data.userId || 'dashboard'),
+                userMessage: message, userImages: images, userName: String(data.userName || 'Dashboard'), userId: String(data.userId || 'dashboard'),
                 channelKey: 'dashboard', channel: 'dashboard', history, enableThinking, agentMode, ...searchRunOptions,
             };
             const submission = workerSubmission.submitAgentWorkerTask({

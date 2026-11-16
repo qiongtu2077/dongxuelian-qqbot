@@ -112,6 +112,7 @@ async function installApiMock(page, state) {
         ? ok({ token: 'smoke-admin-token' })
         : jsonResponse({ ok: false, code: 'AUTH_REQUIRED', message: 'login required' }, 401)
     } else if (method === 'POST' && pathname === '/agent/chat') {
+      state.chatPayloads.push(JSON.parse(request.postData()))
       response = ok({ async: true, taskId: 'smoke-task', status: 'accepted', message: '后台处理中' })
     } else if (method === 'GET' && pathname === '/agent/tasks/smoke-task') {
       state.taskPollRequests += 1
@@ -148,6 +149,82 @@ async function waitForText(page, text, timeout = 8000) {
   await page.waitForFunction(value => document.body && document.body.innerText.includes(value), { timeout }, text)
 }
 
+// --- Clipboard images ---
+
+/** Sends a Ctrl chord through Puppeteer's separate modifier/key APIs. */
+async function controlKey(page, key) {
+  await page.keyboard.down('Control')
+  try { await page.keyboard.press(key) } finally { await page.keyboard.up('Control') }
+}
+
+/** Dispatches file clipboard events to exercise mixed and invalid batches in the real composer. */
+async function pasteFiles(page, { count = 1, type = 'image/png', text = '', size = 0 } = {}) {
+  await page.evaluate(({ count, type, text, size }) => {
+    const clipboard = new DataTransfer()
+    const bytes = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='), c => c.charCodeAt(0))
+    for (let i = 0; i < count; i++) clipboard.items.add(new File([size ? new Uint8Array(size) : bytes], `paste-${i}.png`, { type }))
+    if (text) clipboard.setData('text/plain', text)
+    document.querySelector('textarea').dispatchEvent(new ClipboardEvent('paste', { clipboardData: clipboard, bubbles: true, cancelable: true }))
+  }, { count, type, text, size })
+}
+
+/** Verifies native Ctrl+V, previews/removal, validation, image-only send and safe remembered history. */
+async function testImageClipboard(page, state) {
+  await page.evaluate(() => {
+    const label = [...document.querySelectorAll('.thinking-toggle')].find(item => item.textContent.includes('记住本机历史'))
+    if (!label.querySelector('input').checked) label.click()
+  })
+  await page.waitForFunction(() => localStorage.getItem('agent_console_remember_history') === '1')
+  await page.evaluate(() => navigator.clipboard.writeText('普通文字粘贴'))
+  await page.click('textarea')
+  await controlKey(page, 'v')
+  await page.waitForFunction(() => document.querySelector('textarea').value === '普通文字粘贴')
+  await controlKey(page, 'a')
+  await page.keyboard.press('Backspace')
+  await page.evaluate(async () => {
+    const canvas = document.createElement('canvas')
+    canvas.width = canvas.height = 64
+    const ctx = canvas.getContext('2d')
+    ctx.fillStyle = '#f97316'
+    ctx.fillRect(0, 0, 64, 64)
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'))
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+  })
+  await controlKey(page, 'v')
+  await page.waitForFunction(() => document.querySelectorAll('.composer-image img').length === 1 && document.querySelector('.composer-image img').naturalWidth === 64)
+  await pasteFiles(page, { text: '图片说明' })
+  await page.waitForFunction(() => document.querySelectorAll('.composer-image').length === 2 && document.querySelector('textarea').value === '图片说明')
+  await page.click('button[aria-label="移除图片 2"]')
+  await page.waitForFunction(() => document.querySelectorAll('.composer-image').length === 1)
+  const outDir = path.join(ROOT, 'tmp', 'workspace', 'agent-console-images')
+  fs.mkdirSync(outDir, { recursive: true })
+  await page.screenshot({ path: path.join(outDir, 'paste-preview.png'), fullPage: true })
+  await pasteFiles(page, { count: 4 })
+  await waitForText(page, '最多可附带 4 张图片')
+  await pasteFiles(page, { type: 'image/svg+xml' })
+  await waitForText(page, '仅支持 PNG、JPEG、WebP 和 GIF 图片')
+  await pasteFiles(page, { size: 5 * 1024 * 1024 })
+  await waitForText(page, '图片总大小不能超过 4 MB')
+  if (await page.$$eval('.composer-image', items => items.length) !== 1) throw new Error('invalid image batch changed the existing draft')
+  await page.click('textarea')
+  await controlKey(page, 'a')
+  await page.keyboard.press('Backspace')
+  if (await page.$eval('.composer-actions button', button => button.disabled)) throw new Error('image-only send is disabled')
+  await page.click('.composer-actions button')
+  await page.waitForFunction(() => document.querySelectorAll('.message.user .message-images img').length === 1 && document.querySelector('.composer-actions button').textContent === '发送')
+  const sent = state.chatPayloads.at(-1)
+  if (sent.message !== '请查看图片。' || sent.images?.length !== 1 || !sent.images[0].startsWith('data:image/png;base64,')) throw new Error('clipboard image did not reach the chat request')
+  // Remembered history keeps attachment counts without exhausting Web Storage with binary data.
+  await page.waitForFunction(() => localStorage.getItem('agent_console_history')?.includes('imageCount'))
+  if (await page.evaluate(() => localStorage.getItem('agent_console_history').includes('data:image/'))) throw new Error('image bytes leaked into localStorage history')
+  await page.screenshot({ path: path.join(outDir, 'sent-image.png'), fullPage: true })
+  await page.type('textarea', '继续看图')
+  await page.click('.composer-actions button')
+  await page.waitForFunction(() => document.querySelector('.composer-actions button').textContent === '发送')
+  const followup = state.chatPayloads.at(-1)
+  if (!followup.history.some(item => item.images?.[0] === sent.images[0])) throw new Error('follow-up omitted the recent image context')
+}
+
 /** Exercises admin reauthentication and expired-access login guidance in a real browser. */
 async function main() {
   const browserPath = findBrowserExecutable()
@@ -156,7 +233,7 @@ async function main() {
   let browser = null
   const consoleErrors = []
   const responseErrors = []
-  const state = { configRequests: 0, adminVerifyRequests: 0, accessRequired: false, taskPollRequests: 0, taskNeverCompletes: false }
+  const state = { configRequests: 0, adminVerifyRequests: 0, accessRequired: false, taskPollRequests: 0, taskNeverCompletes: false, chatPayloads: [] }
   try {
     await waitForServer(vite)
     browser = await puppeteer.launch({
@@ -165,6 +242,7 @@ async function main() {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     })
     const page = await browser.newPage()
+    await browser.defaultBrowserContext().overridePermissions(new URL(BASE_URL).origin, ['clipboard-read', 'clipboard-write', 'clipboard-sanitized-write'])
     await installApiMock(page, state)
     page.on('response', response => {
       const status = response.status()
@@ -202,6 +280,7 @@ async function main() {
     await page.click('.composer-actions button')
     await waitForText(page, '703')
     if (state.taskPollRequests !== 2) throw new Error(`expected task completion polling, got ${state.taskPollRequests}`)
+    await testImageClipboard(page, state)
     state.taskNeverCompletes = true
     await page.type('textarea', '继续计算')
     await page.click('.composer-actions button')
@@ -225,7 +304,7 @@ async function main() {
       const pages = await browser.pages()
       const page = pages[pages.length - 1]
       if (page) {
-        const out = path.join(ROOT, 'tmp', 'agent-console-admin-smoke-failure.png')
+        const out = path.join(ROOT, 'tmp', 'workspace', 'agent-console-admin-smoke-failure.png')
         fs.mkdirSync(path.dirname(out), { recursive: true })
         await page.screenshot({ path: out, fullPage: true }).catch(() => {})
         console.error(`failure screenshot: ${out}`)
