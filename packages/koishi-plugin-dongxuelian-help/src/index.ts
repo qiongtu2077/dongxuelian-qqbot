@@ -2,6 +2,8 @@ const name = 'dongxuelian-help'
 
 const PLUGIN_VERSION = '0.5.5'
 
+const { h } = require('koishi') as typeof import('koishi')
+
 interface LoggerLike {
   info(...args: unknown[]): void
 }
@@ -136,6 +138,25 @@ function renderAiHelp(): string {
 function renderMiscHelp(): string {
   return [
     '【杂项功能】',
+    '【github解析】',
+    'AI状态',
+    'AI诊断',
+    'AI重载',
+    '东雪莲帮我选 A 还是 B',
+    '东雪莲吐槽我',
+    '东雪莲帮我说话 <内容>',
+    '今日情绪',
+    '群聊日报 / 群聊详细日报',
+    '统计群精华（按群友精华数量降序排行，合并转发，同群冷却60秒）',
+    '谁艾特我 / 谁@我',
+    '定位消息 <编号>（引用跳转）',
+  ].join('\n')
+}
+
+// 将 GitHub 使用说明与管理命令集中到杂项功能的独立子菜单。
+function renderGithubHelp(): string {
+  return [
+    '【github解析】',
     'GitHub 链接查询（默认关闭，仅已添加群开启）',
     '发送 Issue / PR 链接：官方标题、标签、作者及首条正文排版出图，单个目标最多30秒，四周留白',
     'PR 第一张为看板详情卡片，后面为原黄色工业风正文长截图（保留图文，连续切片最多3张）',
@@ -148,17 +169,6 @@ function renderMiscHelp(): string {
     'GitHub群项目导入 <仓库链接> / GitHub群项目查看 / GitHub群项目删除 [仓库链接]（bot管理员，删除链接可省略）',
     '删除可直接拼接仓库链接；带链接时只删除当前群匹配的绑定',
     '每群最多绑定一个项目；已开启群整条发送 #数字 可查询 Issue / PR',
-    'AI状态',
-    'AI诊断',
-    'AI重载',
-    '东雪莲帮我选 A 还是 B',
-    '东雪莲吐槽我',
-    '东雪莲帮我说话 <内容>',
-    '今日情绪',
-    '群聊日报 / 群聊详细日报',
-    '统计群精华（按群友精华数量降序排行，合并转发，同群冷却60秒）',
-    '谁艾特我 / 谁@我',
-    '定位消息 <编号>（引用跳转）',
   ].join('\n')
 }
 
@@ -284,10 +294,7 @@ function renderSwitchModels(): string {
 }
 
 // 渲染指定供应商下的可切换模型。
-function renderProviderModels(providerId: string): string {
-  const id = String(providerId).toLowerCase()
-  const prov = PROVIDERS[id] || Object.values(PROVIDERS).find(p => p.name.toLowerCase() === id)
-  if (!prov) return `未找到供应商「${providerId}」`
+function renderProviderModels(prov: ProviderInfo): string {
   return [
     `${prov.name} 可用模型：`,
     ...prov.models.map(m => `切换${m.name}`),
@@ -304,6 +311,24 @@ function renderAvailableModels(): string {
   return text.trim()
 }
 
+// --- 固定菜单预计算 --- #
+
+// 超过 100 字符的菜单以一条消息记录发送；固定文本只在模块加载时调用。
+function formatHelpReply(text: string): string {
+  return text.length > 100 ? h('figure', {}, [h('message', {}, h.text(text))]).toString() : text
+}
+
+const MENU_TEXTS = {
+  root: renderRootHelp(), ai: renderAiHelp(), misc: renderMiscHelp(), github: renderGithubHelp(),
+  memory: renderMemoryHelp(), groupReply: renderGroupReplyHelp(), network: renderNetworkHelp(),
+  event: renderEventHelp(), collection: renderCollectionHelp(), blacklist: renderBlacklistHelp(),
+  sensitive: renderSensitiveHelp(), persona: renderPersonaHelp(), switchModels: renderSwitchModels(),
+  availableModels: renderAvailableModels(),
+}
+const MENU_REPLIES: Record<string, string> = Object.fromEntries(Object.entries(MENU_TEXTS).map(([key, text]) => [key, formatHelpReply(text)]))
+const PROVIDER_REPLIES: Record<string, string> = Object.fromEntries(Object.entries(PROVIDERS).map(([id, provider]) => [id, formatHelpReply(renderProviderModels(provider))]))
+const HELP_SEARCH_LINES = Object.values(MENU_TEXTS).join('\n').split('\n')
+
 // --- 插件入口 --- #
 
 // 注册帮助菜单 middleware，并按菜单树做精确匹配和模糊搜索。
@@ -316,55 +341,59 @@ function apply(ctx: ContextLike): void {
     const plain = normalizeText(stripMentions(session.content || ''))
 
     if (plain === 'help东雪莲' || plain === '帮助东雪莲' || plain === '东雪莲help' || plain === '东雪莲帮助') {
-      return renderRootHelp()
+      return MENU_REPLIES.root
     }
 
     if (plain === 'helpAI' || plain === '帮助AI' || plain === 'AI帮助') {
-      return renderAiHelp()
+      return MENU_REPLIES.ai
     }
 
     if (plain === '杂项功能' || plain === '【杂项功能】') {
-      return renderMiscHelp()
+      return MENU_REPLIES.misc
+    }
+
+    if (plain.toLowerCase() === 'github解析' || plain.toLowerCase() === '【github解析】') {
+      return MENU_REPLIES.github
     }
 
     if (plain === 'help集合' || plain === '帮助集合' || plain === '东雪莲集合') {
-      return renderCollectionHelp()
+      return MENU_REPLIES.collection
     }
 
     if (plain === '群聊主动回复' || plain === '【群聊主动回复】') {
-      return renderGroupReplyHelp()
+      return MENU_REPLIES.groupReply
     }
 
     if (plain === '联网' || plain === '【联网】') {
-      return renderNetworkHelp()
+      return MENU_REPLIES.network
     }
 
     if (plain === '抓取原始事件' || plain === '【抓取原始事件】') {
-      return renderEventHelp()
+      return MENU_REPLIES.event
     }
 
     if (plain === '白名单黑名单管理' || plain === '【白名单黑名单管理】') {
-      return renderBlacklistHelp()
+      return MENU_REPLIES.blacklist
     }
 
     if (plain === '人格' || plain === '【人格】') {
-      return renderPersonaHelp()
+      return MENU_REPLIES.persona
     }
 
     if (plain === '记忆' || plain === '【记忆】') {
-      return renderMemoryHelp()
+      return MENU_REPLIES.memory
     }
 
     if (plain === '敏感话题检测' || plain === '【敏感话题检测】') {
-      return renderSensitiveHelp()
+      return MENU_REPLIES.sensitive
     }
 
     if (plain === '切换模型' || plain === '【切换模型与供应商】') {
-      return renderSwitchModels()
+      return MENU_REPLIES.switchModels
     }
 
     if (plain === '可用模型') {
-      return renderAvailableModels()
+      return MENU_REPLIES.availableModels
     }
 
     // #4 /help xxx 模糊搜索
@@ -372,14 +401,7 @@ function apply(ctx: ContextLike): void {
     if (helpSearchMatch) {
       const keyword = helpSearchMatch[1].trim()
       if (!keyword) return ''
-      const allRenderers = [
-        renderRootHelp, renderAiHelp, renderMiscHelp, renderMemoryHelp,
-        renderGroupReplyHelp, renderNetworkHelp, renderEventHelp, renderCollectionHelp,
-        renderBlacklistHelp, renderSensitiveHelp, renderPersonaHelp,
-        renderSwitchModels, renderAvailableModels,
-      ]
-      const allText = allRenderers.map(fn => fn()).join('\n')
-      const matchedLines = allText.split('\n').filter(line => line.includes(keyword))
+      const matchedLines = HELP_SEARCH_LINES.filter(line => line.includes(keyword))
       if (!matchedLines.length) return '未找到相关帮助。'
       const seen = new Set<string>()
       const lines = matchedLines
@@ -391,12 +413,15 @@ function apply(ctx: ContextLike): void {
         })
         .slice(0, 15)
       if (!lines.length) return '未找到相关帮助。'
-      return `/help${keyword} 结果：\n${lines.map(l => `- ${l.replace(/^-\s*/, '')}`).join('\n')}`
+      // 搜索结果取决于用户输入，只有这一类动态帮助需要按本次长度选择发送形式。
+      return formatHelpReply(`/help${keyword} 结果：\n${lines.map(l => `- ${l.replace(/^-\s*/, '')}`).join('\n')}`)
     }
 
     const providerMatch = plain.match(/^供应商\s+(.+)$/)
     if (providerMatch) {
-      return renderProviderModels(providerMatch[1])
+      const id = providerMatch[1].toLowerCase()
+      const provider = Object.entries(PROVIDERS).find(([key, value]) => key === id || value.name.toLowerCase() === id)
+      return provider ? PROVIDER_REPLIES[provider[0]] : `未找到供应商「${providerMatch[1]}」`
     }
 
     return next()

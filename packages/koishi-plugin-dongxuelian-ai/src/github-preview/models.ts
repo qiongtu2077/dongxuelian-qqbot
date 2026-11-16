@@ -32,7 +32,8 @@ export const GITHUB_LIMITS = Object.freeze({
   maxTargets: 3, cooldownMs: 120000, cacheMs: 300000, staleMs: 1800000,
   cacheEntries: 100, cacheBytes: 20 * 1024 * 1024, imageBytes: 10 * 1024 * 1024,
   padding: 24, imageHeight: 2000, maxImages: 3, viewportWidth: 1280,
-  minMemoryMb: 650, stopMemoryMb: 350,
+  // 本地离线卡片串行渲染；启动预留 100 MB，运行中仍低于 350 MB 即停止。
+  minMemoryMb: 450, stopMemoryMb: 350,
   bodyBytes: 256 * 1024, metadataBytes: 8 * 1024 * 1024, htmlBytes: 512 * 1024,
 })
 

@@ -411,6 +411,25 @@ async function run(t) {
     assert(performance.now() - start < 500)
   })
 
+  for (const critical of [false, true]) await withScenario({}, async ({ makeSession, run: middleware }) => {
+    await githubCase(t, `GitHub help aliases pass to the help plugin without model calls during ${critical ? 'critical memory' : 'normal operation'}`, async () => {
+      const originalFetch = global.fetch, previousAvailable = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE; let calls = 0
+      global.fetch = async () => { calls++; throw new Error('help must not call models or GitHub') }
+      if (critical) process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '200'
+      try {
+        for (const content of ['github解析', 'GitHub解析', '【github解析】', '<at id="90000"/> 【GitHub解析】']) {
+          for (const isDirect of [false, true]) {
+            const result = await middleware(makeSession({ content, isDirect, messageId: `github-help-${content}-${isDirect}` }))
+            assert(result.nextCalled); assert.equal(result.sent.length, 0)
+          }
+        }
+        assert.equal(calls, 0)
+      } finally {
+        global.fetch = originalFetch
+        if (previousAvailable === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE; else process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = previousAvailable
+      }
+    })
+  })
   await withScenario({}, async ({ data, makeSession, run: middleware }) => {
     await githubCase(t, 'real middleware default off, admin management, current state, blacklist and private fallback', async () => {
       const originalFetch = global.fetch; let calls = 0
@@ -687,9 +706,24 @@ async function run(t) {
         await assert.rejects(acquireGithubResources(githubContext(150), '10001'), /繁忙/)
         assert.equal(data.readJson('resource-gate/lock/meta.json').taskId, 'github-report-fixture')
         report.release('fixture-end'); report = null
-        process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '600'
-        await assert.rejects(acquireGithubResources(githubContext(), '10001'), /资源不足/)
-        assert(!fs.existsSync(data.pathFor('resource-gate/lock/meta.json')))
+        // 覆盖 SL 在线时实际观测到的内存和门槛边界，防止 green/yellow 档被旧 650 MB 门槛永久拒绝。
+        for (const availableMb of [450, 533, 572, 605, 623, 650]) {
+          process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = String(availableMb)
+          const release = await acquireGithubResources(githubContext(), '10001')
+          assert(fs.existsSync(data.pathFor('resource-gate/lock/meta.json'))); release()
+          assert(!fs.existsSync(data.pathFor('resource-gate/lock/meta.json')))
+        }
+        for (const availableMb of [449, 350, 299]) {
+          process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = String(availableMb)
+          await assert.rejects(acquireGithubResources(githubContext(), '10001'), error => error.message.includes('资源不足') && error.message.includes(`${availableMb} MB`) && error.message.includes('450 MB') && !error.message.includes('维护'))
+          assert(!fs.existsSync(data.pathFor('resource-gate/lock/meta.json')))
+        }
+        process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+        data.writeText('ai-paused.txt', 'on')
+        try {
+          await assert.rejects(acquireGithubResources(githubContext(), '10001'), /维护模式/)
+          assert(!fs.existsSync(data.pathFor('resource-gate/lock/meta.json')))
+        } finally { fs.unlinkSync(data.pathFor('ai-paused.txt')) }
       } finally {
         if (report) report.release('fixture-end')
         if (available === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE; else process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = available

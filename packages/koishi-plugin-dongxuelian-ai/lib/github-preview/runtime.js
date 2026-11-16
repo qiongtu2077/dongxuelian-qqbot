@@ -16,6 +16,15 @@ const { h } = require('koishi');
 const { hasAdminPermission } = require('../core/utils');
 const { admitTask } = require('../resource-scheduler/admission');
 const { acquireResourceGate, ResourceGateBusyTimeoutError } = require('../resource-gate/gate');
+// 区分维护、内存不足和资源竞争，避免把截图准入拒绝误报为协议或 GitHub 故障。
+function githubAdmissionError(admission) {
+    if (admission.botMode === 'maintenance')
+        return new Error('当前处于维护模式，GitHub 截图已暂停，请稍后重试');
+    if (admission.memAvailableMb !== null && admission.memAvailableMb < models_1.GITHUB_LIMITS.minMemoryMb) {
+        return new Error(`当前资源不足：可用内存 ${admission.memAvailableMb} MB，GitHub 截图至少需要 ${models_1.GITHUB_LIMITS.minMemoryMb} MB，请稍后重试`);
+    }
+    return new Error('截图资源繁忙，请稍后重试');
+}
 // Respect the existing global admission policy and S0 gate; no browser can bypass a report.
 async function acquireGithubResources(context, group) {
     const budget = { taskId: context.taskId, kind: 'browser_action', source: 'github-preview', owner: 'github-preview', channelKey: group, userId: '', exclusive: true, priority: 60, minMemMb: models_1.GITHUB_LIMITS.minMemoryMb, degradable: true, deferable: false, queueTimeoutMs: models_1.GITHUB_LIMITS.queueMs, runTimeoutMs: models_1.GITHUB_LIMITS.runMs };
@@ -24,7 +33,7 @@ async function acquireGithubResources(context, group) {
         (0, models_1.assertGithubWork)(context);
         const admission = admitTask(budget);
         if (['reject', 'downgrade', 'defer', 'silent_drop'].includes(admission.decision))
-            throw new Error('当前资源不足或处于维护模式，请稍后重试');
+            throw githubAdmissionError(admission);
         try {
             const gate = await acquireResourceGate({ ...budget, waitTimeoutMs: 0, timeoutMs: models_1.GITHUB_LIMITS.runMs, step: 'github_preview' });
             if (context.signal.aborted) {
@@ -34,7 +43,7 @@ async function acquireGithubResources(context, group) {
             const checked = admitTask(budget);
             if (checked.decision !== 'run_now') {
                 gate.release('admission_changed');
-                throw new Error('当前资源不足，请稍后重试');
+                throw githubAdmissionError(checked);
             }
             return () => gate.release('github_preview_finished');
         }

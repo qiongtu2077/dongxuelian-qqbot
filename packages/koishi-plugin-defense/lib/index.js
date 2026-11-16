@@ -169,6 +169,8 @@ function isReservedCommand(plain = '') {
     const value = normalizeMessage(plain);
     if (!value)
         return false;
+    if (/^(?:github解析|【github解析】)$/i.test(value))
+        return true;
     if (value.startsWith('/'))
         return true;
     return RESERVED_PREFIXES.some((prefix) => value === prefix || value.startsWith(prefix + ' '));

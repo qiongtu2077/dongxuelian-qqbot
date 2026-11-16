@@ -118,9 +118,11 @@ function pickJailbreakFallbackReply(): string {
   return JAILBREAK_FALLBACK_REPLIES[Math.floor(Math.random() * JAILBREAK_FALLBACK_REPLIES.length)]
 }
 
+// 识别由其他插件处理的菜单和命令，让它们在各资源模式下继续向后路由。
 function isReservedCommand(plain: string = ''): boolean {
   const value = normalizeText(plain)
   if (!value) return false
+  if (/^(?:github解析|【github解析】)$/i.test(value)) return true
   if (value.startsWith('昵称') && value !== '昵称') return true
   if (/^at\s*\S+/i.test(value)) return true
   return RESERVED_PREFIXES.some((prefix) => value === prefix || value.startsWith(prefix + ' '))

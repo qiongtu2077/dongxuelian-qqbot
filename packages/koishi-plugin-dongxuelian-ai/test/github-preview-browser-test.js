@@ -191,7 +191,14 @@ async function verifyRender(kind, options = {}) {
 // Validate real layout, external-resource blocking, clipping and the hard timeout without GitHub access.
 async function main() {
   await verifyBody()
-  for (const kind of ['issue', 'pull', 'repository', 'user']) await verifyRender(kind)
+  // 模拟 SL 在线时观测到的 533 MB，真实浏览器验证所有本地模板均使用统一启动预算。
+  const previousAvailable = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE
+  process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '533'
+  try {
+    for (const kind of ['issue', 'pull', 'repository', 'user']) await verifyRender(kind)
+  } finally {
+    if (previousAvailable === undefined) delete process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE; else process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = previousAvailable
+  }
   await verifyRender('pull', { light: true })
   await verifyRender('pull', { screenshots: true })
   await verifyRender('pull', { screenshots: true, assetFailure: true })
