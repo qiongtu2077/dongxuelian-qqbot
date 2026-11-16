@@ -5,7 +5,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { spawnSync } = require('child_process')
-const { buildDashboardRelease, verifyReleaseManifest, RELEASE_PACKAGES } = require('../lib/release')
+const { buildDashboardRelease, verifyReleaseManifest, verifyBrowserAssets, RELEASE_PACKAGES } = require('../lib/release')
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
 
@@ -180,6 +180,19 @@ function testReleaseManifest(tempRoot) {
 
   assert(listed.has('packages/koishi-plugin-dashboard/lib/release.js'))
   assert(listed.has('packages/koishi-plugin-dashboard/frontend/dist/index.html'))
+  // Dashboard 可从源码包或运行时副本启动，两处都必须携带同版本的 Agent 页面与资源。
+  for (const base of ['packages', 'node_modules']) {
+    const consoleRoot = `${base}/agent-console`
+    assert(listed.has(`${consoleRoot}/package.json`), `${consoleRoot} metadata missing`)
+    assert(listed.has(`${consoleRoot}/dist/index.html`), `${consoleRoot} browser entry missing`)
+    const html = fs.readFileSync(path.join(first.releaseDir, consoleRoot, 'dist', 'index.html'), 'utf8')
+    const assets = [...html.matchAll(/(?:src|href)=["'](\/agent\/assets\/[^"']+)["']/g)]
+    assert(assets.length > 0, `${consoleRoot} has no browser assets`)
+    for (const [, reference] of assets) assert(listed.has(`${consoleRoot}/dist/${reference.slice('/agent/'.length)}`), `${consoleRoot} asset missing: ${reference}`)
+  }
+  const agentAsset = manifest.files.find(item => item.path.startsWith('packages/agent-console/dist/assets/'))
+  assert(agentAsset, 'Agent browser assets missing from release')
+  assert.throws(() => verifyBrowserAssets(first.releaseDir, { ...manifest, files: manifest.files.filter(item => item.path !== agentAsset.path) }), /浏览器入口引用未进入发布清单/)
   assert(listed.has('scripts/activate-dashboard-release.sh'))
   assert(listed.has('scripts/install-koishi-service.sh'))
   const forcedPersona = 'koishi-plugin-dongxuelian-ai/data/ai-skills/modes/SKILL.persona-forced-abusive.md'

@@ -142,6 +142,21 @@ export interface AgentChatResponse extends ApiEnvelope {
   toolName?: string
 }
 
+export interface AgentTaskResponse extends ApiEnvelope {
+  task: {
+    id: string
+    status: 'pending' | 'claiming' | 'running' | 'done' | 'failed' | 'cancelled' | 'deferred'
+    error?: string
+    result: ApiEnvelope & {
+      reply: string
+      error: string
+      pendingId: string | null
+      toolCalls: number
+      warnings: string[]
+    }
+  }
+}
+
 export interface PendingToolListItem {
   id: string
   toolName: string

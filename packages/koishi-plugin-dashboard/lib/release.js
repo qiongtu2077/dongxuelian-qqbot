@@ -6,6 +6,7 @@ const { execFileSync } = require('child_process');
 const MANIFEST_NAME = 'release-manifest.json';
 const DASHBOARD_PACKAGE = 'koishi-plugin-dashboard';
 const RELEASE_PACKAGES = [
+    'agent-console',
     'koishi-plugin-dashboard',
     'koishi-plugin-dongxuelian-ai',
     'koishi-plugin-dongxuelian-help',
@@ -111,7 +112,7 @@ function copyReleaseEntry(repoRoot, releaseRoot, relativePath, required = false)
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.cpSync(source, target, { recursive: true, force: false, errorOnExist: true });
 }
-// Copies only runtime and Dashboard browser sources, never project data or credentials.
+// Copies runtime packages and browser assets, never project data or credentials.
 function copyReleasePayload(repoRoot, releaseRoot) {
     for (const packageName of RELEASE_PACKAGES) {
         const packageRoot = `packages/${packageName}`;
@@ -120,6 +121,8 @@ function copyReleasePayload(repoRoot, releaseRoot) {
         for (const optional of ['assets', 'templates'])
             copyReleaseEntry(repoRoot, releaseRoot, `${packageRoot}/${optional}`);
     }
+    // Agent 静态目录与 Dashboard 同级，两个运行时副本都必须随版本一起发布。
+    copyReleaseEntry(repoRoot, releaseRoot, 'packages/agent-console/dist', true);
     // 仅携带仓库内的人格与工具种子，运行配置、密钥和对话数据继续留在共享 data。
     copyReleaseEntry(repoRoot, releaseRoot, 'packages/koishi-plugin-dongxuelian-ai/data/ai-skills', true);
     const dashboardRoot = `packages/${DASHBOARD_PACKAGE}`;
@@ -177,22 +180,32 @@ function buildDashboardRelease(repoRoot, outputRoot) {
 // --- Release verification ---
 // Confirms that browser entry assets resolve inside the release and appear in the manifest.
 function verifyBrowserAssets(releaseRoot, manifest) {
-    const indexRelative = `packages/${DASHBOARD_PACKAGE}/frontend/dist/index.html`;
-    const indexPath = resolveReleasePath(releaseRoot, indexRelative);
-    const html = fs.readFileSync(indexPath, 'utf8');
     const listed = new Set(manifest.files.map(item => item.path));
-    const assetReferences = [...html.matchAll(/(?:src|href)=["']([^"']+)["']/g)].map(match => match[1]).filter(value => !/^(?:https?:|data:|#)/i.test(value));
-    for (const reference of assetReferences) {
-        const cleanReference = reference.split(/[?#]/, 1)[0];
-        const assetPath = cleanReference.startsWith('/dashboard/')
-            ? cleanReference.slice('/dashboard/'.length)
-            : cleanReference.replace(/^\.\//, '');
-        if (cleanReference.startsWith('/') && !cleanReference.startsWith('/dashboard/'))
-            throw new Error(`浏览器入口引用超出 Dashboard 路径: ${reference}`);
-        const relativeAsset = path.posix.normalize(path.posix.join(path.posix.dirname(indexRelative), assetPath));
-        assertReleaseRelativePath(relativeAsset);
-        if (!fs.existsSync(resolveReleasePath(releaseRoot, relativeAsset)) || !listed.has(relativeAsset))
-            throw new Error(`浏览器入口引用未进入发布清单: ${reference}`);
+    const browsers = [
+        { directory: `${DASHBOARD_PACKAGE}/frontend/dist`, mount: '/dashboard/' },
+        { directory: 'agent-console/dist', mount: '/agent/' },
+    ];
+    // Node 会解析实际包路径，因此源码包和 node_modules 副本都校验入口与引用资源。
+    for (const base of ['packages', 'node_modules']) {
+        for (const browser of browsers) {
+            const indexRelative = `${base}/${browser.directory}/index.html`;
+            if (!listed.has(indexRelative))
+                throw new Error(`浏览器入口未进入发布清单: ${indexRelative}`);
+            const html = fs.readFileSync(resolveReleasePath(releaseRoot, indexRelative), 'utf8');
+            const assetReferences = [...html.matchAll(/(?:src|href)=["']([^"']+)["']/g)].map(match => match[1]).filter(value => !/^(?:https?:|data:|#)/i.test(value));
+            for (const reference of assetReferences) {
+                const cleanReference = reference.split(/[?#]/, 1)[0];
+                const assetPath = cleanReference.startsWith(browser.mount)
+                    ? cleanReference.slice(browser.mount.length)
+                    : cleanReference.replace(/^\.\//, '');
+                if (cleanReference.startsWith('/') && !cleanReference.startsWith(browser.mount))
+                    throw new Error(`浏览器入口引用超出 ${browser.mount} 路径: ${reference}`);
+                const relativeAsset = path.posix.normalize(path.posix.join(path.posix.dirname(indexRelative), assetPath));
+                assertReleaseRelativePath(relativeAsset);
+                if (!fs.existsSync(resolveReleasePath(releaseRoot, relativeAsset)) || !listed.has(relativeAsset))
+                    throw new Error(`浏览器入口引用未进入发布清单: ${reference}`);
+            }
+        }
     }
 }
 // Verifies the manifest hash, exact payload file set, sizes, hashes, and browser entry references.

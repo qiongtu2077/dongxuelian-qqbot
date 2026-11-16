@@ -174,15 +174,75 @@ async function testFileDownload(client, calls) {
   await assert.rejects(() => client.api.fileDownload('missing.txt'), /文件不存在/)
 }
 
-/** Verifies administrator verification uses the unauthenticated endpoint contract. */
+/** Verifies administrator verification preserves access authentication without a stale admin token. */
 async function testVerifyAdmin(client, calls) {
+  localStorage.setItem('dashboard_token', 'access-token')
+  client.setAdminToken('stale-admin-token')
   recordFetch(calls, jsonResponse({ ok: true, token: 'verified' }))
   const result = await client.verifyAdmin('secret')
   assert.deepStrictEqual(result, { ok: true, token: 'verified' })
   assert.strictEqual(calls[0].url, '/dashboard/api/admin/verify')
   assert.strictEqual(calls[0].init.method, 'POST')
-  assert.deepStrictEqual(calls[0].init.headers, { 'Content-Type': 'application/json' })
+  assert.deepStrictEqual(calls[0].init.headers, { 'Content-Type': 'application/json', Authorization: 'Bearer access-token' })
   assert.deepStrictEqual(JSON.parse(calls[0].init.body), { password: 'secret' })
+}
+
+/** Verifies accepted chat and confirmation tasks return their completed result rather than the queue receipt. */
+async function testAsyncTaskResults(client, calls) {
+  for (const invoke of [() => client.api.chat('37*19', []), () => client.api.confirm('pending-1')]) {
+    calls.length = 0
+    global.fetch = async (url, init) => {
+      calls.push({ url, init })
+      return jsonResponse(url.includes('/tasks/')
+        ? { ok: true, task: { id: 'task/1', status: 'done', result: { ok: true, reply: '703', pendingId: null, toolCalls: 1 } } }
+        : { ok: true, async: true, taskId: 'task/1', status: 'accepted', message: '后台处理中' })
+    }
+    const result = await invoke()
+    assert.strictEqual(result.ok, true)
+    assert.strictEqual(result.data.reply, '703')
+    assert.strictEqual(result.data.async, false)
+    assert.strictEqual(calls[1].url, '/dashboard/api/agent/tasks/task%2F1')
+  }
+}
+
+/** Exercises real polling timers across completion, task failure, transport failure, timeout, and cancellation. */
+async function testTaskLifecycle(followAgentTask) {
+  const originalSetTimeout = global.setTimeout
+  const originalClearTimeout = global.clearTimeout
+  const timers = new Set()
+  global.setTimeout = (callback, delay) => {
+    const timer = originalSetTimeout(() => { timers.delete(timer); callback() }, delay)
+    timers.add(timer)
+    return timer
+  }
+  global.clearTimeout = timer => { timers.delete(timer); originalClearTimeout(timer) }
+  const submission = { ok: true, data: { ok: true, async: true, taskId: 'task-1' } }
+  const task = (status, ok = true) => ({ ok: true, data: { task: { id: 'task-1', status, result: { ok, reply: ok ? '703' : '', error: ok ? '' : '计算失败', pendingId: null } } } })
+  try {
+    let reads = 0
+    const completed = await followAgentTask(submission, async () => task(++reads === 1 ? 'deferred' : 'done'), { pollIntervalMs: 1 })
+    assert.strictEqual(completed.data.reply, '703')
+    assert.strictEqual(reads, 2)
+    for (const [status, ok] of [['failed', false], ['cancelled', false], ['done', false]]) {
+      const failed = await followAgentTask(submission, async () => task(status, ok))
+      assert.strictEqual(failed.ok, false)
+      assert.strictEqual(failed.message, '计算失败')
+    }
+    const denied = await followAgentTask(submission, async () => ({ ok: false, data: null, code: 'AUTH_REQUIRED', message: '登录已过期' }))
+    assert.strictEqual(denied.code, 'AUTH_REQUIRED')
+    const timeout = await followAgentTask(submission, async () => task('running'), { timeoutMs: 30, pollIntervalMs: 1 })
+    assert.strictEqual(timeout.code, 'TASK_TIMEOUT')
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 5)
+    const cancelled = await followAgentTask(submission, async () => task('pending'), { signal: controller.signal })
+    assert.strictEqual(cancelled.code, 'ABORTED')
+    await assert.rejects(() => followAgentTask(submission, async () => { throw new Error('status read failed') }), /status read failed/)
+    assert.strictEqual(timers.size, 0, 'polling leaked a timer after completion/failure/timeout/cancellation')
+  } finally {
+    for (const timer of timers) originalClearTimeout(timer)
+    global.setTimeout = originalSetTimeout
+    global.clearTimeout = originalClearTimeout
+  }
 }
 
 /** Runs all Agent Console API client contract tests. */
@@ -206,6 +266,9 @@ async function main() {
     await testFileDownload(client, calls)
     resetBrowserState(calls)
     await testVerifyAdmin(client, calls)
+    resetBrowserState(calls)
+    await testAsyncTaskResults(client, calls)
+    await testTaskLifecycle(require('../src/api/tasks.ts').followAgentTask)
     assert.strictEqual(client.getErrorMessage({ message: '对象错误' }), '对象错误')
     assert.strictEqual(client.getErrorMessage(null, '回退错误'), '回退错误')
     console.log('Agent Console API client tests passed')

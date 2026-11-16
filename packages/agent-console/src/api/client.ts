@@ -1,6 +1,7 @@
 import type {
   AdminVerifyResponse,
   AgentChatResponse,
+  AgentTaskResponse,
   AgentConfigResponse,
   AgentCronsResponse,
   AgentEnvResponse,
@@ -26,6 +27,9 @@ import type {
   SaveAgentPersonaResponse,
   PendingToolsResponse,
 } from './types'
+import { followAgentTask } from './tasks'
+
+// --- Authenticated transport ---
 
 const BASE = '/dashboard/api'
 const SERVER_TOKEN_KEY = 'dashboard_server_token'
@@ -63,8 +67,12 @@ function headers(admin = true) {
   return result
 }
 
+/** Sends authenticated JSON with a request timeout and optional caller cancellation. */
 async function request<T extends ApiEnvelope>(path: string, init: RequestInit = {}, timeoutMs = 15000): Promise<ApiResult<T>> {
   const ctrl = new AbortController()
+  const cancel = () => ctrl.abort()
+  if (init.signal?.aborted) cancel()
+  else init.signal?.addEventListener('abort', cancel, { once: true })
   const timer = setTimeout(() => ctrl.abort(), timeoutMs)
   try {
     const res = await fetch(BASE + path, { ...init, headers: { ...headers(true), ...(init.headers || {}) }, signal: ctrl.signal })
@@ -76,11 +84,14 @@ async function request<T extends ApiEnvelope>(path: string, init: RequestInit = 
     return { ok: res.ok && ok !== false, data: data as T | null, code, message }
   } catch (error: unknown) {
     const name = isRecord(error) && typeof error.name === 'string' ? error.name : ''
-    return { ok: false, data: null, message: name === 'AbortError' ? '请求超时' : getErrorMessage(error) }
+    return { ok: false, data: null, code: init.signal?.aborted ? 'ABORTED' : undefined, message: init.signal?.aborted ? '请求已取消' : name === 'AbortError' ? '请求超时' : getErrorMessage(error) }
   } finally {
     clearTimeout(timer)
+    init.signal?.removeEventListener('abort', cancel)
   }
 }
+
+// --- Login credentials ---
 
 export function setAdminToken(token: string) {
   localStorage.setItem(SERVER_TOKEN_KEY, JSON.stringify({ token, expires: Date.now() + 43200000 }))
@@ -91,23 +102,29 @@ export function setAccessToken(token = '') {
   if (token) localStorage.setItem(ACCESS_TOKEN_KEY, token)
 }
 
+/** Verifies administrator access using the current Dashboard login token. */
 export async function verifyAdmin(password: string) {
   const res = await fetch(BASE + '/admin/verify', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: headers(false),
     body: JSON.stringify({ password }),
   })
   return res.json() as Promise<AdminVerifyResponse>
 }
+
+// --- Agent endpoints ---
+
+/** Reads the existing task-status endpoint using the same authenticated transport. */
+const readAgentTask = (taskId: string, signal: AbortSignal) => request<AgentTaskResponse>('/agent/tasks/' + encodeURIComponent(taskId), { signal })
 
 export const api = {
   getConfig: () => request<AgentConfigResponse>('/agent/config'),
   saveConfig: (payload: SaveAgentConfigPayload) => request<SaveAgentConfigResponse>('/agent/config', { method: 'PUT', body: JSON.stringify(payload) }),
   personas: () => request<AgentPersonasResponse>('/agent/personas'),
   savePersona: (payload: AgentPersonaConfig) => request<SaveAgentPersonaResponse>('/agent/persona', { method: 'PUT', body: JSON.stringify(payload) }),
-  chat: (message: string, history: ChatHistoryItem[], enableThinking = false, agentMode = true) => request<AgentChatResponse>('/agent/chat', { method: 'POST', body: JSON.stringify({ message, history, enableThinking, agentMode }) }, 90000),
+  chat: async (message: string, history: ChatHistoryItem[], enableThinking = false, agentMode = true, signal?: AbortSignal) => followAgentTask(await request<AgentChatResponse>('/agent/chat', { method: 'POST', body: JSON.stringify({ message, history, enableThinking, agentMode }), signal }, 90000), readAgentTask, { signal }),
   pending: () => request<PendingToolsResponse>('/tools/pending'),
-  confirm: (pendingId: string) => request<AgentChatResponse>('/agent/confirm', { method: 'POST', body: JSON.stringify({ pendingId }) }, 90000),
+  confirm: async (pendingId: string, signal?: AbortSignal) => followAgentTask(await request<AgentChatResponse>('/agent/confirm', { method: 'POST', body: JSON.stringify({ pendingId }), signal }, 90000), readAgentTask, { signal }),
   reject: (pendingId: string) => request<ApiEnvelope>('/agent/reject', { method: 'POST', body: JSON.stringify({ pendingId }) }),
   sessions: () => request<AgentSessionsResponse>('/agent/sessions'),
   session: (id: string) => request<ApiEnvelope>('/agent/sessions/' + encodeURIComponent(id)),

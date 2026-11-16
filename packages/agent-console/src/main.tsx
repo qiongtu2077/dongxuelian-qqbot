@@ -104,6 +104,7 @@ const tabs: Array<{ id: TabId; label: string; group: string }> = [
   { id: 'security', label: '安全', group: '设置' },
 ]
 
+/** Loads Agent workspace data and distinguishes access login from administrator verification. */
 function useAgentData() {
   const [loading, setLoading] = useState(false)
   const [config, setConfig] = useState<AgentConfigResponse | null>(null)
@@ -121,12 +122,14 @@ function useAgentData() {
   const [persona, setPersona] = useState<AgentPersonaConfig | null>(null)
   const [error, setError] = useState('')
   const [adminRequired, setAdminRequired] = useState(false)
+  const [accessRequired, setAccessRequired] = useState(false)
 
   /** Refreshes all Agent Console datasets in one parallel request batch. */
   async function refresh() {
     setLoading(true)
     setError('')
     setAdminRequired(false)
+    setAccessRequired(false)
     const [cfg, pnd, ses, sta, que, guard, planRes, cronRes, pushRes, envRes, personaRes] = await Promise.all([
       api.getConfig(),
       api.pending(),
@@ -141,6 +144,7 @@ function useAgentData() {
       api.personas(),
     ])
     if (cfg.ok) setConfig(cfg.data)
+    else if (cfg.code === 'AUTH_REQUIRED') setAccessRequired(true)
     else if (cfg.code === 'ADMIN_REQUIRED') setAdminRequired(true)
     else setError(cfg.message || cfg.data?.message || '加载 Agent 配置失败')
     if (pnd.ok) setPending(pnd.data?.pending || [])
@@ -166,11 +170,25 @@ function useAgentData() {
   }
 
   useEffect(() => { refresh() }, [])
-  return { loading, config, setConfig, pending, sessions, stats, queue, shellGuard, plans, crons, cronHistory, pushLog, env, personas, persona, setPersona, error, adminRequired, refresh }
+  return { loading, config, setConfig, pending, sessions, stats, queue, shellGuard, plans, crons, cronHistory, pushLog, env, personas, persona, setPersona, error, adminRequired, accessRequired, refresh }
 }
 
 type AgentData = ReturnType<typeof useAgentData>
 type AgentConfigSetter = AgentData['setConfig']
+
+/** Directs users with a missing or expired access token to Dashboard login. */
+function AccessGate() {
+  return (
+    <main className="gate">
+      <section className="gate-panel">
+        <div className="brand-mark">莲</div>
+        <h1>莲莲 Agent</h1>
+        <p>请先登录 Dashboard，再进入 Agent 工作台。</p>
+        <a href="/dashboard/">登录 Dashboard</a>
+      </section>
+    </main>
+  )
+}
 
 function AdminGate({ onVerified }: { onVerified: () => void }) {
   const [password, setPassword] = useState('')
@@ -329,6 +347,7 @@ const COMMANDS = [
   { label: '/status', description: '查看状态', value: '/status ' },
 ]
 
+/** Owns the active persona's conversation and cancels result polling when the page is left. */
 function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPersonaConfig | null }) {
   const personaName = persona?.dashboardPersona || ''
   const historyKey = getPersonaHistoryKey(personaName)
@@ -340,6 +359,7 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
   const [mode, setMode] = useState<AgentMode>('build')
   const [enableThinking, setEnableThinking] = useState(false)
   const [agentMode, setAgentMode] = useState(true)
+  const chatRequestRef = useRef<AbortController | null>(null)
   const [textareaRef, setTextareaRef] = useState<HTMLTextAreaElement | null>(null)
   const messagesRef = useRef<HTMLDivElement>(null)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
@@ -350,6 +370,11 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
     selectedIndex: number
   } | null>(null)
 
+  useEffect(() => {
+    setSending(false)
+    // Changing persona or leaving chat stops this page's polling, while the worker owns the task.
+    return () => { chatRequestRef.current?.abort(); chatRequestRef.current = null }
+  }, [historyKey])
   useEffect(() => {
     if (!rememberHistory) {
       setMessages([])
@@ -380,6 +405,7 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
       messagesRef.current.scrollTop = messagesRef.current.scrollHeight
     }
   }, [messages])
+  /** Submits chat and keeps its pending message until the background worker returns the final result. */
   async function send() {
     const text = input.trim()
     if (!text || sending) return
@@ -388,8 +414,11 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
     setMessages(prev => [...prev, { role: 'user', content: text }, { role: 'system', content: '执行中...', id: pendingMessageId, pending: true }])
     setInput('')
     setSending(true)
+    const controller = new AbortController()
+    chatRequestRef.current = controller
     try {
-      const result = await api.chat(text, history, enableThinking, agentMode)
+      const result = await api.chat(text, history, enableThinking, agentMode, controller.signal)
+      if (controller.signal.aborted) return
       setMessages(prev => {
         const base = prev.filter(item => item.id !== pendingMessageId)
         const reply = result.ok ? (result.data?.reply || result.data?.result || result.data?.message || '(Agent 未返回内容)') : (result.message || result.data?.message || '请求失败')
@@ -397,12 +426,16 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
       })
       refresh()
     } catch (error: unknown) {
+      if (controller.signal.aborted) return
       setMessages(prev => {
         const base = prev.filter(item => item.id !== pendingMessageId)
         return [...base, { role: 'assistant', content: getErrorMessage(error) }]
       })
     } finally {
-      setSending(false)
+      if (chatRequestRef.current === controller) {
+        chatRequestRef.current = null
+        setSending(false)
+      }
     }
   }
   function onInputChange(text: string) {
@@ -532,13 +565,37 @@ function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPer
   )
 }
 
+/** Shows approvals and the completed result of a confirmed background tool. */
 function InboxPage({ pending, pushLog, refresh }: { pending: PendingToolListItem[]; pushLog: AgentPushLogEntry[]; refresh: () => void }) {
-  async function confirm(id: string) { await api.confirm(id); refresh() }
+  const [message, setMessage] = useState('')
+  const [confirming, setConfirming] = useState('')
+  const confirmationRef = useRef<AbortController | null>(null)
+  useEffect(() => () => { confirmationRef.current?.abort() }, [])
+  /** Prevents duplicate approval and waits for its actual tool result. */
+  async function confirm(id: string) {
+    if (confirmationRef.current) return
+    const controller = new AbortController()
+    confirmationRef.current = controller
+    setConfirming(id)
+    setMessage('执行中...')
+    try {
+      const result = await api.confirm(id, controller.signal)
+      if (controller.signal.aborted) return
+      setMessage(result.data?.reply || result.message || '工具确认已完成')
+      refresh()
+    } catch (error: unknown) {
+      if (!controller.signal.aborted) setMessage(getErrorMessage(error))
+    } finally {
+      if (!controller.signal.aborted) setConfirming('')
+      confirmationRef.current = null
+    }
+  }
   async function reject(id: string) { await api.reject(id); refresh() }
   return (
     <div className="page-grid two">
       <section className="panel">
         <h2>审批</h2>
+        {message && <p role="status">{message}</p>}
         {!pending.length && <div className="empty">暂无待审批项</div>}
         {pending.map(item => (
           <div className="approval-card" key={item.id}>
@@ -548,8 +605,8 @@ function InboxPage({ pending, pushLog, refresh }: { pending: PendingToolListItem
             </div>
             <p>{item.argsSummary}</p>
             <div className="row-actions">
-              <button onClick={() => confirm(item.id)}>确认</button>
-              <button className="secondary" onClick={() => reject(item.id)}>拒绝</button>
+              <button disabled={!!confirming} onClick={() => confirm(item.id)}>{confirming === item.id ? '执行中' : '确认'}</button>
+              <button disabled={!!confirming} className="secondary" onClick={() => reject(item.id)}>拒绝</button>
             </div>
           </div>
         ))}
@@ -1019,6 +1076,7 @@ function SecurityPage({ shellGuard, config }: { shellGuard: AgentShellGuardRespo
   )
 }
 
+/** Renders the authenticated Agent workspace and its access/admin gates. */
 function App() {
   const [verified, setVerified] = useState(() => !!localStorage.getItem('dashboard_server_token') || !!localStorage.getItem('dashboard_admin_token'))
   const [active, setActive] = useState<TabId>('chat')
@@ -1027,6 +1085,7 @@ function App() {
   useEffect(() => {
     if (data.adminRequired) setShowAdminDialog(true)
   }, [data.adminRequired])
+  if (data.accessRequired) return <AccessGate />
   if (!verified) return <AdminGate onVerified={() => { setVerified(true); data.refresh() }} />
   const version = data.config?.config?.version || '1.1.5'
   return (

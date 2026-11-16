@@ -165,29 +165,31 @@ function inspectGitSource(repoRoot: string): GitSourceState {
   return { hostname: os.hostname(), repoRoot: actualRoot, commit, clean: changes.length === 0, changes }
 }
 
-// Builds every tracked plugin artifact before the preview freezes a release.
+// Builds every tracked runtime and browser artifact before freezing a release.
 function buildTrackedArtifacts(repoRoot: string): void {
   if (process.platform === 'win32') {
-    execFileSync('cmd.exe', ['/d', '/s', '/c', 'npm.cmd run build:plugins'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
+    execFileSync('cmd.exe', ['/d', '/s', '/c', 'npm.cmd run build:all'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
     return
   }
-  execFileSync('npm', ['run', 'build:plugins'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
+  execFileSync('npm', ['run', 'build:all'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 60 * 1000, maxBuffer: 16 * 1024 * 1024 })
 }
 
 // Allows build output changes only inside the release payload's declared generated paths.
 function isAllowedBuildChange(statusLine: string): boolean {
   const paths = String(statusLine || '').slice(3).split(' -> ').map(value => value.replace(/\\/g, '/'))
   return paths.length > 0 && paths.every(relativePath => {
+    if (relativePath.startsWith('packages/agent-console/dist/')) return true
     if (relativePath.startsWith('packages/koishi-plugin-dashboard/frontend/dist/')) return true
     if (['packages/koishi-plugin-dashboard/index.js', 'packages/koishi-plugin-dashboard/index.d.ts', 'packages/koishi-plugin-dashboard/standalone.js', 'packages/koishi-plugin-dashboard/standalone.d.ts'].includes(relativePath)) return true
     return RELEASE_PACKAGES.some(packageName => relativePath.startsWith(`packages/${packageName}/lib/`))
   })
 }
 
-// Returns the dependency directories that the existing root and frontend build scripts use.
+// Returns the dependency directories required by the runtime and browser builds.
 function getBuildDependencyLinks(repoRoot: string, worktreeRoot: string): Array<{ source: string, target: string }> {
   return [
     { source: path.join(repoRoot, 'node_modules'), target: path.join(worktreeRoot, 'node_modules') },
+    { source: path.join(repoRoot, 'packages', 'agent-console', 'node_modules'), target: path.join(worktreeRoot, 'packages', 'agent-console', 'node_modules') },
     { source: path.join(repoRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'node_modules'), target: path.join(worktreeRoot, 'packages', 'koishi-plugin-dashboard', 'frontend', 'node_modules') },
   ]
 }

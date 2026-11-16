@@ -104,6 +104,10 @@ function testPreviewComparison() {
   assert.strictEqual(remoteRelease.isSelfDeploy('bot-host', 'root@bot-host', 'bot-host'), true)
   assert.strictEqual(remoteRelease.isSelfDeploy('source-host', 'root@target-host', 'target-host'), false)
   assert.strictEqual(remoteRelease.isAllowedBuildChange(' M packages/koishi-plugin-dashboard/frontend/dist/index.html'), true)
+  assert.strictEqual(remoteRelease.isAllowedBuildChange(' M packages/agent-console/dist/index.html'), true)
+  assert.strictEqual(remoteRelease.isAllowedBuildChange('?? packages/agent-console/dist/assets/new-build.js'), true)
+  assert.strictEqual(remoteRelease.isAllowedBuildChange(' M packages/agent-console/src/main.tsx'), false)
+  assert.strictEqual(remoteRelease.isAllowedBuildChange('?? packages/agent-console/node_modules'), false)
   assert.strictEqual(remoteRelease.isAllowedBuildChange(' M packages/koishi-plugin-dashboard/lib/routes/deploy.js'), true)
   assert.strictEqual(remoteRelease.isAllowedBuildChange(' M packages/koishi-plugin-dashboard/src/lib/routes/deploy.ts'), false)
   assert.strictEqual(remoteRelease.isAllowedBuildChange('?? node_modules'), false)
@@ -154,6 +158,7 @@ function testDetachedBuild(tempRoot) {
   const releasesRoot = path.join(tempRoot, 'releases')
   const built = remoteRelease.buildFrozenRelease(REPO_ROOT, worktreeRoot, releasesRoot, commit)
   assert(built.release, `committed build artifacts changed: ${built.changes.join(', ')}`)
+  assert(built.release.files.some(item => item.path === 'packages/agent-console/dist/index.html'), 'detached build omitted the Agent Console')
   assert.strictEqual(built.release.commit, commit)
   assert.strictEqual(fs.existsSync(worktreeRoot), false)
   const after = spawnSync('git', ['status', '--porcelain=v1', '--untracked-files=all'], { cwd: REPO_ROOT, encoding: 'utf8' }).stdout

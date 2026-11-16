@@ -90,6 +90,7 @@ function mockAgentConfig() {
   })
 }
 
+/** Mocks access/admin gates while enforcing the backend's access-token contract. */
 async function installApiMock(page, state) {
   await page.setRequestInterception(true)
   page.on('request', async request => {
@@ -100,12 +101,22 @@ async function installApiMock(page, state) {
     let response
     if (method === 'GET' && pathname === '/agent/config') {
       state.configRequests += 1
-      response = state.configRequests === 1
+      response = state.accessRequired
+        ? jsonResponse({ ok: false, code: 'AUTH_REQUIRED', message: 'login required' }, 401)
+        : state.configRequests === 1
         ? jsonResponse({ ok: false, code: 'ADMIN_REQUIRED', message: '需要管理员密码' }, 403)
         : mockAgentConfig()
     } else if (method === 'POST' && pathname === '/admin/verify') {
       state.adminVerifyRequests += 1
-      response = ok({ token: 'smoke-admin-token', accessToken: 'smoke-access-token' })
+      response = request.headers().authorization === 'Bearer smoke-access-token'
+        ? ok({ token: 'smoke-admin-token' })
+        : jsonResponse({ ok: false, code: 'AUTH_REQUIRED', message: 'login required' }, 401)
+    } else if (method === 'POST' && pathname === '/agent/chat') {
+      response = ok({ async: true, taskId: 'smoke-task', status: 'accepted', message: '后台处理中' })
+    } else if (method === 'GET' && pathname === '/agent/tasks/smoke-task') {
+      state.taskPollRequests += 1
+      const done = !state.taskNeverCompletes && state.taskPollRequests >= 2
+      response = ok({ task: { id: 'smoke-task', status: done ? 'done' : 'running', result: { ok: true, reply: done ? '703' : '', pendingId: null, toolCalls: done ? 1 : 0, warnings: [] } } })
     } else if (method === 'GET' && pathname === '/tools/pending') {
       response = ok({ pending: [] })
     } else if (method === 'GET' && pathname === '/agent/sessions') {
@@ -137,6 +148,7 @@ async function waitForText(page, text, timeout = 8000) {
   await page.waitForFunction(value => document.body && document.body.innerText.includes(value), { timeout }, text)
 }
 
+/** Exercises admin reauthentication and expired-access login guidance in a real browser. */
 async function main() {
   const browserPath = findBrowserExecutable()
   if (!browserPath) throw new Error('No Chrome/Edge executable found. Set PUPPETEER_EXECUTABLE_PATH to run agent console smoke.')
@@ -144,7 +156,7 @@ async function main() {
   let browser = null
   const consoleErrors = []
   const responseErrors = []
-  const state = { configRequests: 0, adminVerifyRequests: 0 }
+  const state = { configRequests: 0, adminVerifyRequests: 0, accessRequired: false, taskPollRequests: 0, taskNeverCompletes: false }
   try {
     await waitForServer(vite)
     browser = await puppeteer.launch({
@@ -158,20 +170,20 @@ async function main() {
       const status = response.status()
       if (status < 400) return
       const pathname = new URL(response.url()).pathname
-      if (status === 403 && pathname === '/dashboard/api/agent/config') return
+      if ([401, 403].includes(status) && pathname === '/dashboard/api/agent/config') return
       if (status === 404 && pathname.endsWith('/favicon.ico')) return
       responseErrors.push(`${status} ${response.url()}`)
     })
     page.on('console', msg => {
       const text = msg.text()
-      if (/Failed to load resource: the server responded with a status of (403|404)/.test(text)) return
+      if (/Failed to load resource: the server responded with a status of (401|403|404)/.test(text)) return
       if (msg.type() === 'error') consoleErrors.push(text)
     })
     page.on('pageerror', error => consoleErrors.push(error.message))
     await page.setViewport({ width: 1440, height: 1000, deviceScaleFactor: 1 })
     await page.evaluateOnNewDocument(() => {
       localStorage.setItem('dashboard_server_token', JSON.stringify({ token: 'stale-smoke-token', expires: Date.now() + 3600000 }))
-      localStorage.setItem('dashboard_token', 'stale-access-token')
+      localStorage.setItem('dashboard_token', 'smoke-access-token')
     })
     await page.goto(BASE_URL, { waitUntil: 'networkidle0' })
     await waitForText(page, '管理员密码已过期')
@@ -186,6 +198,25 @@ async function main() {
     await page.waitForFunction(() => !document.querySelector('.admin-dialog-card'), { timeout: 8000 })
     if (state.configRequests < 2) throw new Error(`expected config refresh after admin verify, got ${state.configRequests}`)
     if (state.adminVerifyRequests !== 1) throw new Error(`expected one admin verify request, got ${state.adminVerifyRequests}`)
+    await page.type('textarea', '37*19')
+    await page.click('.composer-actions button')
+    await waitForText(page, '703')
+    if (state.taskPollRequests !== 2) throw new Error(`expected task completion polling, got ${state.taskPollRequests}`)
+    state.taskNeverCompletes = true
+    await page.type('textarea', '继续计算')
+    await page.click('.composer-actions button')
+    await page.waitForFunction(() => document.querySelector('.composer-actions button')?.textContent === '发送中')
+    await page.waitForResponse(response => response.url().includes('/agent/tasks/smoke-task'))
+    await page.evaluate(() => [...document.querySelectorAll('nav button')].find(button => button.textContent.trim() === '环境变量').click())
+    await waitForText(page, '环境变量')
+    const pollsAfterNavigation = state.taskPollRequests
+    await new Promise(resolve => setTimeout(resolve, 1200))
+    if (state.taskPollRequests !== pollsAfterNavigation) throw new Error('task polling continued after leaving chat')
+    state.accessRequired = true
+    await page.reload({ waitUntil: 'networkidle0' })
+    await waitForText(page, '请先登录 Dashboard，再进入 Agent 工作台。')
+    const loginTarget = await page.$eval('.gate-panel a', link => link.getAttribute('href'))
+    if (loginTarget !== '/dashboard/') throw new Error(`unexpected Dashboard login target: ${loginTarget}`)
     if (responseErrors.length) throw new Error('Browser response errors:\n' + responseErrors.join('\n'))
     if (consoleErrors.length) throw new Error('Browser console errors:\n' + consoleErrors.join('\n'))
     console.log('agent console admin smoke passed')

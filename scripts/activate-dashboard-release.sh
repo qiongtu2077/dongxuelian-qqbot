@@ -41,7 +41,7 @@ case "$RESULT_FILE" in
   *) echo "result file must stay in data/deploy-tasks" >&2; exit 2 ;;
 esac
 
-PACKAGES="koishi-plugin-dashboard koishi-plugin-dongxuelian-ai koishi-plugin-dongxuelian-help koishi-plugin-group-name-at koishi-plugin-defense koishi-plugin-local-video-sender koishi-plugin-group-leave-notice koishi-plugin-dongxuelian-poke koishi-plugin-pet-bridge koishi-plugin-daily-report"
+PACKAGES="agent-console koishi-plugin-dashboard koishi-plugin-dongxuelian-ai koishi-plugin-dongxuelian-help koishi-plugin-group-name-at koishi-plugin-defense koishi-plugin-local-video-sender koishi-plugin-group-leave-notice koishi-plugin-dongxuelian-poke koishi-plugin-pet-bridge koishi-plugin-daily-report"
 
 # Writes only release metadata and a bounded error string to the durable progress file.
 write_result() {
