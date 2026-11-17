@@ -29,9 +29,10 @@
       <div v-if="resultMsg" class="msg" :class="resultMsg.type" style="margin-top:16px">{{ resultMsg.text }}</div>
     </div>
 
-    <div v-if="selectedProtocol !== 'sl'" class="card">
+    <div v-if="viewedProtocol !== 'sl'" class="card">
       <div>
         <h2 style="margin:0 0 16px">网络协议与终端配置</h2>
+        <p v-if="selectedProtocol !== 'napcat'" style="font-size:13px;color:var(--text3)">当前仅查看 NapCat；请在顶部点击“启动 / 重启”后再进行 NapCat 登录或重启。</p>
         <div style="font-size:14px;color:var(--text2);margin-bottom:20px;display:flex;align-items:center;gap:8px">
           当前挂载 QQ 标识：<span class="badge running" style="font-family:monospace;font-size:14px">{{ status.qq || '未挂载' }}</span>
         </div>
@@ -69,7 +70,7 @@
             </div>
           </div>
           <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-            <button class="btn btn-sm" type="button" @click="doRestartNapcat" :disabled="restartingNapcat" title="机器人运行时会同步重启并恢复其 OneBot 连接">{{ restartingNapcat ? '恢复连接中...' : '重启 NapCat' }}</button>
+            <button class="btn btn-sm" type="button" @click="doRestartNapcat" :disabled="restartingNapcat || protocolBusy || selectedProtocol !== 'napcat'" title="机器人运行时会同步重启并恢复其 OneBot 连接">{{ restartingNapcat ? '恢复连接中...' : '重启 NapCat' }}</button>
             <a href="http://localhost:6099/webui/" target="_blank" class="btn btn-ghost btn-sm" style="text-decoration:none">→ 打开 WebUI 控制台扫码</a>
           </div>
           <div v-if="napcatRestartMsg" style="margin-top:8px;font-size:13px" :style="{color: napcatRestartMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ napcatRestartMsg.text }}</div>
@@ -135,7 +136,7 @@ import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 import ParticipationControls from './ParticipationControls.vue'
 import SnowLumaLogin from './SnowLumaLogin.vue'
-import { selectedProtocol } from '../services/protocol-state'
+import { selectedProtocol, viewedProtocol, protocolBusy } from '../services/protocol-state'
 
 interface BotStatusData {
   loading: boolean
@@ -405,7 +406,7 @@ export default {
       maintLoading.value = false
     }
 
-    return { selectedProtocol, status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, restartingNapcat, napcatRestartMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, doRestartNapcat, toggleMaintenance, saveThrottleConfig, sshUser }
+    return { selectedProtocol, viewedProtocol, protocolBusy, status, acting, pendingVerify, resultMsg, maintenanceOn, maintLoading, throttleMax, savingThrottle, throttleMsg, napcatToken, showNapcatToken, displayNapcatToken, copiedMsg, restartingNapcat, napcatRestartMsg, sshHost, sshHostDisplay, newSelfId, savingSelfId, selfIdMsg, copyText, copyValue, requestQQToken, saveSSHHost, onSSHHostBlur, saveSelfId, doStart, doStop, doRestartNapcat, toggleMaintenance, saveThrottleConfig, sshUser }
   }
 }
 </script>

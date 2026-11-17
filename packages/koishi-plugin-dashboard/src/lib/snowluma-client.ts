@@ -45,7 +45,7 @@ function requestApi(endpoint: string, body?: unknown, authenticated = true): Pro
 
 /** 使用安装时生成的独立凭据登录，仅缓存在服务端，不返回到浏览器。 */
 async function ensureSession(): Promise<void> {
-  if (selectedProtocol() !== 'sl') throw new Error('请先切换到 SnowLuma')
+  if (selectedProtocol() !== 'sl') throw new Error('请先在顶部选择 SnowLuma 并点击“启动 / 重启”')
   const state = await serviceState('lian-snowluma.service')
   if (state.state !== 'active') throw new Error('SnowLuma 服务未运行，请从顶部菜单重新启动')
   if (sessionToken && Date.now() < sessionUntil) return

@@ -17,7 +17,7 @@
     <div class="app" :class="{ 'sidebar-collapsed': !sidebarExpanded }">
       <div class="app-head">
         <h1>LianBoard 控制中心</h1>
-        <ProtocolSwitcher @switched="doSwitchTab('control', true)" />
+        <ProtocolSwitcher @viewed="doSwitchTab('control', true)" @switched="doSwitchTab('control', true)" />
         <span class="active-view-label">{{ activeTabLabel }}</span>
       </div>
       <ThemeSwitcher :visible="themePickerOpen" :themes="themes" :current="theme" @select="setTheme" @close="themePickerOpen = false" />
@@ -164,15 +164,15 @@ defineOptions({ name: 'DashboardApp' })
     provide('showAdminDialog', showAdminDialog)
     provide('isElectronDeployer', isElectronDeployer)
 
-    // 服务切换完成后必须展示登录页，不受普通导航的短暂防连点锁影响。
-    function doSwitchTab(id: string, confirmedProtocolChange = false) {
+    // 查看协议或完成启停后展示终端页，不受普通导航的短暂防连点锁影响。
+    function doSwitchTab(id: string, protocolNavigation = false) {
       if (id === 'agent') {
         window.location.href = '/agent/'
         return
       }
       if (id === activeTab.value) return
       if (!tabs.value.some(item => item.id === id)) return
-      if (tabSwitchLocked && !confirmedProtocolChange) return
+      if (tabSwitchLocked && !protocolNavigation) return
       tabSwitchLocked = true
       if (tabSwitchUnlockTimer) clearTimeout(tabSwitchUnlockTimer)
       tabSwitchUnlockTimer = setTimeout(() => { tabSwitchLocked = false; tabSwitchUnlockTimer = null }, 150)

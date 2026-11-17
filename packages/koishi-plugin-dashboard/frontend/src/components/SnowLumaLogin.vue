@@ -1,15 +1,16 @@
 <template>
   <div class="card sl-login">
-    <div class="sl-heading"><h2>SnowLuma 登录</h2><button class="btn btn-sm btn-ghost" :disabled="busy || protocolBusy" @click="loadLogin">刷新登录状态</button></div>
-    <p class="hint">切换到 SL 后，NapCat 已停止。请依次确认协议、登录 QQ、完成机器人连接。</p>
+    <div class="sl-heading"><h2>SnowLuma 登录</h2><button class="btn btn-sm btn-ghost" :disabled="busy || protocolBusy || selectedProtocol !== 'sl'" @click="loadLogin">刷新登录状态</button></div>
+    <p v-if="selectedProtocol !== 'sl'" class="hint">当前仅查看 SnowLuma；请在顶部点击“启动 / 重启”后再登录。</p>
+    <p v-else class="hint">请依次确认协议、登录 QQ、完成机器人连接。</p>
     <div v-if="message" class="msg" :class="failure ? 'err' : 'ok'" role="status">{{ message }}</div>
-    <div v-if="agreements?.consentRequired" class="sl-step">
+    <div v-if="selectedProtocol === 'sl' && agreements?.consentRequired" class="sl-step">
       <h3>1. 阅读并确认协议</h3>
       <details v-for="document in agreements.documents" :key="document.id"><summary>{{ document.title }}</summary><pre>{{ document.text }}</pre></details>
       <label class="consent-check"><input v-model="accepted" type="checkbox" />我已阅读并同意上述用户协议与隐私政策</label>
       <button class="btn" :disabled="!accepted || busy || protocolBusy" @click="acceptAgreements">确认并继续</button>
     </div>
-    <template v-else-if="agreements">
+    <template v-else-if="selectedProtocol === 'sl' && agreements">
       <div class="sl-step">
         <h3>1. 在专用桌面登录机器人 QQ</h3>
         <p class="hint">点击打开桌面后，使用手机 QQ 扫码或操作 QQ 登录窗口。扫码、设备验证和账号选择均在下方桌面内完成。</p>
@@ -34,7 +35,7 @@ import { inject, onMounted, onUnmounted, onActivated, onDeactivated, ref, watch 
 import { fetchSlLogin, acceptSlConsent, connectSl, openSlDesktop } from '../api'
 import type { ApiResult, ShowAdminDialog } from '../types'
 import { asRecord, messageFromData } from '../types'
-import { selectedProtocol, protocolBusy } from '../services/protocol-state'
+import { selectedProtocol, viewedProtocol, protocolBusy } from '../services/protocol-state'
 
 interface Agreements { version: string; consentRequired: boolean; documents: { id: string; title: string; text: string }[] }
 interface Account { uin: string; nickname: string }
@@ -57,11 +58,12 @@ function check(result: ApiResult, retry: () => void | Promise<void>): boolean {
   return true
 }
 
-/** 获取真实账号和协议确认状态；切换期间暂停轮询。 */
+/** 只在查看已启用的 SL 时读取登录状态；浏览其他协议不触发登录请求。 */
 async function loadLogin() {
-  if (selectedProtocol.value !== 'sl' || protocolBusy.value) return
+  if (selectedProtocol.value !== 'sl' || viewedProtocol.value !== 'sl' || protocolBusy.value) return
   const result = await fetchSlLogin()
-  if (!check(result, loadLogin) || selectedProtocol.value !== 'sl') return
+  if (selectedProtocol.value !== 'sl' || viewedProtocol.value !== 'sl' || protocolBusy.value) return
+  if (!check(result, loadLogin)) return
   const data = asRecord(result.data)
   agreements.value = data.agreements as Agreements
   accounts.value = data.accounts as Account[]

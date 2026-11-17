@@ -158,9 +158,9 @@ export async function switchProtocol(provider: Protocol) {
   })
 }
 
-/** 旧 NapCat 启动入口必须服从同一选择，避免绕过顶部菜单。 */
+/** 旧 NapCat 启动入口必须服从已启用协议，菜单浏览不能放行启动。 */
 export function assertNapcatSelected(): void {
-  if (process.platform === 'linux' && selectedProtocol() !== 'napcat') throw new Error('当前使用 SnowLuma，请先在顶部菜单切换到 NapCat')
+  if (process.platform === 'linux' && selectedProtocol() !== 'napcat') throw new Error('当前使用 SnowLuma，请先在顶部选择 NapCat 并点击“启动 / 重启”')
 }
 
 /** 将当前实例数据路径提供给登录适配，避免读取另一个项目。 */

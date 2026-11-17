@@ -423,27 +423,55 @@ async function verifyMobileSidebar(page) {
   await waitForText(page, '指令速查')
 }
 
-/** 验证顶部双向切换、协议确认门禁、SL 登录和 NapCat 界面的恢复。 */
+/** 验证双向菜单浏览无启停请求，明确启动后再验证 SL 登录和 NapCat 恢复。 */
 async function verifyProtocolSwitch(page) {
-  await page.select('#qq-protocol', 'sl')
-  await waitForText(page, 'SnowLuma 登录')
-  await waitForText(page, '阅读并确认协议')
-  const disabled = await page.$eval('.sl-login button.btn:not(.btn-ghost)', button => button.disabled)
-  if (!disabled) throw new Error('Agreement must be explicitly accepted before continuing')
-  await page.click('.consent-check input')
-  await clickText(page, '确认并继续')
-  await waitForText(page, '完成登录并连接 OneBot')
-  await clickText(page, '完成登录并连接 OneBot')
-  await waitForText(page, '机器人 OneBot 连接已恢复')
-  await page.screenshot({ path: path.join(ROOT, 'tmp', 'sl-login-browser.png'), fullPage: true })
-  await page.setViewport({ width: 380, height: 900, deviceScaleFactor: 1 })
-  await ensureSidebarCollapsed(page)
-  await page.waitForFunction(() => document.documentElement.scrollWidth <= window.innerWidth)
-  await page.screenshot({ path: path.join(ROOT, 'tmp', 'sl-login-mobile.png'), fullPage: true })
-  await page.setViewport({ width: 1440, height: 1100, deviceScaleFactor: 1 })
-  await page.select('#qq-protocol', 'napcat')
-  await waitForText(page, '网络协议与终端配置')
-  await page.waitForFunction(() => document.querySelector('#qq-protocol').value === 'napcat')
+  const switches = []
+  let loginRequests = 0
+  // 记录实际 HTTP 请求，防止菜单浏览重新引入协议启停副作用。
+  const trackProtocolRequest = request => {
+    const pathname = new URL(request.url()).pathname
+    if (request.method() === 'POST' && pathname === '/dashboard/api/protocol/switch') switches.push(JSON.parse(request.postData()).provider)
+    if (pathname === '/dashboard/api/protocol/sl/login') loginRequests += 1
+  }
+  page.on('request', trackProtocolRequest)
+  try {
+    await page.select('#qq-protocol', 'sl')
+    await waitForText(page, 'SnowLuma 登录')
+    await waitForText(page, '当前仅查看 SnowLuma')
+    if (switches.length || loginRequests) throw new Error('Browsing SnowLuma must not switch protocols or request its login API')
+    await page.select('#qq-protocol', 'napcat')
+    await waitForText(page, '网络协议与终端配置')
+    if (switches.length) throw new Error('Returning to NapCat must not restart either protocol')
+    await page.select('#qq-protocol', 'sl')
+    await clickText(page, '启动 / 重启', '.protocol-switcher button')
+    await waitForText(page, '阅读并确认协议')
+    if (switches.join(',') !== 'sl') throw new Error('Starting SnowLuma must send exactly one explicit switch request')
+    const disabled = await page.$eval('.sl-login button.btn:not(.btn-ghost)', button => button.disabled)
+    if (!disabled) throw new Error('Agreement must be explicitly accepted before continuing')
+    await page.click('.consent-check input')
+    await clickText(page, '确认并继续')
+    await waitForText(page, '完成登录并连接 OneBot')
+    await clickText(page, '完成登录并连接 OneBot')
+    await waitForText(page, '机器人 OneBot 连接已恢复')
+    await page.screenshot({ path: path.join(ROOT, 'tmp', 'sl-login-browser.png'), fullPage: true })
+    await page.setViewport({ width: 380, height: 900, deviceScaleFactor: 1 })
+    await ensureSidebarCollapsed(page)
+    await page.waitForFunction(() => document.documentElement.scrollWidth <= window.innerWidth)
+    await page.screenshot({ path: path.join(ROOT, 'tmp', 'sl-login-mobile.png'), fullPage: true })
+    await page.setViewport({ width: 1440, height: 1100, deviceScaleFactor: 1 })
+    // 等待 .app 的宽度和边距过渡结束，避免按钮坐标在点击前移动。
+    await page.waitForFunction(() => document.querySelector('.app').getAnimations().length === 0)
+    await page.select('#qq-protocol', 'napcat')
+    await waitForText(page, '网络协议与终端配置')
+    await waitForText(page, '当前仅查看 NapCat')
+    if (switches.join(',') !== 'sl') throw new Error('Browsing NapCat must keep SnowLuma running')
+    const restartDisabled = await page.evaluate(() => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '重启 NapCat').disabled)
+    if (!restartDisabled) throw new Error('Inactive NapCat must not expose a restart action')
+    await clickText(page, '启动 / 重启', '.protocol-switcher button')
+    await page.waitForFunction(() => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '重启 NapCat')?.disabled === false)
+    if (switches.join(',') !== 'sl,napcat') throw new Error('Starting NapCat must send exactly one explicit switch request')
+    await page.waitForFunction(() => document.querySelector('#qq-protocol').value === 'napcat')
+  } finally { page.off('request', trackProtocolRequest) }
 }
 
 /** Runs the complete mocked Dashboard click-smoke scenario. */

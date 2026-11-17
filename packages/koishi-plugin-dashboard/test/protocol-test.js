@@ -75,7 +75,7 @@ async function testSwitch(root) {
     assert.equal(status.sl.state, 'active')
     assert.equal(status.napcat.pid, 0)
     assert.equal(status.conflict, false)
-    assert.throws(() => fixture.runtime.assertNapcatSelected(), /先在顶部菜单切换/)
+    assert.throws(() => fixture.runtime.assertNapcatSelected(), /选择 NapCat 并点击“启动 \/ 重启”/)
     assert.equal(JSON.parse(fs.readFileSync(path.join(root, 'qq-protocol.json'))).provider, 'sl')
     await fixture.runtime.switchProtocol('napcat')
     assert.equal(fixture.states['lian-snowluma.service'], 'inactive')
