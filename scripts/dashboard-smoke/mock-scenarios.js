@@ -423,7 +423,7 @@ async function verifyMobileSidebar(page) {
   await waitForText(page, '指令速查')
 }
 
-/** 验证双向菜单浏览无启停请求，明确启动后再验证 SL 登录和 NapCat 恢复。 */
+/** 验证协议入口仅在终端控制显示，双向浏览无启停请求，并覆盖明确启动和登录。 */
 async function verifyProtocolSwitch(page) {
   const switches = []
   let loginRequests = 0
@@ -435,6 +435,12 @@ async function verifyProtocolSwitch(page) {
   }
   page.on('request', trackProtocolRequest)
   try {
+    for (const label of ['功能地图', '莲莲图集']) {
+      await clickSidebarTab(page, label)
+      if (await page.$('.protocol-switcher')) throw new Error(`Protocol controls must be absent from ${label}`)
+    }
+    await clickSidebarTab(page, '终端控制')
+    await page.waitForSelector('#qq-protocol', { visible: true })
     await page.select('#qq-protocol', 'sl')
     await waitForText(page, 'SnowLuma 登录')
     await waitForText(page, '当前仅查看 SnowLuma')
@@ -471,6 +477,11 @@ async function verifyProtocolSwitch(page) {
     await page.waitForFunction(() => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '重启 NapCat')?.disabled === false)
     if (switches.join(',') !== 'sl,napcat') throw new Error('Starting NapCat must send exactly one explicit switch request')
     await page.waitForFunction(() => document.querySelector('#qq-protocol').value === 'napcat')
+    await clickSidebarTab(page, '莲莲图集')
+    if (await page.$('.protocol-switcher')) throw new Error('Leaving terminal control must remove protocol controls and their status message')
+    await clickSidebarTab(page, '终端控制')
+    await page.waitForSelector('#qq-protocol', { visible: true })
+    if (switches.join(',') !== 'sl,napcat') throw new Error('Navigating between panels must not restart either protocol')
   } finally { page.off('request', trackProtocolRequest) }
 }
 

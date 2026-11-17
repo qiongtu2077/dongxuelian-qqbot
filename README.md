@@ -216,7 +216,7 @@ http://服务器IP:5150/dashboard/
 - 本地 Electron 模式：由 Windows 部署器打开时自动绕过 Web 密码页，适合普通用户本地部署。
 - Bot 控制：查看状态、启动/停止 Koishi、本地停止、维护模式、每群总开关、全局私聊开关、节流配置、日志配置。
 - QQ 管理：展示 NapCat Token、代理 NapCat WebUI、查看或修改机器人 QQ 号、重启 NapCat。
-- Linux 协议切换：控制台顶部菜单只切换 NapCat 或 SnowLuma (SL) 的查看面板，不启停服务；点击“启动 / 重启”后才完整停止当前协议并启动所查看协议，systemd 门禁同时阻止旧入口与开机自启产生双登录。SL 使用 v2.4.2 独立运行时与 QQ 数据目录，控制台内完成协议确认、远程桌面扫码、账号核对、OneBot 配置和机器人重连。安装脚本为 `scripts/install-snowluma-service.sh`；运行时和 noVNC 静态文件需先准备在 `/root/SnowLuma/`，不覆盖现有 NapCat 安装与登录数据。
+- Linux 协议切换：QQ 协议菜单和启停入口仅在“终端控制”页顶部显示。菜单只切换 NapCat 或 SnowLuma (SL) 的查看面板，不启停服务；点击“启动 / 重启”后才完整停止当前协议并启动所查看协议，systemd 门禁同时阻止旧入口与开机自启产生双登录。SL 使用 v2.4.2 独立运行时与 QQ 数据目录，控制台内完成协议确认、远程桌面扫码、账号核对、OneBot 配置和机器人重连。安装脚本为 `scripts/install-snowluma-service.sh`；运行时和 noVNC 静态文件需先准备在 `/root/SnowLuma/`，不覆盖现有 NapCat 安装与登录数据。
 - Linux 缓存维护：发布时安装每日 04:00（随机延后 0～10 分钟）的 QQ 缓存清理任务，同时扫描 `/root/.config/QQ` 与 `/root/SnowLuma/home/.config/QQ`。只清账号目录内 `nt_data/{Pic,Emoji,Video,log}` 的超期文件，保留数据库和 Bot 数据；手动运行 `sh scripts/qq-cache-cleaner.sh` 默认仅统计。日志轮转同时覆盖 Koishi、NapCat 与 `snowluma.log`，每份超过 50 MB 时轮转，保留 14 份。
 - Linux 发布包回收：发布成功并通过稳定性检查后，只保留当前版本和上一份有成功回执、清单校验通过的版本；清理其他旧发布目录，以及早于本次成功发布且已搁置一小时的上传残留。回收使用同一把发布锁，失败只记录维护错误。手动预览使用 `node scripts/cleanup-dashboard-releases.js /root/koishi-app`，增加 `--apply` 才实际删除。
 - 现有 Linux 发布入口可运行 `KOISHI_APP_DIR=/root/koishi-app sh scripts/install-release-retention.sh` 安装成功回收钩子；`lian-release-*.service` 成功结束后触发独立的 `lian-package-retention.service`，无需重启现有应用。正常版本更新也会同步该钩子；回收服务使用不同名称前缀，避免循环触发。

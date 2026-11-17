@@ -17,7 +17,7 @@
     <div class="app" :class="{ 'sidebar-collapsed': !sidebarExpanded }">
       <div class="app-head">
         <h1>LianBoard 控制中心</h1>
-        <ProtocolSwitcher @viewed="doSwitchTab('control', true)" @switched="doSwitchTab('control', true)" />
+        <ProtocolSwitcher v-if="activeTab === 'control'" @viewed="doSwitchTab('control', true)" @switched="doSwitchTab('control', true)" />
         <span class="active-view-label">{{ activeTabLabel }}</span>
       </div>
       <ThemeSwitcher :visible="themePickerOpen" :themes="themes" :current="theme" @select="setTheme" @close="themePickerOpen = false" />
