@@ -16,6 +16,8 @@ const CHECK_FILES = [
   'packages/koishi-plugin-dongxuelian-ai/lib/core/model-thinking.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/participation-policy.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/participation-guard.js',
+  'packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/sl-onebot-reconnect.js',
+  'packages/koishi-plugin-dongxuelian-ai/test/sl-onebot-reconnect-test.js',
   'packages/koishi-plugin-dashboard/lib/routes/participation.js',
   'packages/koishi-plugin-dashboard/lib/group-directory.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/behavior/rare-provocation.js',

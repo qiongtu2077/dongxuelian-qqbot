@@ -41,6 +41,7 @@ async function runCoreContracts(context) {
   const syntaxFiles = [
     path.join(LIB, 'core', 'participation-policy.js'),
     path.join(LIB, 'lifecycle', 'participation-guard.js'),
+    path.join(LIB, 'lifecycle', 'sl-onebot-reconnect.js'),
     path.resolve(LIB, '../../koishi-plugin-dashboard/lib/routes/participation.js'),
     path.resolve(LIB, '../../koishi-plugin-dashboard/lib/group-directory.js'),
     path.join(LIB, 'core', 'image-content.js'),
@@ -238,6 +239,7 @@ async function runCoreContracts(context) {
   const functions = []
   duplicateScanFiles.push('behavior/rare-provocation.js')
   duplicateScanFiles.push('core/participation-policy.js', 'lifecycle/participation-guard.js')
+  duplicateScanFiles.push('lifecycle/sl-onebot-reconnect.js')
   duplicateScanFiles.push('core/model-thinking.js')
   duplicateScanFiles.push('../../koishi-plugin-dashboard/lib/routes/participation.js')
   duplicateScanFiles.push('../../koishi-plugin-dashboard/lib/group-directory.js')

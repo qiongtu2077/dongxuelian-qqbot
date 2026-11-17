@@ -24,6 +24,7 @@ const satoriCore = require('@satorijs/core')
 const KoishiSession = satoriCore.Session
 const KoishiBot = satoriCore.Bot
 const { installParticipationGuard } = require('./lifecycle/participation-guard') as typeof import('./lifecycle/participation-guard')
+const { installSlOnebotReconnect } = require('./lifecycle/sl-onebot-reconnect') as typeof import('./lifecycle/sl-onebot-reconnect')
 const { getModelQuotaReply } = require('./reply/model-quota') as typeof import('./reply/model-quota')
 const {
   installSessionCompatibility,
@@ -479,6 +480,7 @@ function readOneBotRawEvent(session: { event?: unknown }): Record<string, unknow
 // 注册插件生命周期与消息处理中间件。
 function apply(ctx: IndexContext): void {
   installParticipationGuard(ctx as Parameters<typeof installParticipationGuard>[0])
+  installSlOnebotReconnect(ctx as unknown as Parameters<typeof installSlOnebotReconnect>[0])
   const githubPreview = new GithubPreviewRuntime(undefined, { log: message => ctx.logger('github-preview').warn(message) })
   ctx.on('dispose', () => githubPreview.dispose())
   registerCapabilityFailureContext(ctx as Parameters<typeof registerCapabilityFailureContext>[0])

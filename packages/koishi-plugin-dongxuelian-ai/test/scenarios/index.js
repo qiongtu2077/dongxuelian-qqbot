@@ -8,6 +8,7 @@ const essence = require('./essence.test')
 const chat = require('./chat.test')
 const repeat = require('./repeat.test')
 const participation = require('./participation.test')
+const slOnebotReconnect = require('./sl-onebot-reconnect.test')
 const sticker = require('./sticker.test')
 const sensitive = require('./sensitive.test')
 const fallback = require('./fallback.test')
@@ -44,6 +45,7 @@ const SCENARIOS = [
   chat,
   repeat,
   participation,
+  slOnebotReconnect,
   sticker,
   sensitive,
   fallback,

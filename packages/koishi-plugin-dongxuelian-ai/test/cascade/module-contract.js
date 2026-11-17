@@ -53,6 +53,7 @@ async function runModuleContract(context) {
     modelThinking: path.join(LIB, 'core', 'model-thinking'),
     participationPolicy: path.join(LIB, 'core', 'participation-policy'),
     participationGuard: path.join(LIB, 'lifecycle', 'participation-guard'),
+    slOnebotReconnect: path.join(LIB, 'lifecycle', 'sl-onebot-reconnect'),
     dashboardParticipation: path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'routes', 'participation'),
     dashboardGroupDirectory: path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'lib', 'group-directory'),
     redactor: path.join(LIB, 'core', 'redactor'),
@@ -262,6 +263,7 @@ async function runModuleContract(context) {
   const expectedExports = {
     participationPolicy: ['validateParticipationPolicy', 'readParticipationPolicy', 'isGroupParticipationEnabled', 'isGroupAbusiveEnabled', 'isSessionParticipationEnabled', 'isOneBotActionAllowed'],
     participationGuard: ['installParticipationGuard', 'ParticipationDisabledError'],
+    slOnebotReconnect: ['installSlOnebotReconnect'],
     dashboardParticipation: [],
     dashboardGroupDirectory: ['readGroupNames'],
     githubModels: ['assertGithubWork', 'waitGithubWork'],
