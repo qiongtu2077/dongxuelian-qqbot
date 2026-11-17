@@ -240,6 +240,10 @@ STAGE="prepare_qq_cache_cleaner"
 write_result running "$STAGE"
 bash "$NEXT_DIR/scripts/install-qq-cache-cleaner.sh"
 
+STAGE="prepare_release_retention"
+write_result running "$STAGE"
+KOISHI_APP_DIR="$APP_DIR" bash "$NEXT_DIR/scripts/install-release-retention.sh"
+
 STAGE="prepare_service"
 write_result running "$STAGE"
 KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$NEXT_DIR/scripts/install-dashboard-service.sh"
@@ -280,6 +284,12 @@ wait_for_runtime "$MANIFEST_HASH"
 
 STAGE="complete"
 write_result success "$STAGE"
+# 已验证新版本后再回收旧包；维护失败不回滚健康版本，仍保留日志供排查。
+trap - ERR
+trap 'release_deploy_lock; exit 1' INT TERM
+if ! node "$CURRENT_LINK/scripts/cleanup-dashboard-releases.js" "$APP_DIR" --apply --lock-token "$LOCK_TOKEN"; then
+  echo '[release-cleanup] cleanup failed; verified release remains active' >&2
+fi
 release_deploy_lock
 trap - ERR INT TERM
 exit 0

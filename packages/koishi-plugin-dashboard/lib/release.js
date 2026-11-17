@@ -136,6 +136,8 @@ function copyReleasePayload(repoRoot, releaseRoot) {
         copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
     for (const script of ['qq-cache-cleaner.sh', 'install-qq-cache-cleaner.sh'])
         copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
+    copyReleaseEntry(repoRoot, releaseRoot, 'scripts/cleanup-dashboard-releases.js', true);
+    copyReleaseEntry(repoRoot, releaseRoot, 'scripts/install-release-retention.sh', true);
     for (const packageName of RELEASE_PACKAGES) {
         const source = path.join(releaseRoot, 'packages', packageName);
         const target = path.join(releaseRoot, 'node_modules', packageName);

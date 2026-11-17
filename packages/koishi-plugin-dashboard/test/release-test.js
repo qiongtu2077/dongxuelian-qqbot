@@ -44,10 +44,16 @@ function writeExecutable(filePath, content) {
 
 // Builds a fake node launcher that preserves the host Node executable on every platform.
 function fakeNodeScript() {
+  const cleanupGuard = `if [ "$(basename -- "\${1:-}")" = cleanup-dashboard-releases.js ]; then
+  printf 'cleanup-releases\\n' >> "$TEST_APP_DIR/activation-command.log"
+  if [ "\${FAIL_RELEASE_CLEANUP:-0}" = "1" ]; then exit 49; fi
+fi`
   if (process.platform !== 'win32') return `#!/bin/bash
+${cleanupGuard}
 exec ${shellQuote(process.execPath)} "$@"
 `
   return `#!/bin/bash
+${cleanupGuard}
 args=()
 for arg in "$@"; do
   case "$arg" in
@@ -55,6 +61,12 @@ for arg in "$@"; do
     *) args+=("$arg") ;;
   esac
 done
+# Windows Node 无法直接 realpath WSL 创建的 current 链接；仅桥接夹具的这个指针，
+# 路径目标仍由 WSL 的真实 readlink 提供，回收与清单校验继续运行生产代码。
+if [ "$(basename -- "\${1:-}")" = cleanup-dashboard-releases.js ]; then
+  actual_current="$(wslpath -w "$(readlink -f "$TEST_APP_DIR/.lian-releases/current")")"
+  exec ${shellQuote(toBashPath(process.execPath))} -e 'const fs=require("fs"),path=require("path"); const original=fs.realpathSync; const pointer=path.join(process.argv[3],".lian-releases","current"); fs.realpathSync=function(file,...args){return path.resolve(String(file))===pointer?process.argv[1]:original.call(fs,file,...args)}; require(process.argv[2]).main(process.argv.slice(3))' "$actual_current" "\${args[@]}"
+fi
 exec ${shellQuote(toBashPath(process.execPath))} "\${args[@]}"
 `
 }
@@ -136,6 +148,9 @@ case "\${1:-}" in
     if [ "\${FAIL_QQ_CACHE_CLEANER:-0}" = "1" ]; then exit 48; fi
     printf 'install-qq-cache-cleaner\\n' >> "$TEST_APP_DIR/activation-command.log"
     exit 0 ;;
+  *install-release-retention.sh)
+    printf 'install-release-retention\\n' >> "$TEST_APP_DIR/activation-command.log"
+    exit 0 ;;
   *restart-bot.sh)
     if [ "\${KOISHI_APP_DIR:-}" != "$TEST_APP_DIR" ]; then exit 46; fi
     if [ "\${DONGXUELIAN_AI_DATA_DIR:-}" != "$TEST_APP_DIR/data" ]; then exit 47; fi
@@ -201,6 +216,8 @@ function testReleaseManifest(tempRoot) {
   assert(listed.has('scripts/install-koishi-service.sh'))
   assert(listed.has('scripts/qq-cache-cleaner.sh'))
   assert(listed.has('scripts/install-qq-cache-cleaner.sh'))
+  assert(listed.has('scripts/cleanup-dashboard-releases.js'))
+  assert(listed.has('scripts/install-release-retention.sh'))
   const forcedPersona = 'koishi-plugin-dongxuelian-ai/data/ai-skills/modes/SKILL.persona-forced-abusive.md'
   const personaSource = fs.readFileSync(path.join(REPO_ROOT, 'packages', forcedPersona), 'utf8')
   // 发布目录与运行时副本必须包含完整的新人格，首次启动才能向共享目录补齐种子。
@@ -250,6 +267,15 @@ function prepareVersionedApp(tempRoot, name, releases, includeCurrent = true) {
   fs.mkdirSync(path.join(appDir, 'data', 'deploy-tasks'), { recursive: true })
   fs.cpSync(releases.oldRelease.releaseDir, oldDir, { recursive: true })
   fs.cpSync(releases.newRelease.releaseDir, nextDir, { recursive: true })
+  const oldManifest = releases.oldRelease.manifest
+  fs.writeFileSync(path.join(appDir, 'data/deploy-tasks/previous.remote.json'), JSON.stringify({
+    state: 'success', stage: 'complete', releaseId: oldManifest.releaseId, updatedAt: 1,
+    manifestHash: oldManifest.manifestHash, contentHash: oldManifest.contentHash,
+  }))
+  // 模拟生产应用的 Dashboard 运行时入口，回收器仍使用真实清单验证实现。
+  const moduleDir = path.join(appDir, 'node_modules/koishi-plugin-dashboard/lib')
+  fs.mkdirSync(moduleDir, { recursive: true })
+  fs.copyFileSync(path.join(REPO_ROOT, 'packages/koishi-plugin-dashboard/lib/release.js'), path.join(moduleDir, 'release.js'))
   writeExecutable(path.join(appDir, 'restart.sh'), `#!/usr/bin/env bash
 current="$(readlink -f "$TEST_APP_DIR/.lian-releases/current" 2>/dev/null || true)"
 if [ -n "\${FAIL_BOT_RELEASE_ID:-}" ] && [ "$(basename "$current")" = "$FAIL_BOT_RELEASE_ID" ]; then exit 44; fi
@@ -285,6 +311,7 @@ function runActivation(app, releaseId, fakeBin, failures = {}) {
     `export FAIL_ALL_HEALTH=${shellQuote(failures.allHealth ? '1' : '0')}`,
     `export FAIL_LOGROTATE=${shellQuote(failures.logrotate ? '1' : '0')}`,
     `export FAIL_QQ_CACHE_CLEANER=${shellQuote(failures.qqCacheCleaner ? '1' : '0')}`,
+    `export FAIL_RELEASE_CLEANUP=${shellQuote(failures.releaseCleanup ? '1' : '0')}`,
     `export FAIL_SWITCH=${shellQuote(failures.switch ? '1' : '0')}`,
     `export MOCK_ONEBOT_OFFLINE=${shellQuote(failures.onebotOffline ? '1' : '0')}`,
     `export LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=${shellQuote(failures.allowOnebotOffline ? '1' : '0')}`,
@@ -307,7 +334,7 @@ function readActivationCommandLog(appDir) {
 }
 
 // Asserts that activation prepares both services before switching and performs the two health phases in order.
-function assertActivationOrder(log, releaseId) {
+function assertActivationOrder(log, releaseId, expectCleanup = true) {
   const cacheCleanerInstall = log.indexOf('install-qq-cache-cleaner')
   const dashboardInstall = log.indexOf('install-dashboard-service')
   const koishiInstall = log.indexOf('install-koishi-service')
@@ -317,11 +344,14 @@ function assertActivationOrder(log, releaseId) {
   const firstHealth = log.indexOf(`curl:${releaseId}`)
   const stabilityWait = log.indexOf('sleep:10')
   const secondHealth = log.indexOf(`curl:${releaseId}`, firstHealth + 1)
+  const cleanup = log.indexOf('cleanup-releases')
   assert(cacheCleanerInstall >= 0 && cacheCleanerInstall < dashboardInstall, `QQ cache cleaner was not installed before services: ${log.join(', ')}`)
   assert(dashboardInstall >= 0 && koishiInstall > dashboardInstall, `service installation order is invalid: ${log.join(', ')}`)
   assert(restartBot > koishiInstall && restartDashboard > restartBot, `service restart order is invalid: ${log.join(', ')}`)
   assert.strictEqual(directKoishiRestart, -1, `normal activation bypassed restart-bot.sh: ${log.join(', ')}`)
   assert(firstHealth > restartDashboard && stabilityWait > firstHealth && secondHealth > stabilityWait, `stability verification order is invalid: ${log.join(', ')}`)
+  if (expectCleanup) assert(cleanup > secondHealth, `release cleanup preceded final health verification: ${log.join(', ')}`)
+  else assert.strictEqual(cleanup, -1, 'failed stability verification must not clean old releases')
 }
 
 // Verifies successful switching, failure rollback, and first migration from physical paths.
@@ -339,6 +369,8 @@ function testActivationScenarios(tempRoot, releases) {
   }
   const success = runActivation(successApp, newId, fakeBin)
   assert.strictEqual(success.status, 0, success.stderr || success.stdout)
+  assert.match(success.stdout, /"mode":"apply"/, success.stderr)
+  assert.doesNotMatch(success.stderr, /cleanup failed/)
   assert.strictEqual(activeReleaseId(successApp.appDir), newId)
   assert.strictEqual(fs.existsSync(path.join(successApp.appDir, 'logrotate-installed')), true)
   const successResult = JSON.parse(fs.readFileSync(successApp.resultFile, 'utf8'))
@@ -419,6 +451,7 @@ function testActivationScenarios(tempRoot, releases) {
   const healthResult = JSON.parse(fs.readFileSync(healthApp.resultFile, 'utf8'))
   assert.strictEqual(healthResult.stage, 'health_check')
   assert.strictEqual(healthResult.rolledBack, true)
+  assert(!readActivationCommandLog(healthApp.appDir).includes('cleanup-releases'), 'failed release must not prune rollback packages')
 
   const stabilityApp = prepareVersionedApp(tempRoot, 'activation-stability-failure', releases)
   const stabilityFailed = runActivation(stabilityApp, newId, fakeBin, { stabilityHealthReleaseId: newId })
@@ -429,7 +462,7 @@ function testActivationScenarios(tempRoot, releases) {
   assert.strictEqual(stabilityResult.stage, 'stability_check')
   assert.strictEqual(stabilityResult.rolledBack, true)
   const stabilityLog = readActivationCommandLog(stabilityApp.appDir)
-  assertActivationOrder(stabilityLog, newId)
+  assertActivationOrder(stabilityLog, newId, false)
   assert(stabilityLog.includes(`restart-bot:${oldId}`), 'rollback did not restart the old Koishi release')
 
   const rollbackHealthApp = prepareVersionedApp(tempRoot, 'activation-rollback-health-failure', releases)
@@ -456,6 +489,14 @@ function testActivationScenarios(tempRoot, releases) {
   const cacheCleanerResult = JSON.parse(fs.readFileSync(cacheCleanerApp.resultFile, 'utf8'))
   assert.strictEqual(cacheCleanerResult.stage, 'prepare_qq_cache_cleaner')
   assert.strictEqual(cacheCleanerResult.rolledBack, false)
+
+  const cleanupApp = prepareVersionedApp(tempRoot, 'activation-release-cleanup-failure', releases)
+  const cleanupFailed = runActivation(cleanupApp, newId, fakeBin, { releaseCleanup: true })
+  assert.strictEqual(cleanupFailed.status, 0, cleanupFailed.stderr || cleanupFailed.stdout)
+  assert.strictEqual(activeReleaseId(cleanupApp.appDir), newId)
+  assert.strictEqual(JSON.parse(fs.readFileSync(cleanupApp.resultFile, 'utf8')).state, 'success')
+  assert(fs.existsSync(cleanupApp.oldDir), 'cleanup failure must preserve the rollback package')
+  assert.match(cleanupFailed.stderr, /cleanup failed; verified release remains active/)
 
   const migrationApp = prepareVersionedApp(tempRoot, 'activation-migration', releases, false)
   const migrated = runActivation(migrationApp, newId, fakeBin)

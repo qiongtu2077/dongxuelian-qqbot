@@ -26,7 +26,7 @@ fixture_root="$(mktemp -d /tmp/lian-qq-cache-test.XXXXXX)"
 case "$fixture_root" in /tmp/lian-qq-cache-test.*) ;; *) exit 1 ;; esac
 trap 'rm -rf -- "$fixture_root"' EXIT
 trap 'echo "ops fixture failed at line $LINENO" >&2' ERR
-for script in qq-cache-cleaner.sh install-qq-cache-cleaner.sh install-logrotate.sh; do
+for script in qq-cache-cleaner.sh install-qq-cache-cleaner.sh install-logrotate.sh install-release-retention.sh; do
   sh -n "$scripts/$script"
 done
 bash -n "$scripts/activate-dashboard-release.sh"
@@ -111,6 +111,17 @@ grep -Fq "$SNOWLUMA_LOG_FILE" "$LIAN_LOGROTATE_CONFIG"
 grep -q 'copytruncate' "$LIAN_LOGROTATE_CONFIG"
 if SNOWLUMA_LOG_FILE='relative-path' sh "$scripts/install-logrotate.sh" > /dev/null 2>&1; then exit 1; fi
 echo 'PASS SnowLuma log rotation and absolute-path guard'
+
+# 在隔离安装根目录验证 systemd 成功钩子，避免触碰测试宿主的系统服务。
+printf '#!/bin/sh\nexit 0\n' > "$fixture_root/bin/node"
+printf '#!/bin/sh\nexit 0\n' > "$fixture_root/bin/systemd-analyze"
+chmod +x "$fixture_root/bin/node" "$fixture_root/bin/systemd-analyze"
+export LIAN_RETENTION_INSTALL_ROOT="$fixture_root/retention-install"
+sh "$scripts/install-release-retention.sh"
+cmp "$scripts/cleanup-dashboard-releases.js" "$LIAN_RETENTION_INSTALL_ROOT/usr/local/lib/lian-bot/cleanup-dashboard-releases.js"
+grep -q '^OnSuccess=lian-package-retention.service$' "$LIAN_RETENTION_INSTALL_ROOT/etc/systemd/system/lian-release-.service.d/60-package-retention.conf"
+grep -Fq "$KOISHI_APP_DIR --apply" "$LIAN_RETENTION_INSTALL_ROOT/etc/systemd/system/lian-package-retention.service"
+echo 'PASS persistent success hook installs only inside the requested root'
 ` })
   if (result.stdout) process.stdout.write(result.stdout)
   if (result.stderr) process.stderr.write(result.stderr)
