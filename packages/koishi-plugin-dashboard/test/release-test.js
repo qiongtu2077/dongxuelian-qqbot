@@ -132,6 +132,10 @@ case "\${1:-}" in
     if [ "\${FAIL_LOGROTATE:-0}" = "1" ]; then exit 45; fi
     : > "$TEST_APP_DIR/logrotate-installed"
     exit 0 ;;
+  *install-qq-cache-cleaner.sh)
+    if [ "\${FAIL_QQ_CACHE_CLEANER:-0}" = "1" ]; then exit 48; fi
+    printf 'install-qq-cache-cleaner\\n' >> "$TEST_APP_DIR/activation-command.log"
+    exit 0 ;;
   *restart-bot.sh)
     if [ "\${KOISHI_APP_DIR:-}" != "$TEST_APP_DIR" ]; then exit 46; fi
     if [ "\${DONGXUELIAN_AI_DATA_DIR:-}" != "$TEST_APP_DIR/data" ]; then exit 47; fi
@@ -195,6 +199,8 @@ function testReleaseManifest(tempRoot) {
   assert.throws(() => verifyBrowserAssets(first.releaseDir, { ...manifest, files: manifest.files.filter(item => item.path !== agentAsset.path) }), /浏览器入口引用未进入发布清单/)
   assert(listed.has('scripts/activate-dashboard-release.sh'))
   assert(listed.has('scripts/install-koishi-service.sh'))
+  assert(listed.has('scripts/qq-cache-cleaner.sh'))
+  assert(listed.has('scripts/install-qq-cache-cleaner.sh'))
   const forcedPersona = 'koishi-plugin-dongxuelian-ai/data/ai-skills/modes/SKILL.persona-forced-abusive.md'
   const personaSource = fs.readFileSync(path.join(REPO_ROOT, 'packages', forcedPersona), 'utf8')
   // 发布目录与运行时副本必须包含完整的新人格，首次启动才能向共享目录补齐种子。
@@ -278,6 +284,7 @@ function runActivation(app, releaseId, fakeBin, failures = {}) {
     `export FAIL_STABILITY_HEALTH_RELEASE_ID=${shellQuote(failures.stabilityHealthReleaseId || '')}`,
     `export FAIL_ALL_HEALTH=${shellQuote(failures.allHealth ? '1' : '0')}`,
     `export FAIL_LOGROTATE=${shellQuote(failures.logrotate ? '1' : '0')}`,
+    `export FAIL_QQ_CACHE_CLEANER=${shellQuote(failures.qqCacheCleaner ? '1' : '0')}`,
     `export FAIL_SWITCH=${shellQuote(failures.switch ? '1' : '0')}`,
     `export MOCK_ONEBOT_OFFLINE=${shellQuote(failures.onebotOffline ? '1' : '0')}`,
     `export LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=${shellQuote(failures.allowOnebotOffline ? '1' : '0')}`,
@@ -301,6 +308,7 @@ function readActivationCommandLog(appDir) {
 
 // Asserts that activation prepares both services before switching and performs the two health phases in order.
 function assertActivationOrder(log, releaseId) {
+  const cacheCleanerInstall = log.indexOf('install-qq-cache-cleaner')
   const dashboardInstall = log.indexOf('install-dashboard-service')
   const koishiInstall = log.indexOf('install-koishi-service')
   const restartBot = log.indexOf(`restart-bot:${releaseId}`)
@@ -309,6 +317,7 @@ function assertActivationOrder(log, releaseId) {
   const firstHealth = log.indexOf(`curl:${releaseId}`)
   const stabilityWait = log.indexOf('sleep:10')
   const secondHealth = log.indexOf(`curl:${releaseId}`, firstHealth + 1)
+  assert(cacheCleanerInstall >= 0 && cacheCleanerInstall < dashboardInstall, `QQ cache cleaner was not installed before services: ${log.join(', ')}`)
   assert(dashboardInstall >= 0 && koishiInstall > dashboardInstall, `service installation order is invalid: ${log.join(', ')}`)
   assert(restartBot > koishiInstall && restartDashboard > restartBot, `service restart order is invalid: ${log.join(', ')}`)
   assert.strictEqual(directKoishiRestart, -1, `normal activation bypassed restart-bot.sh: ${log.join(', ')}`)
@@ -439,6 +448,14 @@ function testActivationScenarios(tempRoot, releases) {
   const logrotateResult = JSON.parse(fs.readFileSync(logrotateApp.resultFile, 'utf8'))
   assert.strictEqual(logrotateResult.stage, 'prepare_logrotate')
   assert.strictEqual(logrotateResult.rolledBack, false)
+
+  const cacheCleanerApp = prepareVersionedApp(tempRoot, 'activation-cache-cleaner-failure', releases)
+  const cacheCleanerFailed = runActivation(cacheCleanerApp, newId, fakeBin, { qqCacheCleaner: true })
+  assert.notStrictEqual(cacheCleanerFailed.status, 0)
+  assert.strictEqual(activeReleaseId(cacheCleanerApp.appDir), oldId)
+  const cacheCleanerResult = JSON.parse(fs.readFileSync(cacheCleanerApp.resultFile, 'utf8'))
+  assert.strictEqual(cacheCleanerResult.stage, 'prepare_qq_cache_cleaner')
+  assert.strictEqual(cacheCleanerResult.rolledBack, false)
 
   const migrationApp = prepareVersionedApp(tempRoot, 'activation-migration', releases, false)
   const migrated = runActivation(migrationApp, newId, fakeBin)

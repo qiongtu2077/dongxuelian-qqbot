@@ -49,7 +49,7 @@ trap 'rm -f "$svc_tmp" "$timer_tmp"' EXIT INT TERM
 
 cat > "$svc_tmp" <<EOF
 [Unit]
-Description=LianLianBot QQ cache cleaner (Pic/Emoji/Video/log only)
+Description=LianLianBot NapCat and SnowLuma QQ cache cleaner (Pic/Emoji/Video/log only)
 # 只清 QQ 客户端缓存；bot 数据（koishi-app/data）与 nt_db 永不由本服务触碰。
 After=local-fs.target
 
@@ -59,8 +59,7 @@ ExecStart=$CLEANER_DST --apply
 # 低优先级 IO，避免和 bot 识图/资源 worker 抢磁盘。
 Nice=10
 IOSchedulingClass=idle
-# 即使删除失败也只记日志，不重试堆积。
-SuccessExitStatus=0 1
+# 扫描失败保留为 failed，便于从 systemd 与 journal 发现维护任务异常。
 EOF
 
 cat > "$timer_tmp" <<EOF

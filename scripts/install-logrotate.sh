@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install bounded rotation for Koishi and NapCat text logs without restarting either service.
+# Install bounded rotation for Koishi, NapCat and SnowLuma logs without restarting services.
 
 set -eu
 
@@ -7,6 +7,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 APP_DIR="${KOISHI_APP_DIR:-$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)}"
 KOISHI_LOG_FILE="${KOISHI_LOG_FILE:-$APP_DIR/koishi.log}"
 NAPCAT_LOG_FILE="${NAPCAT_LOG_FILE:-/root/napcat.log}"
+SNOWLUMA_LOG_FILE="${SNOWLUMA_LOG_FILE:-/root/SnowLuma/snowluma.log}"
 LOGROTATE_CONFIG="${LIAN_LOGROTATE_CONFIG:-/etc/logrotate.d/lian-bot}"
 ROTATE_SIZE="${LIAN_LOGROTATE_SIZE:-50M}"
 ROTATE_COUNT="${LIAN_LOGROTATE_COUNT:-14}"
@@ -39,12 +40,13 @@ fi
 
 require_safe_log_path "$KOISHI_LOG_FILE"
 require_safe_log_path "$NAPCAT_LOG_FILE"
+require_safe_log_path "$SNOWLUMA_LOG_FILE"
 ensure_logrotate
 
 tmp="$(mktemp "${LOGROTATE_CONFIG}.tmp.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT INT TERM
 cat > "$tmp" <<EOF
-$KOISHI_LOG_FILE $NAPCAT_LOG_FILE {
+$KOISHI_LOG_FILE $NAPCAT_LOG_FILE $SNOWLUMA_LOG_FILE {
     size $ROTATE_SIZE
     rotate $ROTATE_COUNT
     missingok

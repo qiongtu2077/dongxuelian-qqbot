@@ -134,6 +134,8 @@ function copyReleasePayload(repoRoot, releaseRoot) {
         copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
     for (const script of ['qq-protocol-gate.sh', 'start-snowluma.sh', 'install-snowluma-service.sh'])
         copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
+    for (const script of ['qq-cache-cleaner.sh', 'install-qq-cache-cleaner.sh'])
+        copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
     for (const packageName of RELEASE_PACKAGES) {
         const source = path.join(releaseRoot, 'packages', packageName);
         const target = path.join(releaseRoot, 'node_modules', packageName);

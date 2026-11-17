@@ -236,6 +236,10 @@ STAGE="prepare_logrotate"
 write_result running "$STAGE"
 KOISHI_APP_DIR="$APP_DIR" bash "$NEXT_DIR/scripts/install-logrotate.sh"
 
+STAGE="prepare_qq_cache_cleaner"
+write_result running "$STAGE"
+bash "$NEXT_DIR/scripts/install-qq-cache-cleaner.sh"
+
 STAGE="prepare_service"
 write_result running "$STAGE"
 KOISHI_APP_DIR="$APP_DIR" DONGXUELIAN_AI_DATA_DIR="$DATA_DIR" bash "$NEXT_DIR/scripts/install-dashboard-service.sh"

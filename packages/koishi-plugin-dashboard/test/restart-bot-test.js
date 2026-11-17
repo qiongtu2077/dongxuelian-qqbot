@@ -55,7 +55,8 @@ exit 0
 if [ -f "$SYSTEMD_RESTARTED" ]; then printf 'LISTEN 0 128 127.0.0.1:5140 0.0.0.0:*\\n'; fi
 `)
   writeExecutable(path.join(binDir, 'ps'), '#!/bin/bash\nprintf "root 1 0 0 koishi/lib/worker\\n"\n')
-  writeExecutable(path.join(binDir, 'tail'), '#!/bin/bash\nif [ "${MOCK_ADAPTER_OFFLINE:-0}" = "1" ]; then printf "adapter connect ECONNREFUSED\\n"; else printf "adapter connect to server\\n"; fi\n')
+  writeExecutable(path.join(binDir, 'tail'), '#!/bin/bash\nif [ "$#" = 1 ]; then exec /usr/bin/tail "$@"; fi\nif [ "${MOCK_LOG_SOURCE:-file}" = journal ]; then exit 0; fi\nif [ "${MOCK_ADAPTER_OFFLINE:-0}" = "1" ]; then printf "adapter connect ECONNREFUSED\\n"; else printf "adapter connect to server\\n"; fi\n')
+  writeExecutable(path.join(binDir, 'journalctl'), '#!/bin/bash\nprintf "journalctl:%s\\n" "$*" >> "$COMMAND_LOG"\nif [ "${MOCK_LOG_SOURCE:-file}" = journal ] && [ "${MOCK_ADAPTER_OFFLINE:-0}" != 1 ]; then printf "adapter connect to server\\n"; fi\n')
   writeExecutable(path.join(binDir, 'sleep'), '#!/bin/bash\nexit 0\n')
   return binDir
 }
@@ -86,7 +87,7 @@ function testKoishiServiceContract() {
 }
 
 // Runs the real restart script against command stubs and verifies that systemd performs the start.
-function testRestartCommandStub(tempRoot, { offline = false, allowOffline = false } = {}) {
+function testRestartCommandStub(tempRoot, { offline = false, allowOffline = false, logSource = 'file' } = {}) {
   const appDir = path.join(tempRoot, 'app')
   const dataDir = path.join(appDir, 'data')
   const scriptDir = path.join(appDir, 'scripts')
@@ -107,6 +108,7 @@ function testRestartCommandStub(tempRoot, { offline = false, allowOffline = fals
     `export COMMAND_LOG=${shellQuote(toBashPath(commandLog))}`,
     `export SYSTEMD_RESTARTED=${shellQuote(toBashPath(restartedMarker))}`,
     `export MOCK_ADAPTER_OFFLINE=${offline ? '1' : '0'}`,
+    `export MOCK_LOG_SOURCE=${shellQuote(logSource)}`,
     `export LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=${allowOffline ? '1' : '0'}`,
     `exec ${shellQuote(toBashPath(path.join(scriptDir, 'restart-bot.sh')))}`,
   ].join('; ')
@@ -121,6 +123,7 @@ function testRestartCommandStub(tempRoot, { offline = false, allowOffline = fals
   assert(invocations.includes('stop lian-koishi'), `missing systemd stop: ${invocations.join(', ')}`)
   assert(invocations.includes('restart lian-koishi'), `missing systemd restart: ${invocations.join(', ')}`)
   assert(invocations.includes('is-active --quiet lian-koishi'), `missing systemd health check: ${invocations.join(', ')}`)
+  assert(invocations.some(item => item.startsWith('journalctl:-u lian-koishi --since @')), 'startup logs must be bounded by the restart timestamp')
   assert(!invocations.some(item => item.includes('lian-dashboard')), `restart script touched Dashboard: ${invocations.join(', ')}`)
 }
 
@@ -132,6 +135,7 @@ function main() {
     testKoishiServiceContract()
     if (hasWorkingBash()) {
       testRestartCommandStub(path.join(tempRoot, 'connected'))
+      testRestartCommandStub(path.join(tempRoot, 'journal-only'), { logSource: 'journal' })
       testRestartCommandStub(path.join(tempRoot, 'offline-rejected'), { offline: true })
       testRestartCommandStub(path.join(tempRoot, 'offline-allowed'), { offline: true, allowOffline: true })
     }

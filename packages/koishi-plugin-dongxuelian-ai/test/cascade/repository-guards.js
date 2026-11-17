@@ -303,6 +303,7 @@ async function runRepositoryGuards(context) {
   check('restart-bot gates success on current worker generation', restartBot.includes('validate_resource_worker_generation') && restartBot.includes('ownerGeneration') && restartBot.includes('worker generation healthy'))
   check('logrotate installer bounds both text logs without restarting services', logrotateInstaller.includes('koishi.log') && logrotateInstaller.includes('/root/napcat.log') && logrotateInstaller.includes('size $ROTATE_SIZE') && logrotateInstaller.includes('rotate $ROTATE_COUNT') && logrotateInstaller.includes('copytruncate') && logrotateInstaller.includes('logrotate --debug'))
   check('dashboard deploy uploads and installs logrotate policy', dashboardStandalone.includes('install-logrotate.sh') && dashboardActivation.includes('STAGE="prepare_logrotate"') && dashboardActivation.includes('bash "$NEXT_DIR/scripts/install-logrotate.sh"'))
+  check('dashboard deploy installs QQ cache cleanup before switching versions', dashboardActivation.includes('STAGE="prepare_qq_cache_cleaner"') && dashboardActivation.includes('bash "$NEXT_DIR/scripts/install-qq-cache-cleaner.sh"'))
   const sealDataSrc = read(path.join(ROOT, 'scripts', 'seal-data-dir.sh'))
   check('seal-data-dir preserves tracked package data dirs', sealDataSrc.includes('checked package data seed allowlist without mutating source') && !sealDataSrc.includes('ln -s "$DATA_DIR" "$pkg_data"'))
   check('seal-data-dir avoids moving normal package data dirs', !/mv "\$pkg_data" "\$BACKUP_DIR\/\$rel"\s*(?:$|[\r\n])/.test(sealDataSrc))

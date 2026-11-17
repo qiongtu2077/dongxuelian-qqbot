@@ -4,6 +4,7 @@
 # 背景见 issue #11 与运维记录：/root/.config/QQ 每月增长约 7G，大头是
 # nt_data/Pic（群聊图片缓存）。Koishi 插件不负责这件事（跨平台、职责
 # 边界），由服务器侧 systemd timer 每日调用本脚本。
+# 默认同时扫描 NapCat 与 SnowLuma 的独立 QQ 目录，切换协议无需重装 timer。
 #
 # 安全约束（改这里之前先读 scripts/resource-cleanup.js 的同类约束）：
 #   - 白名单制：只允许删 <QQ_CONFIG>/nt_qq_<hash>/nt_data/ 下固定的四个
@@ -18,6 +19,7 @@
 #   sh scripts/qq-cache-cleaner.sh                  # dry-run，仅统计
 #   sh scripts/qq-cache-cleaner.sh --apply          # 实际执行删除
 #   QQ_CACHE_CLEANER_CONFIG=/root/.config/QQ sh ... # 自定义 QQ 配置根目录
+#   QQ_CACHE_CLEANER_SL_CONFIG=/path/to/SL/QQ sh ... # 额外扫描 SL 配置根目录
 #   QQ_PIC_RETENTION_DAYS=7 sh ...                  # 自定义图片保留天数
 set -eu
 
@@ -30,21 +32,22 @@ for arg in "$@"; do
 done
 
 QQ_CONFIG_ROOT="${QQ_CACHE_CLEANER_CONFIG:-/root/.config/QQ}"
+SL_CONFIG_ROOT="${QQ_CACHE_CLEANER_SL_CONFIG:-}"
+# 保留原有显式单目录覆盖；未覆盖时，默认清理两个协议的缓存。
+if [ -z "${QQ_CACHE_CLEANER_CONFIG:-}" ] && [ -z "$SL_CONFIG_ROOT" ]; then
+  SL_CONFIG_ROOT="/root/SnowLuma/home/.config/QQ"
+fi
 # 保留期（天）。默认：图片/表情/视频 1 天（用户拍板"1天1删都行"），QQ 日志 3 天。
 PIC_RETENTION_DAYS="${QQ_PIC_RETENTION_DAYS:-1}"
 EMOJI_RETENTION_DAYS="${QQ_EMOJI_RETENTION_DAYS:-1}"
 VIDEO_RETENTION_DAYS="${QQ_VIDEO_RETENTION_DAYS:-1}"
 LOG_RETENTION_DAYS="${QQ_LOG_RETENTION_DAYS:-3}"
 
-if [ ! -d "$QQ_CONFIG_ROOT" ]; then
-  echo "[qq-cache-cleaner] QQ config root not found: $QQ_CONFIG_ROOT" >&2
-  exit 1
-fi
-
 # 只接受 nt_qq_<至少16位hex> 形式的账号档案目录，避免误匹配程序目录 nt_qq。
 total_removed_bytes=0
 total_removed_files=0
 
+# 将清理统计中的字节数格式化为可读大小。
 human_size() {
   bytes="$1"
   if [ "$bytes" -ge 1073741824 ] 2>/dev/null; then
@@ -67,6 +70,11 @@ clean_dir() {
     *) echo "[qq-cache-cleaner] refused non-whitelisted subdir: $subdir" >&2; exit 1 ;;
   esac
   [ -d "$target" ] || return 0
+  # find 默认不跟随内部符号链接；入口自身也不能链接到白名单外。
+  if [ -L "$target" ]; then
+    echo "[qq-cache-cleaner] skip symlink cache dir: $target" >&2
+    return 0
+  fi
 
   if [ "$MODE" = "dry-run" ]; then
     # du 汇总超期文件字节数（find -printf 在 busybox 下不可用，GNU find 足够）。
@@ -89,22 +97,42 @@ clean_dir() {
 }
 
 profile_count=0
-for profile in "$QQ_CONFIG_ROOT"/nt_qq_*/; do
-  [ -d "$profile" ] || continue
-  case "${profile%/}" in
-    */nt_qq_[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
-    *) echo "[qq-cache-cleaner] skip non-profile dir: $profile"; continue ;;
-  esac
-  profile_count=$((profile_count + 1))
-  echo "profile: $profile"
-  clean_dir "$profile" Pic "$PIC_RETENTION_DAYS"
-  clean_dir "$profile" Emoji "$EMOJI_RETENTION_DAYS"
-  clean_dir "$profile" Video "$VIDEO_RETENTION_DAYS"
-  clean_dir "$profile" log "$LOG_RETENTION_DAYS"
-done
+
+# 扫描一个协议的 QQ 根目录；未安装的协议不阻塞另一个协议。
+clean_root() {
+  if [ ! -d "$1" ]; then
+    echo "[qq-cache-cleaner] skip missing QQ config root: $1"
+    return 0
+  fi
+  config_root="$(CDPATH= cd -- "$1" && pwd -P)"
+  echo "QQ config root: $config_root"
+  for profile in "$config_root"/nt_qq_*; do
+    [ -d "$profile" ] || continue
+    profile_hash="${profile##*/nt_qq_}"
+    case "$profile_hash" in
+      ''|*[!0-9a-f]*) continue ;;
+    esac
+    [ "${#profile_hash}" -ge 16 ] || continue
+    if [ -L "$profile" ] || [ -L "$profile/nt_data" ]; then
+      echo "[qq-cache-cleaner] skip symlink profile data: $profile" >&2
+      continue
+    fi
+    profile_count=$((profile_count + 1))
+    echo "profile: $profile"
+    clean_dir "$profile" Pic "$PIC_RETENTION_DAYS"
+    clean_dir "$profile" Emoji "$EMOJI_RETENTION_DAYS"
+    clean_dir "$profile" Video "$VIDEO_RETENTION_DAYS"
+    clean_dir "$profile" log "$LOG_RETENTION_DAYS"
+  done
+}
+
+clean_root "$QQ_CONFIG_ROOT"
+if [ -n "$SL_CONFIG_ROOT" ] && [ "$SL_CONFIG_ROOT" != "$QQ_CONFIG_ROOT" ]; then
+  clean_root "$SL_CONFIG_ROOT"
+fi
 
 if [ "$profile_count" -eq 0 ]; then
-  echo "[qq-cache-cleaner] no nt_qq_<hash> profile found under $QQ_CONFIG_ROOT" >&2
+  echo "[qq-cache-cleaner] no nt_qq_<hash> profile found in configured QQ roots" >&2
   exit 1
 fi
 
