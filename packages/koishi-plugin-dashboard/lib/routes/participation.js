@@ -53,7 +53,10 @@ function importGroupNames(ids) {
             message = '群名读取失败，已保留群号，请手动填写名称。';
         }
         const groups = readSavedGroupNames();
+        const current = policy.readParticipationPolicy();
         for (const id of missing) {
+            if (!(id in current.groups || id in current.abusiveGroups))
+                continue;
             if (!Object.prototype.hasOwnProperty.call(groups, id))
                 groups[id] = (directory[id] || '').slice(0, MAX_GROUP_NAME_LENGTH);
         }
@@ -73,34 +76,19 @@ function readFeatureFile(name, fallback) {
         throw new Error(`${name} 文件过大`);
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
-// 校验黑白名单已经使用的字符串或数字 ID 数组。
-function readIds(value) {
-    if (!Array.isArray(value) || value.some(id => typeof id !== 'string' && typeof id !== 'number'))
-        throw new Error('已有黑白名单格式无效');
-    return value.map(String);
-}
 // 将一个 JSON 配置加入现有跨文件事务，数据仍留在共享 data 目录。
 function target(name, value) {
     return { name, filePath: path.join(DATA_DIR, name), content: Buffer.from(JSON.stringify(value, null, 2) + '\n') };
 }
-// 首次启用群时关闭主动回复、开启复读，并解除该群的视频和集合禁用。
+// 首次启用只补齐未配置的复读默认值，保留旧群已有的各项功能设置。
 function initialGroupTargets(groupId) {
-    const random = readIds(readFeatureFile('ai-random-whitelist.json', []));
     const repeat = readFeatureFile('ai-repeat-enabled.json', {});
     if (!repeat || typeof repeat !== 'object' || Array.isArray(repeat))
         throw new Error('已有复读配置格式无效');
-    const video = readFeatureFile('video-blacklist.json', { groups: [], users: [] });
-    const videoObject = Array.isArray(video) ? { groups: video, users: [] } : video;
-    if (!videoObject || typeof videoObject !== 'object')
-        throw new Error('已有视频黑名单格式无效');
-    const nickname = readFeatureFile('group-name-at-disabled-groups.json', { groups: [] });
-    const nicknameGroups = Array.isArray(nickname) ? nickname : nickname?.groups;
-    return [
-        target('ai-random-whitelist.json', random.filter(id => id !== groupId)),
-        target('ai-repeat-enabled.json', { ...repeat, [groupId]: true }),
-        target('video-blacklist.json', { groups: readIds(videoObject.groups || []).filter(id => id !== groupId), users: readIds(videoObject.users || []) }),
-        target('group-name-at-disabled-groups.json', { groups: readIds(nicknameGroups || []).filter(id => id !== groupId) }),
-    ];
+    // 总开关未记录该群，不代表功能配置不存在；显式关闭的复读也必须保留。
+    if (Object.prototype.hasOwnProperty.call(repeat, groupId))
+        return [];
+    return [target('ai-repeat-enabled.json', { ...repeat, [groupId]: true })];
 }
 // 保存总开关；首次启用默认配置和总开关一起提交，失败时一起恢复。
 function saveParticipationUpdate(body) {
@@ -131,7 +119,187 @@ function saveParticipationUpdate(body) {
     });
     return next;
 }
+// --- 单群详情配置 ---
+// 按项目现有映射文件读取配置，损坏的数据必须先修复，不能用空值覆盖。
+function readMap(name) {
+    const value = readFeatureFile(name, {});
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new Error(`${name} 配置格式无效`);
+    return value;
+}
+// 兼容项目已存在的数字 ID 数组和 groups/users 桶，不修改用户桶及其他群。
+function readGroupList(name) {
+    const value = readFeatureFile(name, []);
+    if (Array.isArray(value))
+        return { value, groups: value };
+    if (value && typeof value === 'object' && Array.isArray(value.groups)) {
+        return { value: value, groups: value.groups };
+    }
+    throw new Error(`${name} 配置格式无效`);
+}
+// 获取单群真实值；空概率表示沿用系统默认值。
+function readGroupSettings(groupId) {
+    const current = policy.readParticipationPolicy();
+    const contains = (name) => readGroupList(name).groups.some(id => String(id) === groupId);
+    const binding = readMap('ai-persona-groups.json')[groupId];
+    return {
+        groupId, name: readSavedGroupNames()[groupId] || '', enabled: current.groups[groupId] === true,
+        abusiveEnabled: current.abusiveGroups[groupId] === true,
+        randomEnabled: contains('ai-random-whitelist.json'), repeatEnabled: readMap('ai-repeat-enabled.json')[groupId] === true,
+        videoEnabled: !contains('video-blacklist.json'), collectionEnabled: !contains('group-name-at-disabled-groups.json'),
+        summaryUnlimited: contains('summary-whitelist.json'), politicalEnabled: contains('political-detect-enabled.json'),
+        persona: binding?.persona || '', randomRate: readMap('ai-random-rate.json')[groupId] ?? null,
+        voiceRate: readMap('ai-random-voice-rate.json')[groupId] ?? null,
+    };
+}
+// 为单群列表成员变化生成写入目标，保留既有文件结构。
+function groupListTarget(name, groupId, included) {
+    const { value, groups } = readGroupList(name);
+    const next = groups.filter(id => String(id) !== groupId);
+    if (included)
+        next.push(groupId);
+    return target(name, Array.isArray(value) ? next : { ...value, groups: next });
+}
+// 详情配置、名称和总开关原子保存，失败时整体回滚并恢复人格缓存。
+function saveGroupSettings(settings) {
+    const id = settings.groupId;
+    const next = policy.readParticipationPolicy();
+    next.groups[id] = settings.enabled;
+    next.abusiveGroups[id] = settings.abusiveEnabled;
+    const repeat = readMap('ai-repeat-enabled.json');
+    const personas = readMap('ai-persona-groups.json');
+    if (settings.persona)
+        personas[id] = { ...(personas[id] || {}), persona: settings.persona };
+    else
+        delete personas[id];
+    const targets = [
+        target('bot-participation.json', next), target(GROUP_NAMES_FILE, { ...readSavedGroupNames(), [id]: settings.name.trim() }),
+        target('ai-repeat-enabled.json', { ...repeat, [id]: settings.repeatEnabled }), target('ai-persona-groups.json', personas),
+        groupListTarget('ai-random-whitelist.json', id, settings.randomEnabled),
+        groupListTarget('video-blacklist.json', id, !settings.videoEnabled),
+        groupListTarget('group-name-at-disabled-groups.json', id, !settings.collectionEnabled),
+        groupListTarget('summary-whitelist.json', id, settings.summaryUnlimited),
+        groupListTarget('political-detect-enabled.json', id, settings.politicalEnabled),
+    ];
+    for (const [file, rate] of [['ai-random-rate.json', settings.randomRate], ['ai-random-voice-rate.json', settings.voiceRate]]) {
+        const values = readMap(file);
+        if (rate === null)
+            delete values[id];
+        else
+            values[id] = rate;
+        targets.push(target(file, values));
+    }
+    executeConfigTransaction({
+        dataDir: DATA_DIR, targets,
+        refresh: () => { policy.readParticipationPolicy(); loadManagementModule('media.persona').loadPersonaGroups(); },
+        verify: () => {
+            if (JSON.stringify(readGroupSettings(id)) !== JSON.stringify({ ...settings, name: settings.name.trim() }))
+                throw new Error('群详情写入校验失败');
+        },
+    });
+}
+// 新增和移除只操作管理名单；移除后默认禁止该群参与，原有功能配置可供重新添加使用。
+function updateManagedGroup(groupId, remove) {
+    const next = policy.readParticipationPolicy();
+    const names = readSavedGroupNames();
+    const targets = [];
+    if (remove) {
+        delete next.groups[groupId];
+        delete next.abusiveGroups[groupId];
+        delete names[groupId];
+        targets.push(target(GROUP_NAMES_FILE, names));
+    }
+    else if (!(groupId in next.groups || groupId in next.abusiveGroups)) {
+        targets.push(...initialGroupTargets(groupId));
+        next.groups[groupId] = false;
+    }
+    targets.push(target('bot-participation.json', next));
+    executeConfigTransaction({
+        dataDir: DATA_DIR, targets, refresh: () => { policy.readParticipationPolicy(); },
+        verify: () => {
+            if (JSON.stringify(policy.readParticipationPolicy()) !== JSON.stringify(next))
+                throw new Error('群列表写入校验失败');
+            if (remove && groupId in readSavedGroupNames())
+                throw new Error('群名移除校验失败');
+        },
+    });
+}
 // --- 管理员 HTTP 路由 ---
+// 新增或删除群，始终校验群号和管理员权限。
+function handleManageGroup(req, res) {
+    if (!requireAdmin(req, res))
+        return;
+    collectBody(req, res, text => {
+        let body;
+        try {
+            body = JSON.parse(text);
+        }
+        catch {
+            return json(res, { ok: false, message: '请求必须是有效 JSON' }, 400);
+        }
+        if (!body || typeof body.groupId !== 'string' || !policy.GROUP_ID_PATTERN.test(body.groupId))
+            return json(res, { ok: false, message: '请提供有效群号' }, 400);
+        try {
+            const remove = req.method === 'DELETE';
+            updateManagedGroup(body.groupId, remove);
+            json(res, { ok: true, policy: policy.readParticipationPolicy(), groups: readSavedGroupNames(), message: remove ? '群已从列表删除' : '群已添加' });
+        }
+        catch (error) {
+            json(res, { ok: false, message: getErrorMessage(error) }, 500);
+        }
+    });
+}
+// 返回当前群详情、可选人格及系统默认概率。
+function handleGetGroupSettings(req, res) {
+    if (!requireAdmin(req, res))
+        return;
+    const id = new URL(req.url, 'http://localhost').searchParams.get('groupId') || '';
+    if (!policy.GROUP_ID_PATTERN.test(id))
+        return json(res, { ok: false, message: '请提供有效群号' }, 400);
+    try {
+        const current = policy.readParticipationPolicy();
+        if (!(id in current.groups || id in current.abusiveGroups))
+            return json(res, { ok: false, message: '该群不在管理列表中' }, 404);
+        const personas = loadManagementModule('media.persona').getAvailablePersonals().filter(item => item.type !== 'core').map(item => String(item.name));
+        json(res, { ok: true, settings: readGroupSettings(id), personas, defaults: { randomRate: loadManagementModule('core.constants').RANDOM_TRIGGER_RATE_BASE, voiceRate: 0.1 } });
+    }
+    catch (error) {
+        json(res, { ok: false, message: getErrorMessage(error) }, 500);
+    }
+}
+// 仅接收详情菜单公开的布尔、概率和人格字段，拒绝无效值。
+function handlePutGroupSettings(req, res) {
+    if (!requireAdmin(req, res))
+        return;
+    collectBody(req, res, text => {
+        let value;
+        try {
+            value = JSON.parse(text);
+        }
+        catch {
+            return json(res, { ok: false, message: '请求必须是有效 JSON' }, 400);
+        }
+        const body = value;
+        const switches = ['enabled', 'abusiveEnabled', 'randomEnabled', 'repeatEnabled', 'videoEnabled', 'collectionEnabled', 'summaryUnlimited', 'politicalEnabled'];
+        if (!body || typeof body.groupId !== 'string' || !policy.GROUP_ID_PATTERN.test(body.groupId) || typeof body.name !== 'string' || body.name.trim().length > MAX_GROUP_NAME_LENGTH || typeof body.persona !== 'string' || switches.some(key => typeof body[key] !== 'boolean') || [body.randomRate, body.voiceRate].some(rate => rate !== null && (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0 || rate > 1))) {
+            return json(res, { ok: false, message: '群详情格式无效，概率须在 0 到 100% 之间' }, 400);
+        }
+        try {
+            const current = policy.readParticipationPolicy();
+            if (!(body.groupId in current.groups || body.groupId in current.abusiveGroups))
+                return json(res, { ok: false, message: '该群不在管理列表中' }, 404);
+            if (body.persona && !loadManagementModule('media.persona').getAvailablePersonals().some(item => item.type !== 'core' && item.name === body.persona))
+                return json(res, { ok: false, message: '所选人格不存在' }, 400);
+            // 明确选择已验证字段，避免请求附加字段写入配置或影响回读比较。
+            const settings = { groupId: body.groupId, name: body.name, enabled: body.enabled, abusiveEnabled: body.abusiveEnabled, randomEnabled: body.randomEnabled, repeatEnabled: body.repeatEnabled, videoEnabled: body.videoEnabled, collectionEnabled: body.collectionEnabled, summaryUnlimited: body.summaryUnlimited, politicalEnabled: body.politicalEnabled, persona: body.persona, randomRate: body.randomRate, voiceRate: body.voiceRate };
+            saveGroupSettings(settings);
+            json(res, { ok: true, settings: readGroupSettings(body.groupId), policy: policy.readParticipationPolicy(), groups: readSavedGroupNames(), message: '群详情已保存' });
+        }
+        catch (error) {
+            json(res, { ok: false, message: getErrorMessage(error) }, 500);
+        }
+    });
+}
 // 返回当前配置，未配置的群和私聊均显示为关闭。
 function handleGetParticipation(req, res) {
     if (!requireAdmin(req, res))
@@ -234,6 +402,10 @@ function handlePutParticipation(req, res) {
 }
 exports.routes = {
     'GET /dashboard/api/groups': handleGetGroupNames,
+    'POST /dashboard/api/groups': handleManageGroup,
+    'DELETE /dashboard/api/groups': handleManageGroup,
+    'GET /dashboard/api/groups/detail': handleGetGroupSettings,
+    'PUT /dashboard/api/groups/detail': handlePutGroupSettings,
     'POST /dashboard/api/groups/import': handleImportGroupNames,
     'PUT /dashboard/api/groups': handlePutGroupName,
     'GET /dashboard/api/participation': handleGetParticipation,

@@ -1,4 +1,4 @@
-import { detectAiModelCapabilities, fetchAiModelApiConfig, updateSelfId, verifyAdmin } from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
+import { addManagedGroup, deleteManagedGroup, detectAiModelCapabilities, fetchAiModelApiConfig, fetchGroupSettings, saveGroupSettings, updateSelfId, verifyAdmin } from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
 
 // 创建足以模拟浏览器 fetch Response 的响应对象。
 function response(status, data) {
@@ -40,6 +40,24 @@ describe('主控制台 API 请求封装', () => {
       body: JSON.stringify({ selfId: '123456' }),
       headers: expect.objectContaining({ Authorization: 'Bearer access-token', 'X-Admin-Token': 'admin-token' }),
     }))
+  })
+
+  test('群添加、读取详情、保存和删除均使用约定路径并携带管理员令牌', async () => {
+    localStorage.setItem('dashboard_token', 'access-token')
+    localStorage.setItem('dashboard_server_token', JSON.stringify({ token: 'admin-token', expires: Date.now() + 60000 }))
+    global.fetch.mockResolvedValue(response(200, { ok: true }))
+    const draft = { groupId: '10001', name: '测试群', randomRate: 0, voiceRate: null }
+    await addManagedGroup('10001')
+    await fetchGroupSettings('10001')
+    await saveGroupSettings(draft)
+    await deleteManagedGroup('10001')
+    expect(global.fetch.mock.calls.map(([url, options]) => [url, options.method || 'GET', options.body])).toEqual([
+      ['/dashboard/api/groups', 'POST', JSON.stringify({ groupId: '10001' })],
+      ['/dashboard/api/groups/detail?groupId=10001', 'GET', undefined],
+      ['/dashboard/api/groups/detail', 'PUT', JSON.stringify(draft)],
+      ['/dashboard/api/groups', 'DELETE', JSON.stringify({ groupId: '10001' })],
+    ])
+    for (const [, options] of global.fetch.mock.calls) expect(options.headers).toEqual(expect.objectContaining({ Authorization: 'Bearer access-token', 'X-Admin-Token': 'admin-token' }))
   })
 
   test('访问令牌失效时清理登录状态并派发统一事件', async () => {

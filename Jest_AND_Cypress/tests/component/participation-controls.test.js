@@ -5,6 +5,7 @@ import * as dashboardApi from '../../../packages/koishi-plugin-dashboard/fronten
 jest.mock('../../../packages/koishi-plugin-dashboard/frontend/src/api', () => ({
   fetchParticipation: jest.fn(), saveParticipation: jest.fn(), fetchGroupNames: jest.fn(),
   importGroupNames: jest.fn(), saveGroupName: jest.fn(),
+  addManagedGroup: jest.fn(), fetchGroupSettings: jest.fn(), saveGroupSettings: jest.fn(), deleteManagedGroup: jest.fn(),
 }))
 
 describe('群开关名称展示', () => {
@@ -85,17 +86,38 @@ describe('群开关名称展示', () => {
 
   test('新加入群读取一次名称，其他行未保存的草稿保留', async () => {
     dashboardApi.fetchGroupNames.mockResolvedValue({ ok: true, data: { ok: true, groups: { 10001: '旧名称', 10002: '' } } })
-    dashboardApi.saveParticipation.mockResolvedValue({ ok: true, data: { ok: true, policy: { version: 1, privateEnabled: false, groups: { 10001: true, 10002: false, 10003: true }, abusiveGroups: {} } } })
+    dashboardApi.addManagedGroup.mockResolvedValue({ ok: true, data: { ok: true, policy: { version: 1, privateEnabled: false, groups: { 10001: true, 10002: false, 10003: false }, abusiveGroups: {} } } })
     dashboardApi.importGroupNames.mockResolvedValue({ ok: true, data: { ok: true, groups: { 10001: '旧名称', 10002: '', 10003: '新群' } } })
     const wrapper = mount(ParticipationControls, { global: { provide: { showAdminDialog: jest.fn() } } })
     await flushPromises()
     await wrapper.find('input[aria-label="群 10001 名称"]').setValue('尚未保存')
     await wrapper.find('#participation-group-id').setValue('10003')
-    await wrapper.find('input[aria-label="所填群号的总开关"]').setValue(true)
+    await wrapper.find('.participation-group-editor').trigger('submit')
     await flushPromises()
     expect(dashboardApi.importGroupNames).toHaveBeenCalledWith(['10003'])
     expect(wrapper.find('input[aria-label="群 10003 名称"]').element.value).toBe('新群')
     expect(wrapper.find('input[aria-label="群 10001 名称"]').element.value).toBe('尚未保存')
+    expect(dashboardApi.addManagedGroup).toHaveBeenCalledWith('10003')
+    expect(wrapper.find('input[aria-label="群 10003 总开关"]').element.checked).toBe(false)
+    expect(wrapper.find('.participation-group-editor input[role="switch"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toMatch(/已开启|已关闭/)
+    wrapper.unmount()
+  })
+
+  test('添加失败保留群号，重复群号不提交且不更改已有开关', async () => {
+    dashboardApi.addManagedGroup.mockResolvedValue({ ok: false, data: { message: '写入失败' } })
+    const wrapper = mount(ParticipationControls, { global: { provide: { showAdminDialog: jest.fn() } } })
+    await flushPromises()
+    await wrapper.find('#participation-group-id').setValue('10001')
+    await wrapper.find('.participation-group-editor').trigger('submit')
+    expect(dashboardApi.addManagedGroup).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('该群已在列表中')
+    await wrapper.find('#participation-group-id').setValue('10003')
+    await wrapper.find('.participation-group-editor').trigger('submit')
+    await flushPromises()
+    expect(wrapper.text()).toContain('写入失败')
+    expect(wrapper.find('#participation-group-id').element.value).toBe('10003')
+    expect(wrapper.findAll('.participation-group-row')).toHaveLength(2)
     wrapper.unmount()
   })
 })

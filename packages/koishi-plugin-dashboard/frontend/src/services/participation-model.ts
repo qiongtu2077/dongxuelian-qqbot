@@ -9,6 +9,29 @@ export interface ParticipationResponse {
   ok: boolean
   policy?: ParticipationPolicy
   message?: string
+  groups?: Record<string, string>
+}
+
+export interface GroupSettings {
+  groupId: string
+  name: string
+  enabled: boolean
+  abusiveEnabled: boolean
+  randomEnabled: boolean
+  repeatEnabled: boolean
+  videoEnabled: boolean
+  collectionEnabled: boolean
+  summaryUnlimited: boolean
+  politicalEnabled: boolean
+  persona: string
+  randomRate: number | null
+  voiceRate: number | null
+}
+
+export interface GroupSettingsResponse extends ParticipationResponse {
+  settings?: GroupSettings
+  personas?: string[]
+  defaults?: { randomRate: number; voiceRate: number }
 }
 
 export type ParticipationChange = { kind: 'private'; enabled: boolean } | { kind: 'group' | 'group-abusive'; groupId: string; enabled: boolean }

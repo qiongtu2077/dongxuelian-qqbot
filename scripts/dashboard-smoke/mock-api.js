@@ -82,6 +82,7 @@ const mockState = {
   serverModeSource: 'resource-control/config.json',
   maintenance: false,
   participation: { version: 1, privateEnabled: false, groups: {}, abusiveGroups: {} },
+  groupSettings: {},
   groupNames: { 10001: '东雪莲测试群', 20002: '另一个测试群' },
   resourceCancelAttempts: 0,
   resourceScenario: 'idle',
@@ -411,6 +412,38 @@ function apiMock(method, pathname, body) {
   })
   if (method === 'PUT' && pathname === '/whitelist') return writeOk('whitelist saved')
   if (method === 'GET' && pathname === '/groups') return ok({ ok: true, groups: mockState.groupNames })
+  if (method === 'POST' && pathname === '/groups') {
+    const id = body.body.groupId
+    if (id === '99900') return ok({ ok: false, message: '模拟保存失败' })
+    if (!(id in mockState.participation.groups)) mockState.participation.groups[id] = false
+    return ok({ ok: true, policy: mockState.participation, groups: mockState.groupNames, message: '群已添加' })
+  }
+  if (method === 'DELETE' && pathname === '/groups') {
+    const id = body.body.groupId
+    delete mockState.participation.groups[id]
+    delete mockState.participation.abusiveGroups[id]
+    delete mockState.groupNames[id]
+    return ok({ ok: true, policy: mockState.participation, groups: mockState.groupNames, message: '群已从列表删除' })
+  }
+  if (method === 'GET' && pathname === '/groups/detail') {
+    const id = body.searchParams.get('groupId')
+    const settings = {
+      groupId: id, randomEnabled: false, repeatEnabled: true, videoEnabled: true, collectionEnabled: true,
+      politicalEnabled: false, summaryUnlimited: false, persona: '', randomRate: null, voiceRate: null,
+      ...mockState.groupSettings[id], name: mockState.groupNames[id] || '',
+      enabled: mockState.participation.groups[id] === true, abusiveEnabled: mockState.participation.abusiveGroups[id] === true,
+    }
+    return ok({ ok: true, settings, personas: ['测试人格'], defaults: { randomRate: 0.008, voiceRate: 0.1 } })
+  }
+  if (method === 'PUT' && pathname === '/groups/detail') {
+    const settings = body.body
+    if (settings.name === '模拟失败') return ok({ ok: false, message: '模拟详情保存失败' })
+    mockState.groupSettings[settings.groupId] = settings
+    mockState.groupNames[settings.groupId] = settings.name
+    mockState.participation.groups[settings.groupId] = settings.enabled
+    mockState.participation.abusiveGroups[settings.groupId] = settings.abusiveEnabled
+    return ok({ ok: true, settings, policy: mockState.participation, groups: mockState.groupNames, message: '群详情已保存' })
+  }
   if (method === 'POST' && pathname === '/groups/import') {
     for (const id of body.body.groupIds) if (!(id in mockState.groupNames)) mockState.groupNames[id] = ''
     return ok({ ok: true, groups: mockState.groupNames })

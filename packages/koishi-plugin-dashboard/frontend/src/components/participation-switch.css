@@ -1,0 +1,8 @@
+.participation-switch { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; gap: 8px; cursor: pointer; white-space: nowrap; font-size: 13px; }
+.participation-switch input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.participation-switch .participation-track { display: inline-block; position: relative; width: 42px; height: 24px; border-radius: 14px; background: var(--border); transition: background .2s; }
+.participation-switch .participation-track::after { content: ''; position: absolute; width: 18px; height: 18px; top: 3px; left: 3px; border-radius: 50%; background: #fff; transition: transform .2s; }
+.participation-switch input:checked + .participation-track { background: var(--success); }
+.participation-switch input:checked + .participation-track::after { transform: translateX(18px); }
+.participation-switch input:focus-visible + .participation-track { outline: 2px solid var(--accent); outline-offset: 3px; }
+.participation-switch input:disabled + .participation-track { opacity: .5; cursor: not-allowed; }

@@ -13,7 +13,7 @@ import type {
   WhitelistMap,
 } from './types'
 import { errorMessage } from './types'
-import type { ParticipationChange, ParticipationResponse } from './services/participation-model'
+import type { GroupSettings, GroupSettingsResponse, ParticipationChange, ParticipationResponse } from './services/participation-model'
 import type {
   AiCapability,
   AiDiscoveryResponse,
@@ -222,6 +222,14 @@ export async function openSlDesktop() { return post('/protocol/sl/desktop', {}, 
 export async function fetchParticipation(): Promise<ApiResult<ParticipationResponse | null>> { return get<ParticipationResponse>('/participation', true) }
 // 保存一个开关，首次开启群时由后端原子初始化功能默认值。
 export async function saveParticipation(change: ParticipationChange): Promise<ApiResult<ParticipationResponse | null>> { return put<ParticipationResponse>('/participation', change, true) }
+// 添加一个默认关闭的管理群，保留已有群配置。
+export async function addManagedGroup(groupId: string): Promise<ApiResult<ParticipationResponse | null>> { return post<ParticipationResponse>('/groups', { groupId }, true) }
+// 从管理列表移除群并停止该群参与。
+export async function deleteManagedGroup(groupId: string): Promise<ApiResult<ParticipationResponse | null>> { return del<ParticipationResponse>('/groups', { groupId }, true) }
+// 读取指定群的全部可编辑功能和可选人格。
+export async function fetchGroupSettings(groupId: string): Promise<ApiResult<GroupSettingsResponse | null>> { return get<GroupSettingsResponse>('/groups/detail?groupId=' + encodeURIComponent(groupId), true) }
+// 以单次事务保存群详情，避免多项配置只保存一部分。
+export async function saveGroupSettings(settings: GroupSettings): Promise<ApiResult<GroupSettingsResponse | null>> { return put<GroupSettingsResponse>('/groups/detail', settings, true) }
 export async function startKoishiLocal() { return post('/deploy/koishi-start', {}, true, 10000) }
 export async function koishiDeployStatus() { return get('/deploy/koishi-status') }
 export async function localReadyCheck() { return get('/deploy/local-ready-check') }

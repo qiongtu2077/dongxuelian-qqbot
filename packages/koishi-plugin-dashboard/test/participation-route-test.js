@@ -26,7 +26,15 @@ function loadRoutes(dataDir, policy, state) {
       collectBody: (req, res, callback) => callback(req.body),
       json: (res, data, status = 200) => res.end({ data, status }),
     },
-    'koishi-plugin-dongxuelian-ai/lib/public/management-runtime': { loadManagementModule: () => policy },
+    'koishi-plugin-dongxuelian-ai/lib/public/management-runtime': { loadManagementModule: name => {
+      if (name === 'core.participationPolicy') return policy
+      if (name === 'core.constants') return { RANDOM_TRIGGER_RATE_BASE: 0.008 }
+      if (name === 'media.persona') return {
+        getAvailablePersonals: () => [{ name: '测试人格', type: 'persona' }, { name: '核心规则', type: 'core' }],
+        loadPersonaGroups: () => { state.personaRefreshes = (state.personaRefreshes || 0) + 1 },
+      }
+      throw new Error(`Unexpected management module: ${name}`)
+    } },
     '../config-transaction': { executeConfigTransaction: options => executeConfigTransaction({
       ...options,
       hooks: { beforeStage(stage, name) {
@@ -41,10 +49,77 @@ function loadRoutes(dataDir, policy, state) {
     } },
   }
   vm.runInNewContext(fs.readFileSync(filename, 'utf8'), {
-    module: result, exports: result.exports, Buffer,
+    module: result, exports: result.exports, Buffer, URL,
     require: name => overrides[name] || nativeRequire(name),
   }, { filename })
   return result.exports.routes
+}
+
+// 验证添加默认关闭、详情事务、失败回滚及删除不会影响私聊和其他群。
+async function testGroupManagement(routes, state, dataDir, policy) {
+  // 使用真实路由签名，区分 HTTP 方法并保留读取详情的查询参数。
+  function call(method, body = {}, detail = false) {
+    let result
+    routes[`${method} /dashboard/api/groups${detail ? '/detail' : ''}`]({ method, url: '/dashboard/api/groups/detail?groupId=10007', body: typeof body === 'string' ? body : JSON.stringify(body) }, { end: value => { result = value } })
+    return result
+  }
+  const read = name => JSON.parse(fs.readFileSync(path.join(dataDir, name), 'utf8'))
+  state.authorized = false
+  for (const method of ['POST', 'DELETE']) assert.equal(call(method, { groupId: '10007' }).status, 403)
+  for (const method of ['GET', 'PUT']) assert.equal(call(method, {}, true).status, 403)
+  state.authorized = true
+  for (const body of ['{', null, {}, { groupId: '01' }, { groupId: '__proto__' }]) {
+    assert.equal(call('POST', body).status, 400)
+    assert.equal(call('DELETE', body).status, 400)
+  }
+  assert.equal(call('GET', {}, true).status, 404)
+  assert.equal(call('POST', { groupId: '10007' }).status, 200)
+  assert.equal(policy.isGroupParticipationEnabled('10007'), false)
+  assert.equal(read('ai-repeat-enabled.json')['10007'], true)
+  const first = call('GET', {}, true)
+  assert.equal(first.status, 200)
+  assert.equal(first.data.settings.randomRate, null)
+  assert.equal(first.data.settings.voiceRate, null)
+  assert.deepEqual([...first.data.personas], ['测试人格'])
+  const draft = { ...first.data.settings, name: ' 群详情测试 ', enabled: true, abusiveEnabled: true, randomEnabled: true, repeatEnabled: false, videoEnabled: false, collectionEnabled: false, politicalEnabled: true, summaryUnlimited: true, persona: '测试人格', randomRate: 0, voiceRate: 1 }
+  for (const invalid of [{ ...draft, enabled: 'true' }, { ...draft, randomRate: 1.1 }, { ...draft, voiceRate: -1 }, { ...draft, persona: '../不存在' }, { ...draft, name: '长'.repeat(129) }]) assert.equal(call('PUT', invalid, true).status, 400)
+  const otherPolicy = policy.readParticipationPolicy()
+  const before = fs.readdirSync(dataDir).filter(name => name.endsWith('.json')).map(name => [name, fs.readFileSync(path.join(dataDir, name), 'utf8')])
+  state.failNames = true
+  assert.equal(call('PUT', draft, true).status, 500)
+  for (const [name, content] of before) assert.equal(fs.readFileSync(path.join(dataDir, name), 'utf8'), content)
+  assert.equal(fs.existsSync(path.join(dataDir, 'ai-persona-groups.json')), false)
+  state.failNames = false
+  assert.equal(call('PUT', draft, true).status, 200)
+  assert.equal(read('ai-repeat-enabled.json')['10007'], false)
+  assert.equal(read('ai-persona-groups.json')['10007'].persona, '测试人格')
+  assert.ok(read('ai-random-whitelist.json').includes('10007'))
+  assert.ok(read('video-blacklist.json').includes('10007'), '已有数组结构不能被改写为对象')
+  assert.ok(read('group-name-at-disabled-groups.json').includes('10007'))
+  assert.equal(call('GET', {}, true).data.settings.name, '群详情测试')
+  assert.equal(call('POST', { groupId: '10007' }).data.policy.groups['10007'], true, '重复添加不能重置总开关')
+  // 对象黑名单中的用户桶和其他群必须原样保留。
+  fs.writeFileSync(path.join(dataDir, 'video-blacklist.json'), JSON.stringify({ groups: [10007, '10002'], users: ['99'] }))
+  const reset = { ...draft, name: '群详情测试', randomRate: null, voiceRate: null, videoEnabled: true }
+  assert.equal(call('PUT', reset, true).status, 200)
+  assert.deepEqual(read('video-blacklist.json'), { groups: ['10002'], users: ['99'] })
+  assert.equal('10007' in read('ai-random-rate.json'), false)
+  assert.equal('10007' in read('ai-random-voice-rate.json'), false)
+  const beforeDelete = fs.readFileSync(policy.PARTICIPATION_POLICY_FILE, 'utf8')
+  state.fail = true
+  assert.equal(call('DELETE', { groupId: '10007' }).status, 500)
+  assert.equal(fs.readFileSync(policy.PARTICIPATION_POLICY_FILE, 'utf8'), beforeDelete)
+  assert.equal(read('dashboard-group-names.json')['10007'], '群详情测试')
+  state.fail = false
+  assert.equal(call('DELETE', { groupId: '10007' }).status, 200)
+  assert.equal(call('GET', {}, true).status, 404)
+  assert.equal(policy.isGroupParticipationEnabled('10007'), false)
+  assert.equal(policy.isGroupAbusiveEnabled('10007'), false)
+  assert.equal('10007' in read('dashboard-group-names.json'), false)
+  const afterDelete = policy.readParticipationPolicy()
+  delete otherPolicy.groups['10007']
+  assert.deepEqual(afterDelete, otherPolicy)
+  assert.ok(state.personaRefreshes >= 3, '保存和回滚均刷新真实人格缓存入口')
 }
 
 // 模拟路由调用，保留 JSON 反序列化错误与 HTTP 状态供断言。
@@ -149,7 +224,7 @@ async function testGroupDirectory() {
   }
 }
 
-// 验证默认关闭、首次启用原子初始化、热读取、鉴权及写入失败回滚。
+// 验证首次启用保留旧群设置、新群默认值、热读取、鉴权及写入失败回滚。
 async function main() {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'participation-route-'))
   const previous = process.env.DONGXUELIAN_AI_DATA_DIR
@@ -176,6 +251,12 @@ async function main() {
     // 旧配置明确迁移为嘴臭关闭，非法字段不被静默忽略。
     assert.deepEqual(policy.validateParticipationPolicy({ version: 1, privateEnabled: false, groups: { 10001: true } }).abusiveGroups, {})
     for (const abusiveGroups of [null, [], { 10001: 'true' }, { '__invalid__': true }]) assert.throws(() => policy.validateParticipationPolicy({ version: 1, privateEnabled: false, groups: {}, abusiveGroups }))
+    // 全新群只补齐复读默认值，不创建或改写没有配置过的黑白名单。
+    assert.equal(request(routes, 'PUT', { kind: 'group', groupId: '10006', enabled: false }).status, 200)
+    assert.equal(Object.prototype.hasOwnProperty.call(policy.readParticipationPolicy().groups, '10006'), false)
+    assert.equal(request(routes, 'PUT', { kind: 'group', groupId: '10006', enabled: true }).status, 200)
+    assert.deepEqual(read('ai-repeat-enabled.json'), { 10006: true })
+    for (const name of ['ai-random-whitelist.json', 'video-blacklist.json', 'group-name-at-disabled-groups.json']) assert.equal(fs.existsSync(path.join(dataDir, name)), false)
     write('ai-random-whitelist.json', ['10001', '10002'])
     write('ai-repeat-enabled.json', { 10001: false, 10002: false })
     write('video-blacklist.json', { groups: ['10001', '10002'], users: ['99'] })
@@ -191,10 +272,8 @@ async function main() {
     assert.equal(policy.isGroupParticipationEnabled('10001'), true)
     await testGroupNamesRoute(routes, state)
     await testGroupDirectory()
-    assert.deepEqual(read('ai-random-whitelist.json'), ['10002'])
-    assert.deepEqual(read('ai-repeat-enabled.json'), { 10001: true, 10002: false })
-    assert.deepEqual(read('video-blacklist.json'), { groups: ['10002'], users: ['99'] })
-    assert.deepEqual(read('group-name-at-disabled-groups.json'), { groups: ['10002'] })
+    // 第一次使用总开关也不能重置 NapCat 时期已经保存的功能配置。
+    assert.deepEqual(names.map(name => fs.readFileSync(path.join(dataDir, name), 'utf8')), before)
     // 再开启不覆盖已调整的主动回复、复读等设置。
     write('ai-random-whitelist.json', ['10001', '10002'])
     write('ai-repeat-enabled.json', { 10001: false, 10002: false })
@@ -222,9 +301,25 @@ async function main() {
     request(routes, 'PUT', { kind: 'group-abusive', groupId: '10003', enabled: true })
     assert.equal(policy.isGroupParticipationEnabled('10003'), false)
     assert.equal(policy.isGroupAbusiveEnabled('10003'), true)
+    const beforeNewGroup = names.map(name => fs.readFileSync(path.join(dataDir, name), 'utf8'))
+    const policyBeforeNewGroup = fs.readFileSync(policy.PARTICIPATION_POLICY_FILE, 'utf8')
+    state.fail = true
+    assert.equal(request(routes, 'PUT', { kind: 'group', groupId: '10003', enabled: true }).status, 500)
+    assert.deepEqual(names.map(name => fs.readFileSync(path.join(dataDir, name), 'utf8')), beforeNewGroup)
+    assert.equal(fs.readFileSync(policy.PARTICIPATION_POLICY_FILE, 'utf8'), policyBeforeNewGroup)
+    state.fail = false
     request(routes, 'PUT', { kind: 'group', groupId: '10003', enabled: true })
     assert.equal(read('ai-repeat-enabled.json')['10003'], true)
+    for (const index of [0, 2, 3]) assert.equal(fs.readFileSync(path.join(dataDir, names[index]), 'utf8'), beforeNewGroup[index])
     assert.equal(policy.isGroupAbusiveEnabled('10003'), true)
+    // 旧版数字 ID 与数组格式无需迁移，开启总开关时必须逐字节保留。
+    write('ai-random-whitelist.json', [10005, '10002'])
+    write('ai-repeat-enabled.json', { 10001: false, 10002: false, 10003: true, 10005: true })
+    write('video-blacklist.json', [10005, '10002'])
+    write('group-name-at-disabled-groups.json', [10005, '10002'])
+    const legacySnapshot = names.map(name => fs.readFileSync(path.join(dataDir, name), 'utf8'))
+    assert.equal(request(routes, 'PUT', { kind: 'group', groupId: '10005', enabled: true }).status, 200)
+    assert.deepEqual(names.map(name => fs.readFileSync(path.join(dataDir, name), 'utf8')), legacySnapshot)
     assert.equal(request(routes, 'GET').data.policy.abusiveGroups['10001'], true)
     const copy = policy.readParticipationPolicy()
     copy.abusiveGroups['10001'] = false
@@ -240,7 +335,8 @@ async function main() {
     request(routes, 'PUT', { kind: 'group-abusive', groupId: '10001', enabled: false })
     assert.equal(require(policyFile).isGroupAbusiveEnabled('10001'), false)
     assert.equal(policy.isGroupParticipationEnabled('10001'), true)
-    console.log('participation route tests passed: defaults, authorization, atomic initialization, rollback, persistence')
+    await testGroupManagement(routes, state, dataDir, policy)
+    console.log('participation route tests passed: defaults, authorization, group details, add/delete, rollback, persistence')
   } finally {
     if (previous === undefined) delete process.env.DONGXUELIAN_AI_DATA_DIR
     else process.env.DONGXUELIAN_AI_DATA_DIR = previous
