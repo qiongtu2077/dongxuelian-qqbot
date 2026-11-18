@@ -220,7 +220,7 @@ http://服务器IP:5150/dashboard/
 - Linux 缓存维护：发布时安装每日 04:00（随机延后 0～10 分钟）的 QQ 缓存清理任务，同时扫描 `/root/.config/QQ` 与 `/root/SnowLuma/home/.config/QQ`。只清账号目录内 `nt_data/{Pic,Emoji,Video,log}` 的超期文件，保留数据库和 Bot 数据；手动运行 `sh scripts/qq-cache-cleaner.sh` 默认仅统计。日志轮转同时覆盖 Koishi、NapCat 与 `snowluma.log`，每份超过 50 MB 时轮转，保留 14 份。
 - Linux 发布包回收：发布成功并通过稳定性检查后，只保留当前版本和上一份有成功回执、清单校验通过的版本；清理其他旧发布目录，以及早于本次成功发布且已搁置一小时的上传残留。回收使用同一把发布锁，失败只记录维护错误。手动预览使用 `node scripts/cleanup-dashboard-releases.js /root/koishi-app`，增加 `--apply` 才实际删除。
 - 现有 Linux 发布入口可运行 `KOISHI_APP_DIR=/root/koishi-app sh scripts/install-release-retention.sh` 安装成功回收钩子；`lian-release-*.service` 成功结束后触发独立的 `lian-package-retention.service`，无需重启现有应用。正常版本更新也会同步该钩子；回收服务使用不同名称前缀，避免循环触发。
-- 模型配置：切换 provider、model、base URL，支持内置和自定义供应商。
+- 在「AI模型与API配置」的「模型优先级调整」中，选择能力，将目标模型移到第 1 项并保存。支持内置和自定义供应商。
 - API Keys：管理 OpenAI/OpenCode、DeepSeek、DashScope、GLM、小米 MiMo 等 Key。
 - 模型用量：按文字、识图、语音识别、语音合成分别查询，支持当天、昨天、近 7/14/30 天、全部记录和自定义日期区间；汇总、趋势、供应商/模型分布及每日明细共用同一区间。起止日期按北京时间整天统计，包含起止当天；历史记录仅有每日汇总，不提供小时或分钟筛选。
 - 人格和世界观：新增、编辑、删除 persona；管理 lore；查看 modes。
@@ -941,18 +941,6 @@ Dashboard 里也有「指令速查」Tab，可按功能查找命令。
 | `东雪莲吐槽我` | 基于记忆或最近上下文生成简短吐槽 |
 | `东雪莲帮我说话 <内容>` | 让 AI 按当前人格替你组织一句话 |
 | `今日情绪` | 分析当天群聊情绪，需要群消息缓存 |
-
-### 模型与供应商
-
-| 指令 | 说明 |
-|------|------|
-| `可用模型` | 查看所有内置供应商和模型 |
-| `供应商 opencode` | 查看 OpenCode Go 可切换模型 |
-| `供应商 dashscope` | 查看阿里云 DashScope 可切换模型 |
-| `供应商 deepseek` | 查看 DeepSeek 官方可切换模型 |
-| `供应商 glm` | 查看智谱 GLM 可切换模型 |
-| `供应商 mimorium` | 查看小米 MiMo 可切换模型 |
-| `切换模型名` | 例如 `切换deepseek-chat`，会写入当前供应商和模型配置 |
 
 ### 人格与记忆
 

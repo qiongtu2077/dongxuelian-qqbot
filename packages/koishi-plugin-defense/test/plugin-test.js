@@ -126,7 +126,7 @@ async function run() {
 
   for (const command of [
     'AI状态', 'AI诊断', 'helpAI', '杂项功能', 'github解析', '【GitHub解析】', '东雪莲集合',
-    '供应商 opencode', '记忆', '谁@我', '东雪莲复读开',
+    '记忆', '谁@我', '东雪莲复读开',
     '东雪莲人格切换 默认', '昵称', '人格', '/help',
   ]) {
     result = await runDefenseCase({ isDirect: true, content: command })

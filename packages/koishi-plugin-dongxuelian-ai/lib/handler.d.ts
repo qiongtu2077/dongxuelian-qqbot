@@ -103,7 +103,6 @@ interface HandlerState {
     getRandomWhitelistStatus: (channelKey: string) => boolean;
     getThinkingEnabled: () => boolean;
     setThinkingEnabled: (enabled: boolean) => unknown;
-    resetConfigCache: () => unknown;
     getSkillsCount: () => number;
     channelMissCount: Map<string, unknown>;
     repeatEnabledCache: Record<string, boolean | undefined>;

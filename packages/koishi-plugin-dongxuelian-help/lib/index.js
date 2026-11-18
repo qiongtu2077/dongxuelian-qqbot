@@ -15,61 +15,6 @@ function stripMentions(text = '') {
         .replace(/\s+/g, ' ')
         .trim();
 }
-const PROVIDERS = {
-    opencode: {
-        name: 'OpenCode Go',
-        baseURL: 'https://opencode.ai/zen/go/v1',
-        models: [
-            { id: 'glm-5', name: 'GLM-5' },
-            { id: 'glm-5.1', name: 'GLM-5.1' },
-            { id: 'kimi-k2.5', name: 'Kimi K2.5' },
-            { id: 'kimi-k2.6', name: 'Kimi K2.6' },
-            { id: 'deepseek-v4-pro', name: 'DSv4pro' },
-            { id: 'deepseek-v4-flash', name: 'DSv4' },
-            { id: 'mimo-v2-pro', name: 'MiMo-V2-Pro' },
-            { id: 'mimo-v2-omni', name: 'MiMo-V2-Omni' },
-            { id: 'mimo-v2.5-pro', name: 'MiMo-V2.5-Pro' },
-            { id: 'mimo-v2.5', name: 'MiMo-V2.5' },
-            { id: 'minimax-m2.7', name: 'MiniMax M2.7' },
-            { id: 'minimax-m2.5', name: 'MiniMax M2.5' },
-            { id: 'qwen3.6-plus', name: '千问3.6' },
-            { id: 'qwen3.5-plus', name: '千问3.5' },
-        ],
-    },
-    dashscope: {
-        name: '阿里云',
-        baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        models: [
-            { id: 'qwen3.5-plus', name: 'qwen3.5' },
-            { id: 'qwen3.6-plus', name: 'qwen3.6' },
-            { id: 'qwen3.5-omni-flash', name: 'Qwen3.5-Omni-Flash' },
-        ],
-    },
-    deepseek: {
-        name: 'DeepSeek 官方',
-        baseURL: 'https://api.deepseek.com',
-        models: [
-            { id: 'deepseek-chat', name: 'deepseek-chat' },
-            { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
-            { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro' },
-        ],
-    },
-    glm: {
-        name: '智谱GLM',
-        baseURL: 'https://open.bigmodel.cn/api/paas/v4',
-        models: [
-            { id: 'glm-4.6v-flash', name: 'GLM 4.6' },
-        ],
-    },
-    mimorium: {
-        name: '小米',
-        baseURL: 'https://token-plan-cn.xiaomimimo.com/v1',
-        models: [
-            { id: 'mimo-v2.5-pro', name: 'mimo 2.5' },
-            { id: 'mimo-v2-omni', name: 'mimo v2' },
-        ],
-    },
-};
 // --- 菜单渲染 --- #
 // 根帮助菜单：列出一级菜单入口和模糊搜索入口。
 function renderRootHelp() {
@@ -87,7 +32,6 @@ function renderAiHelp() {
         'AI帮助',
         'helpAI / 帮助AI / AI帮助',
         '',
-        '【切换模型与供应商】',
         '【群聊主动回复】',
         '【联网】',
         '【抓取原始事件】',
@@ -234,33 +178,6 @@ function renderPersonaHelp() {
         '东雪莲思考开 / 关',
     ].join('\n');
 }
-// 渲染切换模型与供应商分支的供应商入口。
-function renderSwitchModels() {
-    return [
-        '【切换模型与供应商】',
-        '供应商 opencode',
-        '供应商 dashscope',
-        '供应商 deepseek',
-        '供应商 glm',
-        '供应商 mimorium',
-    ].join('\n');
-}
-// 渲染指定供应商下的可切换模型。
-function renderProviderModels(prov) {
-    return [
-        `${prov.name} 可用模型：`,
-        ...prov.models.map(m => `切换${m.name}`),
-    ].join('\n');
-}
-// 渲染全部供应商和模型 id。
-function renderAvailableModels() {
-    let text = '';
-    for (const [, prov] of Object.entries(PROVIDERS)) {
-        text += `${prov.name}：\n`;
-        text += prov.models.map(m => `  ${m.name}（${m.id}）`).join('\n') + '\n\n';
-    }
-    return text.trim();
-}
 // --- 固定菜单预计算 --- #
 // 超过 100 字符的菜单以一条消息记录发送；固定文本只在模块加载时调用。
 function formatHelpReply(text) {
@@ -270,11 +187,9 @@ const MENU_TEXTS = {
     root: renderRootHelp(), ai: renderAiHelp(), misc: renderMiscHelp(), github: renderGithubHelp(),
     memory: renderMemoryHelp(), groupReply: renderGroupReplyHelp(), network: renderNetworkHelp(),
     event: renderEventHelp(), collection: renderCollectionHelp(), blacklist: renderBlacklistHelp(),
-    sensitive: renderSensitiveHelp(), persona: renderPersonaHelp(), switchModels: renderSwitchModels(),
-    availableModels: renderAvailableModels(),
+    sensitive: renderSensitiveHelp(), persona: renderPersonaHelp(),
 };
 const MENU_REPLIES = Object.fromEntries(Object.entries(MENU_TEXTS).map(([key, text]) => [key, formatHelpReply(text)]));
-const PROVIDER_REPLIES = Object.fromEntries(Object.entries(PROVIDERS).map(([id, provider]) => [id, formatHelpReply(renderProviderModels(provider))]));
 const HELP_SEARCH_LINES = Object.values(MENU_TEXTS).join('\n').split('\n');
 // --- 插件入口 --- #
 // 注册帮助菜单 middleware，并按菜单树做精确匹配和模糊搜索。
@@ -320,12 +235,6 @@ function apply(ctx) {
         if (plain === '敏感话题检测' || plain === '【敏感话题检测】') {
             return MENU_REPLIES.sensitive;
         }
-        if (plain === '切换模型' || plain === '【切换模型与供应商】') {
-            return MENU_REPLIES.switchModels;
-        }
-        if (plain === '可用模型') {
-            return MENU_REPLIES.availableModels;
-        }
         // #4 /help xxx 模糊搜索
         const helpSearchMatch = plain.match(/^\/?help\s*(.+)/);
         if (helpSearchMatch) {
@@ -349,12 +258,6 @@ function apply(ctx) {
                 return '未找到相关帮助。';
             // 搜索结果取决于用户输入，只有这一类动态帮助需要按本次长度选择发送形式。
             return formatHelpReply(`/help${keyword} 结果：\n${lines.map(l => `- ${l.replace(/^-\s*/, '')}`).join('\n')}`);
-        }
-        const providerMatch = plain.match(/^供应商\s+(.+)$/);
-        if (providerMatch) {
-            const id = providerMatch[1].toLowerCase();
-            const provider = Object.entries(PROVIDERS).find(([key, value]) => key === id || value.name.toLowerCase() === id);
-            return provider ? PROVIDER_REPLIES[provider[0]] : `未找到供应商「${providerMatch[1]}」`;
         }
         return next();
     });

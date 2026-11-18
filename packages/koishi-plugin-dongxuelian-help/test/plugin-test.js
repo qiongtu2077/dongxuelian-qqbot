@@ -107,7 +107,8 @@ async function run() {
 
   result = await runHelpCase(ctx, '[CQ:at,qq=90000] helpAI')
   check('mentions are stripped before helpAI match', typeof result.result === 'string' && result.result.includes('AI帮助'), String(result.result))
-  check('AI help lists tree branches only', typeof result.result === 'string' && result.result.includes('【切换模型与供应商】') && !result.result.includes('【常用】') && !result.result.includes('【集合】'), String(result.result))
+  check('AI help lists current tree branches only', result.text.includes('【群聊主动回复】') && !result.text.includes('【常用】') && !result.text.includes('【集合】'), result.text)
+  check('AI help omits the model switching branch', !result.text.includes('切换模型'), result.text)
 
   result = await runHelpCase(ctx, '杂项功能')
   check('misc help includes group essence ranking', result.result.includes('统计群精华'), String(result.result))
@@ -152,10 +153,14 @@ async function run() {
   result = await runHelpCase(ctx, '/help 人格')
   check('fuzzy help returns matching lines', typeof result.result === 'string' && result.result.includes('/help人格 结果'), String(result.result))
 
-  result = await runHelpCase(ctx, '供应商 opencode')
-  check('provider model help returns provider models', typeof result.result === 'string' && result.result.includes('OpenCode Go 可用模型'), String(result.result))
+  for (const command of ['切换模型', '【切换模型与供应商】', '可用模型', '供应商 opencode', '供应商 OpenCode Go']) {
+    const menu = await runHelpCase(ctx, command)
+    check(`removed model menu falls through: ${command}`, menu.result === 'NEXT' && menu.nextCalled, JSON.stringify(menu))
+  }
+  result = await runHelpCase(ctx, '/help 供应商')
+  check('fuzzy help omits retired provider commands', result.text === '未找到相关帮助。', result.text)
 
-  for (const command of ['help东雪莲', 'helpAI', '杂项功能', 'github解析', 'help集合', '群聊主动回复', '联网', '抓取原始事件', '白名单黑名单管理', '人格', '记忆', '敏感话题检测', '切换模型', '可用模型', '供应商 opencode', '供应商 dashscope', '供应商 deepseek', '供应商 glm', '供应商 mimorium', '/help GitHub', '/help 人格']) {
+  for (const command of ['help东雪莲', 'helpAI', '杂项功能', 'github解析', 'help集合', '群聊主动回复', '联网', '抓取原始事件', '白名单黑名单管理', '人格', '记忆', '敏感话题检测', '/help GitHub', '/help 人格']) {
     const menu = await runHelpCase(ctx, command)
     check(`100-character threshold applies to ${command} (${menu.text.length})`, menu.record === (menu.text.length > 100) && !menu.nextCalled, menu.result)
   }
@@ -164,9 +169,6 @@ async function run() {
   check('short menu is sent as an ordinary group message', shortCalls.length === 1 && shortCalls[0].method === 'group', JSON.stringify(shortCalls))
   result = await runHelpCase(ctx, '/help GitHub')
   check('fuzzy search includes the new GitHub submenu commands', result.text.includes('GitHub查询群添加'), result.text)
-  result = await runHelpCase(ctx, '供应商 OpenCode Go')
-  const providerById = await runHelpCase(ctx, '供应商 opencode')
-  check('provider name and ID share the same prepared menu', result.result === providerById.result, result.result)
 
   result = await runHelpCase(ctx, '不是帮助命令')
   check('unknown text falls through to next', result.result === 'NEXT' && result.nextCalled === true, JSON.stringify(result))

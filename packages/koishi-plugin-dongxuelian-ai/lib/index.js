@@ -58,7 +58,7 @@ loadSkills, loadSkillsContentCache, // 技能文件列表/内容加载
 callOpenAI, // 底层 LLM 调用
 getSkillsCount, // 已加载技能数量
  } = require('./chat');
-const { loadConfig, resetConfigCache, // 运行时配置加载/刷新
+const { loadConfig, // 运行时配置加载
 getThinkingEnabled, setThinkingEnabled, // thinking 模式开关
  } = require('./core/runtime-config');
 const { registerCapabilityFailureContext, resetCapabilityFailureNotifier, } = require('./core/capability-failure-notifier');
@@ -419,7 +419,6 @@ function apply(ctx) {
             callOpenAI: callOpenAIForHandler, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
             getThinkingEnabled,
             setThinkingEnabled,
-            resetConfigCache,
             getSkillsCount,
             channelMissCount, repeatEnabledCache: getRepeatEnabledCache(), channelTodayCache, lastEmotionCache,
         });

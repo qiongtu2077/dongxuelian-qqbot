@@ -96,7 +96,7 @@ const {
   getSkillsCount,         // 已加载技能数量
 } = require('./chat') as typeof import('./chat')
 const {
-  loadConfig, resetConfigCache,   // 运行时配置加载/刷新
+  loadConfig,                // 运行时配置加载
   getThinkingEnabled, setThinkingEnabled, // thinking 模式开关
 } = require('./core/runtime-config') as typeof import('./core/runtime-config')
 const {
@@ -720,7 +720,6 @@ function apply(ctx: IndexContext): void {
       callOpenAI: callOpenAIForHandler, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
       getThinkingEnabled,
       setThinkingEnabled,
-      resetConfigCache,
       getSkillsCount,
       channelMissCount, repeatEnabledCache: getRepeatEnabledCache(), channelTodayCache, lastEmotionCache,
     })

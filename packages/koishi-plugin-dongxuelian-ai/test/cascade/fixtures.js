@@ -52,7 +52,6 @@ function makeHandlerState(overrides = {}) {
     loadSkills: 0,
     loadSkillsContentCache: 0,
     repeat: [],
-    resetConfigCache: 0,
     callOpenAI: 0,
   }
   const repeatEnabledCache = {}
@@ -85,7 +84,6 @@ function makeHandlerState(overrides = {}) {
     getRandomWhitelistStatus() { return false },
     getThinkingEnabled() { return false },
     setThinkingEnabled(value) { calls.thinking = !!value },
-    resetConfigCache() { calls.resetConfigCache++ },
     getSkillsCount() { return 3 },
     channelMissCount,
     repeatEnabledCache,
@@ -117,7 +115,6 @@ const CMD = {
   helpCollection: '\u5e2e\u52a9\u96c6\u5408',
   helpCollectionDongxuelian: '东雪莲集合',
   misc: '杂项功能',
-  provider: '供应商',
   other: '\u5176\u4ed6',
   groupReply: '\u7fa4\u804a\u4e3b\u52a8\u56de\u590d',
   network: '\u8054\u7f51',

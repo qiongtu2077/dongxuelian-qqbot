@@ -80,12 +80,11 @@ async function runRepositoryGuards(context) {
   for (const command of [
     CMD.helpCollection, CMD.helpCollectionDongxuelian, CMD.misc, CMD.groupReply, CMD.network,
     CMD.eventDump, CMD.whitelistBlacklist, CMD.persona, CMD.sensitive,
-    CMD.provider,
   ]) {
     check(`reserved command recognized: ${command}`, u.isReservedCommand(command))
     check(`reserved command listed in constants: ${command}`, constantsSrc.includes(`'${command}'`))
   }
-  for (const removedCommand of ['常用', '指令速查', '其他帮助', '黑名单管理']) {
+  for (const removedCommand of ['常用', '指令速查', '其他帮助', '黑名单管理', '切换模型', '供应商', '可用模型']) {
     check(`removed menu command not reserved: ${removedCommand}`, !u.isReservedCommand(removedCommand))
     check(`removed menu command absent from constants: ${removedCommand}`, !constantsSrc.includes(`'${removedCommand}'`))
   }

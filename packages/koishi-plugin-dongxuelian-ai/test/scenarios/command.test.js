@@ -27,6 +27,29 @@ async function withGreenResourceSnapshot(fn) {
 async function run(t) {
   t.section('scenario: command middleware')
 
+  // 旧模型指令和以“切换”开头的群聊消息都走普通消息路由。
+  await withScenario({}, async ({ data, makeSession, run }) => {
+    const modelFiles = ['ai-provider.txt', 'ai-model.txt', 'ai-base-url.txt', 'ai-capability-config.json']
+    const originalSettings = modelFiles.map(file => data.readText(file))
+    await withGreenResourceSnapshot(async () => {
+      const accountQuestion = await run(makeSession({
+        content: '切换账号吗',
+        userId: '12345',
+        author: { id: '12345', name: 'group-admin' },
+        event: { sender: { role: 'admin' }, message: [] },
+      }))
+      checkNextCalled(t, 'scenario account switch question falls through as group chat', accountQuestion)
+      t.check('scenario account switch question sends no model permission notice', accountQuestion.sent.length === 0, JSON.stringify(accountQuestion.sent))
+
+      const oldCommand = await run(makeSession({ content: '切换deepseek-chat' }))
+      checkNextCalled(t, 'scenario retired model switch falls through for bot admins', oldCommand)
+      t.check('scenario retired model switch sends no command reply', oldCommand.sent.length === 0, JSON.stringify(oldCommand.sent))
+    })
+    for (const [index, file] of modelFiles.entries()) {
+      t.checkEqual(`scenario QQ does not change ${file}`, data.readText(file), originalSettings[index])
+    }
+  })
+
   // 命令只剥离前缀，提交和保存的正文应包含所有分行。
   await withScenario({}, async ({ makeSession, run }) => {
     const multilineText = '第一行苹果\n第二行梨\n\n最后一行桃'

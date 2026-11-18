@@ -6,12 +6,12 @@
  * 接近 300 行，新增逻辑须谨慎。
  */
 const path = require('path');
-const { DATA_DIR, PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE, SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE, HOSTILE_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_RAMP, } = require('./core/constants');
+const { DATA_DIR, SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE, HOSTILE_MODE_FILE, SUMMARY_WHITELIST_FILE, RANDOM_TRIGGER_RATE_BASE, RANDOM_TRIGGER_RAMP, } = require('./core/constants');
 const { personaUsersCache, loadPersonaGroups, getGroupPersona, setGroupPersona, resetGroupPersona, getUserPersona, setUserPersona, resetUserPersona, resolvePersona, getAvailablePersonals, } = require('./persona/persona');
 const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserConversationHistory, getMemorySummary, getConversationHistory } = require('./conversation');
 const { sendForwardMsg } = require('./core/api');
 const { runHealthCheck, formatHealthReport } = require('./diagnostics/health-check');
-const { hasAdminPermission, isReservedCommand, readJsonFile, writeJsonFile, writeTextFile, safeUnlink, safeChannelKey, formatPercent, getSearchCapability, formatSearchStatus, extractAtIds, sanitizeUserName, sanitizeUserInput, isJailbreakAttempt, pickJailbreakFallbackReply, sanitizeReply, stripMarkdownForQQ, trimReply, } = require('./core/utils');
+const { hasAdminPermission, readJsonFile, writeJsonFile, writeTextFile, safeUnlink, safeChannelKey, formatPercent, getSearchCapability, formatSearchStatus, extractAtIds, sanitizeUserName, sanitizeUserInput, isJailbreakAttempt, pickJailbreakFallbackReply, sanitizeReply, stripMarkdownForQQ, trimReply, } = require('./core/utils');
 const { isUnsafeThinkingReply, hasInternalContextLeak } = require('./reply/reply-guard');
 const { logDebug } = require('./core/logging-config');
 const { handled, notHandled, } = require('./commands/command-result');
@@ -63,7 +63,7 @@ function hasMessageTimestamp(message) {
 // 生成定位失败时使用的上下文文本。实现在 commands/locate-command，随卡片规格一起维护。
 // Handles operational commands for modes, diagnostics, history lookup and search switches.
 async function handleOperationalCommandDomain(session, ctx, state) {
-    const { plain, inGuild, channelKey, currentUserId, adminCommandMatched, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus, getThinkingEnabled, setThinkingEnabled, resetConfigCache, getSkillsCount, channelMissCount, repeatEnabledCache, channelTodayCache, lastEmotionCache, } = state;
+    const { plain, inGuild, channelKey, currentUserId, adminCommandMatched, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus, getThinkingEnabled, setThinkingEnabled, getSkillsCount, channelMissCount, repeatEnabledCache, channelTodayCache, lastEmotionCache, } = state;
     if (/^(?:东雪莲)?测试开$/.test(plain)) {
         try {
             require('fs').writeFileSync(TEST_MODE_FILE, 'on');
@@ -469,37 +469,11 @@ async function handleCommand(session, ctx, state) {
     const conversationResult = await handleConversationCommandDomain(session, ctx, state);
     if (conversationResult.matched)
         return conversationResult;
-    const { plain, channelKey, currentUserId, adminCommandMatched, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, resetConfigCache, getSkillsCount, channelMissCount, } = state;
+    const { plain, channelKey, loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache, getSkillsCount, channelMissCount, } = state;
     // === TTS 语音合成命令 ===
     const voiceResult = await handleVoiceCommand(session, state, { ctx });
     if (voiceResult.matched)
         return voiceResult;
-    const switchMatch = plain.match(/^切换(.+)$/);
-    if (switchMatch && !adminCommandMatched && !isReservedCommand(plain)) {
-        if (!hasAdminPermission(session))
-            return handled('切换模型需要管理员权限。');
-        const requestedName = switchMatch[1].trim();
-        let foundProvider = null;
-        let foundModelId = null;
-        for (const [id, prov] of Object.entries(PROVIDERS)) {
-            const found = prov.models.find(m => m.name === requestedName || m.id === requestedName);
-            if (found) {
-                foundProvider = id;
-                foundModelId = found.id;
-                break;
-            }
-        }
-        if (foundProvider) {
-            const prov = PROVIDERS[foundProvider];
-            await writeTextFile(PROVIDER_FILE, foundProvider);
-            await writeTextFile(MODEL_FILE, foundModelId);
-            await writeTextFile(BASE_URL_FILE, prov.baseURL);
-            resetConfigCache();
-            return handled(`已切换至 ${prov.name}：${foundModelId}`);
-        }
-        const allModels = Object.values(PROVIDERS).flatMap(p => p.models.map(m => m.name));
-        return handled(`未找到模型"${requestedName}"。可用模型：${allModels.join('、')}`);
-    }
     if (plain === 'AI状态') {
         return handled(await buildStatusCommandReply(session, true));
     }

@@ -7,7 +7,6 @@
 const path = require('path')
 const {
   DATA_DIR,
-  PROVIDERS, PROVIDER_FILE, MODEL_FILE, BASE_URL_FILE,
   SEARCH_ENABLED_FILE, TEST_MODE_FILE, THINKING_MODE_FILE,
   HOSTILE_MODE_FILE,
   SUMMARY_WHITELIST_FILE,
@@ -25,7 +24,7 @@ const { clearConversationHistory, clearUserMemory, clearGroupMemory, clearUserCo
 const { sendForwardMsg } = require('./core/api') as typeof import('./core/api')
 const { runHealthCheck, formatHealthReport } = require('./diagnostics/health-check') as typeof import('./diagnostics/health-check')
 const {
-  hasAdminPermission, isReservedCommand,
+  hasAdminPermission,
   readJsonFile, writeJsonFile, writeTextFile, safeUnlink,
   safeChannelKey,
   formatPercent, getSearchCapability, formatSearchStatus,
@@ -177,7 +176,6 @@ interface HandlerState {
   getRandomWhitelistStatus: (channelKey: string) => boolean
   getThinkingEnabled: () => boolean
   setThinkingEnabled: (enabled: boolean) => unknown
-  resetConfigCache: () => unknown
   getSkillsCount: () => number
   channelMissCount: Map<string, unknown>
   repeatEnabledCache: Record<string, boolean | undefined>
@@ -230,7 +228,7 @@ async function handleOperationalCommandDomain(session: HandlerSession, ctx: Hand
     plain, inGuild, channelKey, currentUserId, adminCommandMatched,
     loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache,
     callOpenAI, setRepeatEnabled, getRandomTriggerBaseRate, getRandomWhitelistStatus,
-    getThinkingEnabled, setThinkingEnabled, resetConfigCache, getSkillsCount,
+    getThinkingEnabled, setThinkingEnabled, getSkillsCount,
     channelMissCount, repeatEnabledCache, channelTodayCache, lastEmotionCache,
   } = state
 
@@ -614,41 +612,14 @@ async function handleCommand(session: HandlerSession, ctx: HandlerContext, state
   if (conversationResult.matched) return conversationResult
 
   const {
-    plain, channelKey, currentUserId, adminCommandMatched,
+    plain, channelKey,
     loadConfig, loadRuntimeSettings, loadSkills, loadSkillsContentCache,
-    resetConfigCache, getSkillsCount,
-    channelMissCount,
+    getSkillsCount, channelMissCount,
   } = state
 
   // === TTS 语音合成命令 ===
   const voiceResult = await handleVoiceCommand(session, state, { ctx })
   if (voiceResult.matched) return voiceResult
-
-  const switchMatch = plain.match(/^切换(.+)$/)
-  if (switchMatch && !adminCommandMatched && !isReservedCommand(plain)) {
-    if (!hasAdminPermission(session)) return handled('切换模型需要管理员权限。')
-    const requestedName = switchMatch[1].trim()
-    let foundProvider = null
-    let foundModelId = null
-    for (const [id, prov] of Object.entries(PROVIDERS)) {
-      const found = prov.models.find(m => m.name === requestedName || m.id === requestedName)
-      if (found) {
-        foundProvider = id
-        foundModelId = found.id
-        break
-      }
-    }
-    if (foundProvider) {
-      const prov = PROVIDERS[foundProvider]
-      await writeTextFile(PROVIDER_FILE, foundProvider)
-      await writeTextFile(MODEL_FILE, foundModelId)
-      await writeTextFile(BASE_URL_FILE, prov.baseURL)
-      resetConfigCache()
-      return handled(`已切换至 ${prov.name}：${foundModelId}`)
-    }
-    const allModels = Object.values(PROVIDERS).flatMap(p => p.models.map(m => m.name))
-    return handled(`未找到模型"${requestedName}"。可用模型：${allModels.join('、')}`)
-  }
 
   if (plain === 'AI状态') {
     return handled(await buildStatusCommandReply(session, true))
