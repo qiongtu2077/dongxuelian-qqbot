@@ -235,9 +235,12 @@ async function runRepositoryGuards(context) {
   const aiApiSrc = read(path.join(LIB, 'core', 'api.js'))
   check('AI token usage records capability model and detailed usage fields', aiApiSrc.includes('function readUsageDetails') && aiApiSrc.includes('capability,') && aiApiSrc.includes('model: attempt.model') && aiApiSrc.includes('cache_read_tokens'))
   const agentConsoleSrc = fs.existsSync(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) ? read(path.join(PKG_ROOT, 'agent-console', 'src', 'main.tsx')) : ''
+  const agentConsoleChatSrc = read(path.join(PKG_ROOT, 'agent-console', 'src', 'ChatPage.tsx'))
   check('agent console exposes runtime config page', agentConsoleSrc.includes("id: 'runtime'") && agentConsoleSrc.includes('function RuntimePage') && agentConsoleSrc.includes('queue.maxGlobal'))
   check('agent console exposes persona page separate from skills', agentConsoleSrc.includes("id: 'personas'") && agentConsoleSrc.includes('function PersonasPage') && agentConsoleSrc.includes('api.savePersona'))
-  check('agent console isolates history by persona only after opt-in', agentConsoleSrc.includes('getPersonaHistoryKey') && agentConsoleSrc.includes('AGENT_CONSOLE_REMEMBER_HISTORY_KEY') && agentConsoleSrc.includes('rememberHistory'))
+  check('agent console isolates history by persona only after opt-in', agentConsoleSrc.includes("from './ChatPage'")
+    && agentConsoleChatSrc.includes('getPersonaHistoryKey(personaName)') && agentConsoleChatSrc.includes('AGENT_CONSOLE_REMEMBER_HISTORY_KEY')
+    && agentConsoleChatSrc.includes('localStorage.setItem(historyKey, saved)'))
   check('agent console can enable skills from skill page', agentConsoleSrc.includes('function SkillsPage') && agentConsoleSrc.includes('next.enabledSkills') && agentConsoleSrc.includes('注入轻量索引'))
   check('dashboard exposes deterministic plan action APIs', dashboardAgentRoutesSrc.includes("/dashboard/api/agent/plans") && dashboardAgentRoutesSrc.includes("/resume") && dashboardAgentRoutesSrc.includes("/abandon") && dashboardAgentRoutesSrc.includes("loadManagementModule('agent.planRunner')"))
   check('dashboard plan create obeys plan mode switch', dashboardAgentRoutesSrc.includes("loadManagementModule('agent.config')") && dashboardAgentRoutesSrc.includes('agentConfig.planMode?.enabled') && dashboardAgentRoutesSrc.includes('计划模式当前未开启'))

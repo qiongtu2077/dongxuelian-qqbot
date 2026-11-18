@@ -1,5 +1,7 @@
-import type { ExecFileOptions } from 'child_process';
-declare const fs: typeof import("fs/promises");
+import { runVideoCommand as run } from './video-download';
+import type { StagingFsApi, StagingPrepareResult, VideoFsApi } from './video-download';
+import { pickFormat } from './video-format';
+import type { FormatPick, VideoInfo } from './video-format';
 declare const videoTaskQueueModule: typeof import("./video-task-queue");
 declare const resolveBiliShortLink: typeof import("./bili-input").resolveBiliShortLink;
 type VideoTraceContext = import('./video-trace').VideoTraceContext;
@@ -52,47 +54,11 @@ interface RuntimeConfig {
     videoBlacklistFile: string;
     videoMinMemMb: number;
 }
-interface VideoFormat {
-    format_id?: string | number;
-    format_note?: string;
-    ext?: string;
-    filesize?: number;
-    filesize_approx?: number;
-    height?: number;
-    fps?: number;
-    abr?: number;
-    vcodec?: string;
-    acodec?: string;
-    url?: string;
-}
-interface VideoInfo {
-    title?: string;
-    thumbnail?: string;
-    webpage_url?: string;
-    original_url?: string;
-    url?: string;
-    id?: string;
-    display_id?: string;
-    duration?: number;
-    formats?: VideoFormat[];
-}
-interface FormatPick {
-    format: string;
-    label: string;
-    totalSize: number;
-    height: number;
-}
-interface RunResult {
-    stdout: string;
-    stderr: string;
-}
 interface ProbeResult {
     info?: VideoInfo;
     picked?: FormatPick;
     userError?: VideoUserError;
 }
-type VideoFsApi = Pick<typeof fs, 'mkdir' | 'stat' | 'rm'>;
-type StagingFsApi = Pick<typeof fs, 'lstat' | 'realpath' | 'rm' | 'stat' | 'readFile'>;
 type VideoUserErrorNumber = '001' | '002' | '003' | '004' | '005' | '006' | '007' | '008' | '009' | '010' | '011' | '012' | '013' | '014' | '015' | '016' | '017' | '018' | '019' | '020' | '021' | '022' | '023' | '024' | '025' | '026' | '027' | '028' | '029' | '030' | '031' | '032';
 type VideoUserErrorId = `video-${VideoUserErrorNumber}`;
 interface VideoUserError {
@@ -147,17 +113,6 @@ type SendOutcome = {
     reason: 'call_error';
     error: string;
 };
-type StagingPrepareResult = {
-    status: 'ready';
-    path: string;
-} | {
-    status: 'create_failed';
-    path: string;
-    error: unknown;
-} | {
-    status: 'safety_validation_failed';
-    path: string;
-};
 interface StagingCleanupOptions {
     fs?: StagingFsApi;
     adminIdsFile?: string;
@@ -176,7 +131,7 @@ interface DownloadDeps {
     fs?: VideoFsApi;
     run?: typeof run;
     probeVideo?: typeof probeVideo;
-    createStagingDirectory?: typeof createRequestStagingDirectory;
+    createStagingDirectory?: (cacheSlug: string) => Promise<StagingPrepareResult>;
     removeStagingDirectory?: typeof removeRequestStagingDirectory;
     resolveShortLink?: typeof resolveBiliShortLink;
     resourceModules?: VideoResourceModules | null;
@@ -205,7 +160,6 @@ interface VideoBlacklistCache {
 }
 declare function toFileUrl(filePath: string): string;
 declare function getRuntimeConfig(): RuntimeConfig;
-declare function run(file: string, args: string[], options?: ExecFileOptions): Promise<RunResult>;
 declare function buildVideoUserError(input: VideoUserErrorInput): VideoUserError;
 declare function loadVideoBlacklist(force?: boolean): VideoBlacklistCache;
 declare function isBlacklistedGroup(session: VideoSessionLike): boolean;
@@ -214,7 +168,6 @@ declare function rememberRecentParse(session: VideoSessionLike, keys: string[], 
 declare function formatDecimalMb(bytes: number): string;
 declare function buildOversizeMessage(bytes: number): string;
 declare function buildActualOversizeMessage(bytes: number): string;
-declare function createRequestStagingDirectory(cacheSlug: string): Promise<StagingPrepareResult>;
 declare function getResourceGateStorageFailure(error: unknown): ResourceGateStorageFailure | null;
 declare function flushGateAdminAlertWindow(key: string): Promise<void>;
 declare function reportResourceGateStorageFailure(ctx: ContextLike, session: VideoSessionLike, failure: ResourceGateStorageFailure, traceId: string, taskId: string, options?: GateAdminAlertOptions, trace?: VideoTraceContext): Promise<void>;
@@ -227,7 +180,6 @@ declare function cleanupVideoCache(ctx: ContextLike | null, now?: number): Promi
 }>;
 declare function getVideoCacheStatus(): Record<string, unknown>;
 declare function getShortestBiliUrl(info?: VideoInfo): string;
-declare function pickFormat(info: VideoInfo): FormatPick | null;
 declare function safeSend(ctx: ContextLike, session: VideoSessionLike, message: unknown, label?: string): Promise<SendOutcome>;
 declare function probeVideo(url: string, runCommand?: typeof run): Promise<ProbeResult>;
 declare function downloadAndSend(ctx: ContextLike, session: VideoSessionLike, url: string, source?: string, deps?: DownloadDeps, options?: DownloadRequestOptions): Promise<string | undefined>;

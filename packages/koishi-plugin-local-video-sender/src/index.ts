@@ -1,7 +1,22 @@
-import type { ExecFileOptions } from 'child_process'
+import {
+  CACHE_FILE_RE,
+  STAGING_DIR_RE,
+  createRequestStagingDirectory,
+  createVideoDownload,
+  getCommandErrorMessage,
+  getErrorMessage,
+  getNodeErrorCode,
+  getSafeCommandErrorSummary,
+  isSafeVideoCacheFile,
+  prepareVideoDirectories,
+  removeVideoStagingDirectory,
+  runVideoCommand as run,
+} from './video-download'
+import type { StagingFsApi, StagingPrepareResult, VideoFsApi } from './video-download'
+import { pickFormat, safeNumber } from './video-format'
+import type { FormatPick, VideoInfo } from './video-format'
 
 const { segment } = require('koishi')
-const { execFile } = require('child_process')
 const { randomUUID } = require('crypto') as typeof import('crypto')
 const fsSync = require('fs') as typeof import('fs')
 const fs = require('fs/promises') as typeof import('fs/promises')
@@ -87,57 +102,11 @@ interface RuntimeConfig {
   videoMinMemMb: number
 }
 
-interface VideoFormat {
-  format_id?: string | number
-  format_note?: string
-  ext?: string
-  filesize?: number
-  filesize_approx?: number
-  height?: number
-  fps?: number
-  abr?: number
-  vcodec?: string
-  acodec?: string
-  url?: string
-}
-
-interface VideoInfo {
-  title?: string
-  thumbnail?: string
-  webpage_url?: string
-  original_url?: string
-  url?: string
-  id?: string
-  display_id?: string
-  duration?: number
-  formats?: VideoFormat[]
-}
-
-interface FormatCandidate {
-  format: string
-  label: string
-}
-
-interface FormatPick {
-  format: string
-  label: string
-  totalSize: number
-  height: number
-}
-
-interface RunResult {
-  stdout: string
-  stderr: string
-}
-
 interface ProbeResult {
   info?: VideoInfo
   picked?: FormatPick
   userError?: VideoUserError
 }
-
-type VideoFsApi = Pick<typeof fs, 'mkdir' | 'stat' | 'rm'>
-type StagingFsApi = Pick<typeof fs, 'lstat' | 'realpath' | 'rm' | 'stat' | 'readFile'>
 
 type VideoUserErrorNumber =
   | '001' | '002' | '003' | '004' | '005' | '006' | '007' | '008' | '009'
@@ -179,17 +148,6 @@ type CachedVideoSendResult =
   | { status: 'done' }
   | { status: 'uncertain', reason: string }
   | { status: 'failed', reason: string, userError: VideoUserError }
-
-type StagingPrepareResult =
-  | { status: 'ready', path: string }
-  | { status: 'create_failed', path: string, error: unknown }
-  | { status: 'safety_validation_failed', path: string }
-
-type StagingValidationResult =
-  | { status: 'safe' }
-  | { status: 'missing' }
-  | { status: 'rejected', error: string }
-  | { status: 'failed', code: string, error: string }
 
 interface StagingCleanupFailure {
   event: 'staging_cleanup_failed' | 'staging_cleanup_rejected'
@@ -245,7 +203,7 @@ interface DownloadDeps {
   fs?: VideoFsApi
   run?: typeof run
   probeVideo?: typeof probeVideo
-  createStagingDirectory?: typeof createRequestStagingDirectory
+  createStagingDirectory?: (cacheSlug: string) => Promise<StagingPrepareResult>
   removeStagingDirectory?: typeof removeRequestStagingDirectory
   resolveShortLink?: typeof resolveBiliShortLink
   resourceModules?: VideoResourceModules | null
@@ -319,13 +277,6 @@ interface VideoBlacklistCache {
   users: Set<string>
 }
 
-interface ExecFileError extends Error {
-  code?: string | number
-  signal?: NodeJS.Signals | string
-  stdout?: string
-  stderr?: string
-}
-
 function resolveRuntimeDataDir(): string {
   const configured = String(process.env.DONGXUELIAN_AI_DATA_DIR || '').trim()
   if (configured) return path.resolve(configured)
@@ -341,20 +292,14 @@ const VIDEO_BLACKLIST_FILE = process.env.BILI_VIDEO_BLACKLIST_FILE || path.join(
 const MAX_SIZE = parsePositiveInteger(process.env.BILI_MAX_SIZE_BYTES, DEFAULT_MAX_SIZE)
 const TEST_VIDEO_FILE = process.env.BILI_TEST_VIDEO_FILE || '/root/test_bili.mp4'
 const VIDEO_MIN_MEM_MB = Math.max(300, parsePositiveInteger(process.env.BILI_MIN_MEM_MB, 300))
-const MIN_720_HEIGHT = 700
-const MAX_720_HEIGHT = 720
-const PREFERRED_MAX_HEIGHT = 720
 const DUPLICATE_WINDOW_MS = 300 * 1000
 const DUPLICATE_HISTORY_LIMIT = 3
 const VIDEO_CACHE_TTL_MS = 5 * 60 * 1000
 const VIDEO_CACHE_HARD_CLEANUP_MS = 10 * 60 * 1000
 const VIDEO_CACHE_SWEEP_MS = 60 * 1000
-const MAX_YTDLP_STDIO_BYTES = 1024 * 1024
 const MAX_VIDEO_BLACKLIST_BYTES = 128 * 1024
 const MAX_ADMIN_IDS_BYTES = 128 * 1024
 const EXTERNAL_VIDEO_TASK_KIND = 'external_video_download'
-const CACHE_FILE_RE = /^bili-cache-[A-Za-z0-9]+-\d+-[a-z0-9]+\.mp4$/
-const STAGING_DIR_RE = /^bili-job-[a-z0-9]+-\d+-[a-z0-9]+$/
 const CACHE_DIR = path.join(WORKDIR, 'cache')
 const STAGING_ROOT = path.join(WORKDIR, '.staging')
 
@@ -433,32 +378,6 @@ function getRuntimeConfig(): RuntimeConfig {
     videoBlacklistFile: VIDEO_BLACKLIST_FILE,
     videoMinMemMb: VIDEO_MIN_MEM_MB,
   }
-}
-
-const FORMAT_CANDIDATES: FormatCandidate[] = [
-  { format: '30064+30280', label: '720P AVC' },
-  { format: '30066+30280', label: '720P HEVC' },
-  { format: '100024+30280', label: '720P AV1' },
-]
-
-const SINGLE_FILE_CANDIDATES: FormatCandidate[] = [
-  { format: '64', label: '720P single file' },
-  { format: '32', label: '480P single file' },
-  { format: '16', label: '360P single file' },
-]
-
-function run(file: string, args: string[], options: ExecFileOptions = {}): Promise<RunResult> {
-  return new Promise((resolve, reject) => {
-    execFile(file, args, { maxBuffer: MAX_YTDLP_STDIO_BYTES, ...options }, (error: ExecFileError | null, stdout: string, stderr: string) => {
-      if (error) {
-        error.stdout = stdout
-        error.stderr = stderr
-        reject(error)
-      } else {
-        resolve({ stdout, stderr })
-      }
-    })
-  })
 }
 
 // 将资源任务标识压成文件锁可接受的短字符串。
@@ -863,87 +782,6 @@ function buildActualOversizeMessage(bytes: number): string {
 
 // --- 视频缓存与暂存目录安全 ---
 
-// 检查缓存文件路径、类型和真实位置均留在专用缓存目录内。
-function isSafeVideoCacheFile(filePath: string): boolean {
-  try {
-    const cacheRoot = path.resolve(CACHE_DIR)
-    const resolved = path.resolve(filePath)
-    if (!resolved.startsWith(`${cacheRoot}${path.sep}`) || !CACHE_FILE_RE.test(path.basename(resolved))) return false
-    const stat = fsSync.lstatSync(resolved)
-    if (!stat.isFile() || stat.isSymbolicLink()) return false
-    const realRoot = fsSync.realpathSync(cacheRoot)
-    const realFile = fsSync.realpathSync(resolved)
-    return realFile.startsWith(`${realRoot}${path.sep}`)
-  } catch {
-    return false
-  }
-}
-
-// 判断路径是否为暂存根目录下命名合规的直接子目录。
-function isStagingPathShapeSafe(stagingDir: string): boolean {
-  const stagingRoot = path.resolve(STAGING_ROOT)
-  const resolved = path.resolve(stagingDir)
-  return path.dirname(resolved) === stagingRoot && STAGING_DIR_RE.test(path.basename(resolved))
-}
-
-// 读取系统错误码；缺少错误码时返回固定占位值。
-function getNodeErrorCode(error: unknown, fallback: string = 'UNKNOWN'): string {
-  const code = error && typeof error === 'object' ? (error as NodeJS.ErrnoException).code : ''
-  return typeof code === 'string' && code.trim() ? code.trim() : fallback
-}
-
-// 校验暂存目录类型与真实路径，并保留读取失败的准确原因。
-async function validateStagingDirectory(stagingDir: string, fsApi: StagingFsApi = fs): Promise<StagingValidationResult> {
-  const resolved = path.resolve(stagingDir)
-  if (!isStagingPathShapeSafe(resolved)) return { status: 'rejected', error: '暂存目录不是暂存根目录下命名合规的直接子目录' }
-
-  let stat: Awaited<ReturnType<StagingFsApi['lstat']>>
-  try {
-    stat = await fsApi.lstat(resolved)
-  } catch (error) {
-    if (getNodeErrorCode(error) === 'ENOENT') return { status: 'missing' }
-    return { status: 'failed', code: getNodeErrorCode(error), error: `读取暂存目录信息失败：${getErrorMessage(error)}` }
-  }
-  if (!stat.isDirectory() || stat.isSymbolicLink()) return { status: 'rejected', error: '暂存目标不是普通目录或目标是符号链接' }
-
-  let realRoot: string
-  try {
-    realRoot = await fsApi.realpath(STAGING_ROOT)
-  } catch (error) {
-    return { status: 'failed', code: getNodeErrorCode(error), error: `解析暂存根目录真实路径失败：${getErrorMessage(error)}` }
-  }
-
-  let realDir: string
-  try {
-    realDir = await fsApi.realpath(resolved)
-  } catch (error) {
-    if (getNodeErrorCode(error) === 'ENOENT') return { status: 'missing' }
-    return { status: 'failed', code: getNodeErrorCode(error), error: `解析暂存目录真实路径失败：${getErrorMessage(error)}` }
-  }
-  if (path.dirname(realDir) !== realRoot) return { status: 'rejected', error: '暂存目录真实路径已离开暂存根目录' }
-  return { status: 'safe' }
-}
-
-// 校验暂存目录是否可以由当前任务安全删除。
-async function isSafeStagingDirectory(stagingDir: string, fsApi: StagingFsApi = fs): Promise<boolean> {
-  return (await validateStagingDirectory(stagingDir, fsApi)).status === 'safe'
-}
-
-// 为单次首次下载创建权限受限的暂存目录，并返回精确失败阶段。
-async function createRequestStagingDirectory(cacheSlug: string): Promise<StagingPrepareResult> {
-  const stagingName = `bili-job-${cacheSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-  const stagingDir = path.join(STAGING_ROOT, stagingName)
-  try {
-    await fs.mkdir(stagingDir, { mode: 0o700 })
-  } catch (error) {
-    return { status: 'create_failed', path: stagingDir, error }
-  }
-  if (!await isSafeStagingDirectory(stagingDir)) {
-    return { status: 'safety_validation_failed', path: stagingDir }
-  }
-  return { status: 'ready', path: stagingDir }
-}
-
 // 把时间转换为固定的北京时间文本。
 function formatBeijingTime(now: number = Date.now()): string {
   const parts = new Intl.DateTimeFormat('zh-CN', {
@@ -1169,39 +1007,18 @@ async function removeRequestStagingDirectory(ctx: ContextLike | null, session: V
   const resolved = path.resolve(stagingDir)
   const normalizedBvId = extractBvId(bvId) || 'unknown'
   const normalizedTaskId = String(taskId || '').trim() || 'unknown'
-  const validation = await validateStagingDirectory(resolved, fsApi)
-  if (validation.status === 'missing') return true
-  if (validation.status === 'rejected' || validation.status === 'failed') {
-    const failure: StagingCleanupFailure = {
-      event: validation.status === 'rejected' ? 'staging_cleanup_rejected' : 'staging_cleanup_failed',
-      taskId: normalizedTaskId,
-      bvId: normalizedBvId,
-      stagingDir: resolved,
-      errorCode: validation.status === 'rejected' ? 'SAFETY_VALIDATION_FAILED' : validation.code,
-      errorText: sanitizeStagingCleanupError(validation.error),
-      beijingTime: formatBeijingTime(options.now),
-    }
-    await reportStagingCleanupFailure(ctx, session, failure, options)
-    return false
-  }
-
-  try {
-    await fsApi.rm(resolved, { recursive: true, force: true })
-    return true
-  } catch (error) {
-    if (getNodeErrorCode(error) === 'ENOENT') return true
-    const failure: StagingCleanupFailure = {
-      event: 'staging_cleanup_failed',
-      taskId: normalizedTaskId,
-      bvId: normalizedBvId,
-      stagingDir: resolved,
-      errorCode: getNodeErrorCode(error),
-      errorText: sanitizeStagingCleanupError(error),
-      beijingTime: formatBeijingTime(options.now),
-    }
-    await reportStagingCleanupFailure(ctx, session, failure, options)
-    return false
-  }
+  const result = await removeVideoStagingDirectory(STAGING_ROOT, resolved, fsApi)
+  if (result.ok) return true
+  await reportStagingCleanupFailure(ctx, session, {
+    event: result.event,
+    taskId: normalizedTaskId,
+    bvId: normalizedBvId,
+    stagingDir: resolved,
+    errorCode: result.errorCode,
+    errorText: sanitizeStagingCleanupError(result.error),
+    beijingTime: formatBeijingTime(options.now),
+  }, options)
+  return false
 }
 
 // 移除缓存项的全部查询键，但保留对象供活动发送 finally 收口。
@@ -1220,7 +1037,7 @@ async function deleteVideoCacheEntry(ctx: ContextLike | null, entry: VideoFileCa
   entry.expiryTimer = null
   videoFileCache.delete(entry.primaryKey)
   try {
-    if (isSafeVideoCacheFile(entry.filePath)) await fs.rm(entry.filePath, { force: true })
+    if (isSafeVideoCacheFile(CACHE_DIR, entry.filePath)) await fs.rm(entry.filePath, { force: true })
     return true
   } catch (error) {
     videoFileCache.set(entry.primaryKey, entry)
@@ -1237,7 +1054,7 @@ function expireVideoCacheEntry(ctx: ContextLike | null, entry: VideoFileCacheEnt
 
 // 把首次成功上传的 MP4 登记为五分钟全局 BV 缓存。
 function registerVideoFileCache(ctx: ContextLike, filePath: string, sizeBytes: number, infoMessage: string, keys: string[], lastSendStatus: SendOutcome['status'], now: number = Date.now()): VideoFileCacheEntry | null {
-  if (cacheDisposed || !isSafeVideoCacheFile(filePath) || sizeBytes <= 0 || sizeBytes > MAX_SIZE) return null
+  if (cacheDisposed || !isSafeVideoCacheFile(CACHE_DIR, filePath) || sizeBytes <= 0 || sizeBytes > MAX_SIZE) return null
   const aliases = uniqueStrings(keys)
   const primaryKey = aliases.find(key => key.startsWith('bv:')) || ''
   if (!primaryKey) return null
@@ -1280,7 +1097,7 @@ function findVideoFileCache(ctx: ContextLike, keys: string[], now: number = Date
       expireVideoCacheEntry(ctx, entry)
       continue
     }
-    if (!isSafeVideoCacheFile(entry.filePath)) {
+    if (!isSafeVideoCacheFile(CACHE_DIR, entry.filePath)) {
       void deleteVideoCacheEntry(ctx, entry)
       continue
     }
@@ -1471,141 +1288,6 @@ function getShortestBiliUrl(info: VideoInfo = {}): string {
   return getCanonicalBiliUrl(info)
 }
 
-function safeNumber(value: unknown): number {
-  return Number.isFinite(value) ? Number(value) : 0
-}
-
-function estimateFormatSize(format: VideoFormat): number {
-  return safeNumber(format.filesize) || safeNumber(format.filesize_approx)
-}
-
-function isAudioOnlyFormat(format: VideoFormat): boolean {
-  return !!(format && format.vcodec === 'none' && format.acodec && format.acodec !== 'none')
-}
-
-function isVideoFormat(format: VideoFormat): boolean {
-  return !!(format && format.vcodec && format.vcodec !== 'none')
-}
-
-function pickBestAudio(formats: VideoFormat[]): VideoFormat | undefined {
-  return formats
-    .filter(isAudioOnlyFormat)
-    .sort((left, right) => {
-      const abrDiff = safeNumber(right.abr) - safeNumber(left.abr)
-      if (abrDiff) return abrDiff
-      return estimateFormatSize(right) - estimateFormatSize(left)
-    })[0]
-}
-
-function sortVideoCandidates(left: VideoFormat, right: VideoFormat, targetHeight: number = PREFERRED_MAX_HEIGHT): number {
-  const leftHeight = safeNumber(left.height)
-  const rightHeight = safeNumber(right.height)
-  const leftDistance = Math.abs(leftHeight - targetHeight)
-  const rightDistance = Math.abs(rightHeight - targetHeight)
-  if (leftDistance !== rightDistance) return leftDistance - rightDistance
-
-  const leftPreferred = leftHeight <= targetHeight ? 1 : 0
-  const rightPreferred = rightHeight <= targetHeight ? 1 : 0
-  if (leftPreferred !== rightPreferred) return rightPreferred - leftPreferred
-
-  const heightDiff = rightHeight - leftHeight
-  if (heightDiff) return heightDiff
-
-  const fpsDiff = safeNumber(right.fps) - safeNumber(left.fps)
-  if (fpsDiff) return fpsDiff
-
-  return estimateFormatSize(right) - estimateFormatSize(left)
-}
-
-function buildSplitPick(video: VideoFormat, audio: VideoFormat, label: string): FormatPick {
-  return {
-    format: `${video.format_id}+${audio.format_id}`,
-    label,
-    totalSize: estimateFormatSize(video) + estimateFormatSize(audio),
-    height: safeNumber(video.height),
-  }
-}
-
-function pickFormat(info: VideoInfo): FormatPick | null {
-  const formats = Array.isArray(info.formats) ? info.formats : []
-
-  for (const candidate of FORMAT_CANDIDATES) {
-    const [videoId, audioId] = candidate.format.split('+')
-    const video = formats.find(item => String(item.format_id) === videoId)
-    const audio = formats.find(item => String(item.format_id) === audioId)
-    if (!video || !audio) continue
-
-    const totalSize = estimateFormatSize(video) + estimateFormatSize(audio)
-
-    return {
-      format: candidate.format,
-      label: candidate.label,
-      totalSize,
-      height: safeNumber(video.height),
-    }
-  }
-
-  const audio = pickBestAudio(formats)
-
-  const exact720Candidates = formats
-    .filter(item => {
-      const height = safeNumber(item.height)
-      return isVideoFormat(item) && height >= MIN_720_HEIGHT && height <= MAX_720_HEIGHT
-    })
-    .sort((left, right) => sortVideoCandidates(left, right, PREFERRED_MAX_HEIGHT))
-
-  if (exact720Candidates.length && audio) {
-    return buildSplitPick(exact720Candidates[0], audio, `${safeNumber(exact720Candidates[0].height)}P split stream`)
-  }
-
-  const preferredVideoCandidates = formats
-    .filter(item => {
-      const height = safeNumber(item.height)
-      return isVideoFormat(item) && height > 0 && height <= PREFERRED_MAX_HEIGHT
-    })
-    .sort((left, right) => sortVideoCandidates(left, right, PREFERRED_MAX_HEIGHT))
-
-  if (preferredVideoCandidates.length && audio) {
-    return buildSplitPick(preferredVideoCandidates[0], audio, `${safeNumber(preferredVideoCandidates[0].height)}P split stream`)
-  }
-
-  for (const candidate of SINGLE_FILE_CANDIDATES) {
-    const merged = formats.find(item => String(item.format_id) === candidate.format)
-    if (!merged) continue
-
-    return {
-      format: candidate.format,
-      label: candidate.label,
-      totalSize: estimateFormatSize(merged),
-      height: safeNumber(merged.height),
-    }
-  }
-
-  const anyVideoCandidates = formats
-    .filter(item => isVideoFormat(item) && safeNumber(item.height) > 0)
-    .sort((left, right) => sortVideoCandidates(left, right, PREFERRED_MAX_HEIGHT))
-
-  if (anyVideoCandidates.length && audio) {
-    return buildSplitPick(anyVideoCandidates[0], audio, `${safeNumber(anyVideoCandidates[0].height)}P fallback split stream`)
-  }
-
-  const anyMergedCandidates = formats
-    .filter(item => isVideoFormat(item) && item.acodec && item.acodec !== 'none')
-    .sort((left, right) => sortVideoCandidates(left, right, PREFERRED_MAX_HEIGHT))
-
-  if (anyMergedCandidates.length) {
-    const merged = anyMergedCandidates[0]
-    return {
-      format: String(merged.format_id),
-      label: `${safeNumber(merged.height)}P fallback single file`,
-      totalSize: estimateFormatSize(merged),
-      height: safeNumber(merged.height),
-    }
-  }
-
-  return null
-}
-
 function formatBytes(bytes: number): string {
   if (!bytes) return 'unknown'
   return `${(bytes / 1024 / 1024).toFixed(1)}MB`
@@ -1631,18 +1313,6 @@ function formatVideoInfo(info: VideoInfo, picked: FormatPick): string {
 
 function buildInfoMessage(info: VideoInfo, picked: FormatPick): string {
   return formatVideoInfo(info, picked)
-}
-
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
-}
-
-function getCommandErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object') {
-    const commandError = error as { stderr?: unknown, message?: unknown }
-    return String(commandError.stderr || commandError.message || error)
-  }
-  return String(error)
 }
 
 // 将消息接口异常严格区分为超时、明确拒绝和普通调用异常。
@@ -1728,16 +1398,6 @@ async function probeVideo(url: string, runCommand: typeof run = run): Promise<Pr
   return { info, picked }
 }
 
-// 生成不含完整 URL 和 Cookie 路径的 yt-dlp 错误摘要。
-function getSafeCommandErrorSummary(error: unknown): string {
-  return getCommandErrorMessage(error)
-    .replace(/https?:\/\/\S+/gi, '[url]')
-    .split(COOKIES).join('[cookies-file]')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 1000) || 'unknown'
-}
-
 // 显式发送拒绝提示，避免 action 返回值造成重复消息。
 async function sendRejectedVideo(ctx: ContextLike, session: VideoSessionLike, infoMessage: string, message: string, includePreview: boolean = true): Promise<void> {
   if (includePreview) await safeSend(ctx, session, infoMessage, 'preview')
@@ -1789,27 +1449,6 @@ async function sendCachedVideoWithGate(ctx: ContextLike, session: VideoSessionLi
     : { kind: 'sent', sendStatus: sendResult.status === 'done' ? 'confirmed' : 'uncertain' }
 }
 
-// 创建一个视频运行目录，并把失败转换为指定的目录错误编号。
-async function ensureVideoDirectory(ctx: ContextLike, fsApi: VideoFsApi, directory: string, errorId: 'video-007' | 'video-008' | 'video-009'): Promise<VideoUserError | null> {
-  try {
-    await fsApi.mkdir(directory, { recursive: true })
-    return null
-  } catch (error) {
-    const userError = buildVideoUserError({ id: errorId })
-    logVideoUserError(ctx, userError, getErrorMessage(error))
-    return userError
-  }
-}
-
-// 对最终视频文件只执行一次删除，失败只记录服务端日志。
-async function removeOutputFileOnce(ctx: ContextLike, fsApi: VideoFsApi, filePath: string, reason: string): Promise<void> {
-  try {
-    await fsApi.rm(filePath, { force: true })
-  } catch (error) {
-    ctx.logger('bvidl').warn(`video output delete failed: reason=${reason} error=${getErrorMessage(error)}`)
-  }
-}
-
 // 为首次请求执行探测、大小门禁、下载、首发和缓存登记。
 async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessionLike, url: string, source: string, keys: string[], recentEntry: RecentParseEntry | null, deps: DownloadDeps, existingTaskId: string = '', trace?: VideoTraceContext): Promise<SharedVideoResult> {
   const taskId = existingTaskId || buildVideoTaskId()
@@ -1821,26 +1460,16 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
   }
   const gateHandle = gateResult.handle || null
   const fsApi = deps.fs || fs
-  const runCommand = deps.run || run
   const probe = deps.probeVideo || probeVideo
-  const createStagingDirectory = deps.createStagingDirectory || createRequestStagingDirectory
-  const removeStagingDirectory = deps.removeStagingDirectory || removeRequestStagingDirectory
-  let outputFile = ''
-  let stagingDir = ''
-  let bvId = ''
-  let bvKey = ''
-  let cacheId = ''
-  let pickedFormat = ''
-  let downloadStartedAt = 0
-  let commandFailure: ExecFileError | null = null
+  let download: ReturnType<typeof createVideoDownload> | undefined
 
   try {
-    const workdirError = await ensureVideoDirectory(ctx, fsApi, WORKDIR, 'video-007')
-    if (workdirError) return { kind: 'failed', userError: workdirError }
-    const cacheDirError = await ensureVideoDirectory(ctx, fsApi, CACHE_DIR, 'video-008')
-    if (cacheDirError) return { kind: 'failed', userError: cacheDirError }
-    const stagingRootError = await ensureVideoDirectory(ctx, fsApi, STAGING_ROOT, 'video-009')
-    if (stagingRootError) return { kind: 'failed', userError: stagingRootError }
+    const preparationFailure = await prepareVideoDirectories(WORKDIR, CACHE_DIR, STAGING_ROOT, fsApi)
+    if (preparationFailure) {
+      const userError = buildVideoUserError(preparationFailure)
+      logVideoUserError(ctx, userError, getErrorMessage(preparationFailure.error))
+      return { kind: 'failed', userError }
+    }
 
     let info: VideoInfo
     let picked: FormatPick
@@ -1876,8 +1505,8 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     } catch (error) {
       ctx.logger('bvidl').warn(getCommandErrorMessage(error))
       const userError = buildVideoUserError({ id: 'video-010' })
-      writeVideoTrace(ctx, taskTrace, 'probe_finished', { stage: 'video_probe', durationMs: Date.now() - probeStartedAt, ok: false, errorId: userError.id, reason: getSafeCommandErrorSummary(error) })
-      logVideoUserError(ctx, userError, getSafeCommandErrorSummary(error))
+      writeVideoTrace(ctx, taskTrace, 'probe_finished', { stage: 'video_probe', durationMs: Date.now() - probeStartedAt, ok: false, errorId: userError.id, reason: getSafeCommandErrorSummary(error, COOKIES) })
+      logVideoUserError(ctx, userError, getSafeCommandErrorSummary(error, COOKIES))
       return { kind: 'failed', userError }
     }
 
@@ -1886,7 +1515,7 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
       .concat(buildBiliKeys(getShortestBiliUrl(info))))
     mergeRecentParseKeys(recentEntry, canonicalKeys)
     const infoMessage = buildInfoMessage(info, picked)
-    bvId = getProbeBvId(url, info)
+    const bvId = getProbeBvId(url, info)
 
     gateHandle?.updateStep('video_preview')
     const previewOutcome = await safeSend(ctx, session, infoMessage, 'preview')
@@ -1913,81 +1542,31 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
       return { kind: 'rejected', infoMessage, userError }
     }
 
-    bvKey = canonicalKeys.find(key => key.startsWith('bv:')) || ''
-    const cacheSlug = (bvKey.replace(/^bv:/, '') || 'unknown').replace(/[^a-z0-9]/g, '').slice(0, 32) || 'unknown'
-    // QQ 转发会保留视频文件名；完整 BV 及其大小写必须保留，不能使用已转小写的缓存键。
-    const outputSlug = bvId || cacheSlug
-    cacheId = `bili-cache-${outputSlug}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    outputFile = path.join(CACHE_DIR, `${cacheId}.mp4`)
-
-    let stagingResult: StagingPrepareResult
-    try {
-      stagingResult = await createStagingDirectory(cacheSlug)
-    } catch (error) {
-      stagingResult = { status: 'create_failed', path: '', error }
-    }
-    stagingDir = stagingResult.path
-    if (stagingResult.status !== 'ready') {
-      const userError = buildVideoUserError({ id: stagingResult.status === 'create_failed' ? 'video-016' : 'video-017' })
-      const technicalDetail = stagingResult.status === 'create_failed' ? getErrorMessage(stagingResult.error) : 'safety_validation_failed'
-      ctx.logger('bvidl').warn(`staging_prepare_failed: bv=${bvKey || 'unknown'} reason=${stagingResult.status} user_error_id=${userError.id} error=${technicalDetail}`)
-      logVideoUserError(ctx, userError)
-      return { kind: 'failed', userError }
-    }
-
-    gateHandle?.updateStep('video_download')
-    const downloadCookieHealth = logBiliCookieHealth(ctx, 'before_download', taskTrace)
-    if (!downloadCookieHealth.ok) {
-      const userError = buildVideoUserError({ id: 'video-030' })
-      logVideoUserError(ctx, userError, `code=${downloadCookieHealth.code}`)
-      return { kind: 'failed', userError }
-    }
-    pickedFormat = picked.format
-    downloadStartedAt = Date.now()
-    writeVideoTrace(ctx, taskTrace, 'download_started', { stage: 'video_download' })
-    try {
-      await runCommand(YTDLP, [
-        '--cookies', COOKIES,
-        '--no-playlist',
-        '-f', picked.format,
-        '--merge-output-format', 'mp4',
-        '-P', `home:${CACHE_DIR}`,
-        '-P', `temp:${stagingDir}`,
-        '-o', `${cacheId}.%(ext)s`,
-        url,
-      ], { timeout: 10 * 60 * 1000 })
-      writeVideoTrace(ctx, taskTrace, 'download_finished', { stage: 'video_download', durationMs: Date.now() - downloadStartedAt, ok: true })
-    } catch (error) {
-      commandFailure = error instanceof Error ? error as ExecFileError : new Error(String(error)) as ExecFileError
-      const userError = buildVideoUserError({ id: 'video-018' })
-      writeVideoTrace(ctx, taskTrace, 'download_finished', { stage: 'video_download', durationMs: Date.now() - downloadStartedAt, ok: false, errorId: userError.id, reason: getSafeCommandErrorSummary(commandFailure) })
-      logVideoUserError(ctx, userError, getSafeCommandErrorSummary(commandFailure))
-      return { kind: 'failed', userError }
-    }
-
-    if (!isSafeVideoCacheFile(outputFile)) {
-      const userError = buildVideoUserError({ id: 'video-019' })
-      logVideoUserError(ctx, userError)
-      return { kind: 'failed', userError }
-    }
-
-    let actualSize: number
-    try {
-      actualSize = (await fsApi.stat(outputFile)).size
-    } catch (error) {
-      const userError = buildVideoUserError({ id: 'video-020' })
-      logVideoUserError(ctx, userError, getErrorMessage(error))
-      return { kind: 'failed', userError }
-    }
-
-    if (actualSize > MAX_SIZE) {
+    const bvKey = canonicalKeys.find(key => key.startsWith('bv:')) || ''
+    download = createVideoDownload({ ytdlp: YTDLP, cookies: COOKIES, cacheDir: CACHE_DIR, maxSize: MAX_SIZE, url, format: picked.format, bvId, bvKey }, {
+      fs: fsApi,
+      run: deps.run || run,
+      createStagingDirectory: deps.createStagingDirectory || (slug => createRequestStagingDirectory(STAGING_ROOT, slug)),
+      removeStagingDirectory: directory => (deps.removeStagingDirectory || removeRequestStagingDirectory)(ctx, session, directory, bvId, taskId),
+      // 暂存准备完成后推进闸门状态，并沿用下载前的凭据健康检查。
+      beforeDownload() {
+        gateHandle?.updateStep('video_download')
+        return logBiliCookieHealth(ctx, 'before_download', taskTrace)
+      },
+      trace: (event, fields) => writeVideoTrace(ctx, taskTrace, event, fields),
+      warn: message => ctx.logger('bvidl').warn(message),
+      logFailure: (id, detail) => logVideoUserError(ctx, buildVideoUserError({ id }), detail),
+    })
+    const result = await download.prepareOutput()
+    if (result.kind === 'failed') return { kind: 'failed', userError: buildVideoUserError({ id: result.errorId }) }
+    const { actualSize } = result
+    if (result.kind === 'oversize') {
       const userError = buildVideoUserError({ id: 'video-021', actualBytes: actualSize })
-      await removeOutputFileOnce(ctx, fsApi, outputFile, 'actual_size_limit')
-      outputFile = ''
       await sendRejectedVideo(ctx, session, infoMessage, userError.message, false)
       ctx.logger('bvidl').warn(`rejected_after_download: estimated=${picked.totalSize} actual=${actualSize} limit=${MAX_SIZE} keys=${canonicalKeys.join(',')} user_error_id=${userError.id}`)
       return { kind: 'rejected', infoMessage, userError }
     }
+    const outputFile = result.filePath
 
     gateHandle?.updateStep('video_send')
     const videoOutcome = await safeSend(ctx, session, segment.video(toFileUrl(outputFile)), 'video')
@@ -1996,19 +1575,17 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
       const userError = videoOutcome.reason === 'rejected'
         ? buildVideoUserError({ id: 'video-022', retcode: videoOutcome.retcode })
         : buildVideoUserError({ id: 'video-023' })
-      await removeOutputFileOnce(ctx, fsApi, outputFile, userError.stage)
-      outputFile = ''
+      await download.discardOutput(userError.stage)
       logVideoUserError(ctx, userError)
       return { kind: 'failed', userError }
     }
 
     const cacheEntry = registerVideoFileCache(ctx, outputFile, actualSize, infoMessage, canonicalKeys, videoOutcome.status)
     if (!cacheEntry) {
-      await removeOutputFileOnce(ctx, fsApi, outputFile, videoOutcome.status === 'uncertain' ? 'uncertain_cache_registration' : 'cache_registration')
-      outputFile = ''
+      await download.discardOutput(videoOutcome.status === 'uncertain' ? 'uncertain_cache_registration' : 'cache_registration')
       return { kind: 'sent', sendStatus: videoOutcome.status }
     }
-    outputFile = ''
+    download.transferToCache()
     return { kind: 'cached', entry: cacheEntry }
   } catch (error) {
     const storageFailure = getResourceGateStorageFailure(error)
@@ -2018,12 +1595,12 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
     logVideoUserError(ctx, userError, `failureCode=${storageFailure.failureCode} errno=${storageFailure.errno} stage=${storageFailure.stage} safePath=${storageFailure.safePath}`)
     return { kind: 'failed', userError }
   } finally {
-    if (outputFile) await removeOutputFileOnce(ctx, fsApi, outputFile, 'request_finally')
-    const cleanupOk = stagingDir ? await removeStagingDirectory(ctx, session, stagingDir, bvId, taskId) : true
-    if (commandFailure) {
-      ctx.logger('bvidl').warn(`video_download_failed: cacheId=${cacheId || 'unknown'} bv=${bvKey || 'unknown'} format=${pickedFormat || 'unknown'} duration_ms=${downloadStartedAt ? Date.now() - downloadStartedAt : 0} exit_code=${commandFailure.code ?? 'unknown'} signal=${commandFailure.signal || 'none'} cleanup_ok=${cleanupOk} user_error_id=video-018 error=${getSafeCommandErrorSummary(commandFailure)}`)
+    try {
+      if (download) await download.cleanup()
+    } finally {
+      // 即使文件回收的依赖抛错，也由取得闸门的会话层释放一次。
+      await releaseAcquiredVideoGate(ctx, session, gateHandle, 'external-video-finally', taskId, deps.gateAdminAlertOptions, taskTrace)
     }
-    await releaseAcquiredVideoGate(ctx, session, gateHandle, 'external-video-finally', taskId, deps.gateAdminAlertOptions, taskTrace)
   }
 }
 

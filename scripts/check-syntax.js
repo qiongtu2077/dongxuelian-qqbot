@@ -64,6 +64,8 @@ const CHECK_FILES = [
   'packages/koishi-plugin-group-name-at/lib/storage.js',
   'packages/koishi-plugin-group-name-at/lib/scope-schema.js',
   'packages/koishi-plugin-local-video-sender/lib/index.js',
+  'packages/koishi-plugin-local-video-sender/lib/video-format.js',
+  'packages/koishi-plugin-local-video-sender/lib/video-download.js',
   'packages/koishi-plugin-pet-bridge/lib/index.js',
   'packages/koishi-plugin-pet-bridge/lib/protocol.js',
   'scripts/agent-console-admin-smoke.js',

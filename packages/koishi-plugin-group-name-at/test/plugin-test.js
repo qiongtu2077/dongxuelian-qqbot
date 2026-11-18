@@ -248,6 +248,77 @@ async function withIsolatedPlugin(fn, options = {}) {
   }
 }
 
+// 在实际命令路径记录成员标识读取次数，并对照原有顺序和存储结果。
+async function testLargeCollectionLookups() {
+  section('large collection merge and member lookup')
+  for (const [size, overlap] of [[240, 200], [480, 400], [240, 0]]) {
+    await withIsolatedPlugin(async ({ ctx, scopeDataDir }) => {
+      const storage = require(STORAGE_PATH)
+      const store = await storage.loadScopeStore(TEST_GROUP_MAIN)
+      const other = await storage.loadScopeStore(TEST_GROUP_OTHER)
+      const firstId = 1_000_000_000
+      // 两边同名且带不同元信息，保留目标的已有成员和来源的新增顺序。
+      const makeMember = (index, origin) => ({ userId: String(firstId + index), displayName: `本地同名-${origin}-${index}`, createdBy: origin })
+      const target = Array.from({ length: size }, (_, index) => makeMember(index, 'target'))
+      const source = Array.from({ length: size }, (_, index) => makeMember(size + size - overlap - index - 1, 'source'))
+      let reads = 0
+      // 观察匹配及持久化访问，无需改动生产函数或全局数组方法。
+      const observe = member => ({ ...member, get userId() { reads += 1; return member.userId } })
+      storage.setAliasEntry(store, 'source', { members: source.map(observe) })
+      storage.setAliasEntry(store, 'target', { members: target.map(observe) })
+      storage.setAliasEntry(other, 'other', { members: [{ userId: target[0].userId, displayName: '本地同名-另一个群' }] })
+      await storage.persistScopeStore(TEST_GROUP_MAIN)
+      await storage.persistScopeStore(TEST_GROUP_OTHER)
+      const scopeFile = getScopeFile(scopeDataDir, TEST_GROUP_MAIN)
+      const otherFile = getScopeFile(scopeDataDir, TEST_GROUP_OTHER)
+      const before = fs.readFileSync(scopeFile, 'utf8')
+      const beforeOther = fs.readFileSync(otherFile, 'utf8')
+
+      reads = 0
+      const fuzzy = readNicknameRecordPages(await send(ctx, '查看成员 本地同名')).join('\n')
+      const fuzzyReads = reads
+      const expectedLabel = `本地同名-source-${2 * size - overlap - 1} 的昵称 / 集合：`
+      check(`${size}/${overlap}: fuzzy lookup keeps last matching label and each local collection once`,
+        fuzzy === [expectedLabel, `source (${size})`, `target (${size})`].join('\n'), fuzzy)
+      const exact = readNicknameRecordPages(await send(ctx, `查看成员 ${target[0].userId}`)).join('\n')
+      const mention = readNicknameRecordPages(await send(ctx, `<at id="${target[0].userId}"/> 查看昵称`)).join('\n')
+      check(`${size}/${overlap}: exact id and mention return the same local collection`,
+        exact === mention && exact.includes(`target (${size})`) && !exact.includes('另一个群'), exact)
+      check(`${size}/${overlap}: member queries leave both stored scopes untouched`,
+        fs.readFileSync(scopeFile, 'utf8') === before && fs.readFileSync(otherFile, 'utf8') === beforeOther)
+
+      reads = 0
+      const merged = await send(ctx, '合并集合 target source')
+      const mergeReads = reads
+      const saved = JSON.parse(fs.readFileSync(scopeFile, 'utf8'))
+      const expected = [...target, ...source.filter(member => Number(member.userId) >= firstId + size)]
+      assertBidirectionalStore(saved)
+      check(`${size}/${overlap}: merged membership, display names, ordering and count match the command contract`,
+        merged.sent[0] === `已将集合「source」合并到「target」，新增 ${size - overlap} 人，当前共 ${expected.length} 人。`
+          && JSON.stringify(saved.aliases.target) === JSON.stringify(expected.map(member => member.userId))
+          && expected.every(member => saved.memberDetails.target[member.userId]?.displayName === member.displayName
+            && saved.memberDetails.target[member.userId]?.createdBy === member.createdBy), merged.sent.join(' '))
+      check(`${size}/${overlap}: the source membership and other scope persist as before`,
+        JSON.stringify(saved.aliases.source) === JSON.stringify(source.map(member => member.userId)) && fs.readFileSync(otherFile, 'utf8') === beforeOther)
+      console.log(`  member ID reads size=${size} overlap=${overlap} fuzzy=${fuzzyReads} merge=${mergeReads}`)
+      check(`${size}/${overlap}: fuzzy search visits each member once to index and once to match`, fuzzyReads === 4 * size, String(fuzzyReads))
+      check(`${size}/${overlap}: merge visits a linear number of members including storage writes`, mergeReads <= 12 * size, String(mergeReads))
+    })
+  }
+  await withIsolatedPlugin(async ({ ctx }) => {
+    const storage = require(STORAGE_PATH)
+    const store = await storage.loadScopeStore(TEST_GROUP_MAIN)
+    storage.setAliasEntry(store, 'legacy-duplicate', { members: [
+      { userId: TEST_MEMBER_ID, displayName: '旧名首项' }, { userId: TEST_MEMBER_ID, displayName: '旧名次项' },
+    ] })
+    const first = readNicknameRecordPages(await send(ctx, '查看成员 旧名首项')).join('\n')
+    const second = readNicknameRecordPages(await send(ctx, '查看成员 旧名次项')).join('\n')
+    check('legacy duplicated member ids still use the first stored member for fuzzy matching',
+      first.includes('旧名首项 的昵称 / 集合：') && first.includes('legacy-duplicate (2)') && second.includes('暂时没有昵称'))
+  })
+}
+
+// 按生产入口运行命令、迁移和定向比较次数测试。
 async function run() {
   section('env path and command behavior')
   await withIsolatedPlugin(async ({ ctx, tmpRoot, dataFile, scopeDataDir }) => {
@@ -485,6 +556,8 @@ async function run() {
       check(`indices remain consistent after ${command}`, JSON.stringify(stored.aliases) === JSON.stringify(expectedAliases), JSON.stringify({ sent: result.sent, aliases: stored.aliases }))
     }
   })
+
+  await testLargeCollectionLookups()
 
   section('explicit aggregate migration')
   await withIsolatedPlugin(async ({ ctx, dataFile }) => {

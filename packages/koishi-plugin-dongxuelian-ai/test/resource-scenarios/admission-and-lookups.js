@@ -1135,6 +1135,9 @@ function run() {
   const stateFile = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'resource-scheduler', 'state.json')
 
   const first = scheduler.readResourceSnapshot()
+  // 用明确早于真实写入的时间，避免两次写盘落在同一文件系统时间刻度。
+  const fixtureTimestamp = new Date('2020-01-01T00:00:00Z')
+  fs.utimesSync(stateFile, fixtureTimestamp, fixtureTimestamp)
   const beforeText = fs.readFileSync(stateFile, 'utf8')
   const beforeMtime = fs.statSync(stateFile).mtimeMs
 

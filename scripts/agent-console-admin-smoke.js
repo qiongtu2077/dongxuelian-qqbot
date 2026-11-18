@@ -313,8 +313,8 @@ async function testImageClipboard(page, state) {
   const sent = state.chatPayloads.at(-1)
   if (sent.message !== '请查看图片。' || sent.images?.length !== 1 || !sent.images[0].startsWith('data:image/png;base64,')) throw new Error('clipboard image did not reach the chat request')
   // Remembered history keeps attachment counts without exhausting Web Storage with binary data.
-  await page.waitForFunction(() => localStorage.getItem('agent_console_history')?.includes('imageCount'))
-  if (await page.evaluate(() => localStorage.getItem('agent_console_history').includes('data:image/'))) throw new Error('image bytes leaked into localStorage history')
+  await page.waitForFunction(() => localStorage.getItem('agent_console_history:测试人格')?.includes('imageCount'))
+  if (await page.evaluate(() => localStorage.getItem('agent_console_history:测试人格').includes('data:image/'))) throw new Error('image bytes leaked into localStorage history')
   await page.screenshot({ path: path.join(outDir, 'sent-image.png'), fullPage: true })
   await page.type('textarea', '继续看图')
   await page.click('.composer-actions button')
@@ -388,6 +388,7 @@ async function main() {
       await waitForText(page, '703')
     })
     if (state.taskPollRequests !== 2) throw new Error(`expected task completion polling, got ${state.taskPollRequests}`)
+    assert.deepEqual(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('agent_console_history'))), [])
     await testImageClipboard(page, state)
     state.taskNeverCompletes = true
     await page.type('textarea', '继续计算')

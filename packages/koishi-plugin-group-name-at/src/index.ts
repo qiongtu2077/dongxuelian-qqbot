@@ -850,8 +850,11 @@ async function mergeCollection(session: GroupNameSessionLike, targetAlias: strin
 
   let added = 0
   const members = [...target.members]
+  const memberIds = new Set(members.map(member => member.userId))
   for (const member of source.members) {
-    if (members.some((item) => item.userId === member.userId)) continue
+    const id = member.userId
+    if (memberIds.has(id)) continue
+    memberIds.add(id)
     members.push({ ...member })
     added += 1
   }
@@ -880,11 +883,27 @@ async function viewMember(session: GroupNameSessionLike, keyword: string, mentio
   // @ 或 QQ 号只访问该用户的名称列表；按显示名称模糊查找时才读取其他用户。
   const exactUser = !!mentionId || /^\d+$/.test(target)
   const userIds = exactUser ? [target] : Object.keys(scopeStore.users)
+  const membersByAlias = exactUser ? null : new Map<string, Map<string, StoreMember>>()
   for (const userId of userIds) {
     for (const alias of scopeStore.users[userId] || []) {
       const entry = scopeStore.aliases[alias]
-      const member = entry.members.find(item => item.userId === userId)!
-      if (!exactUser && !memberMatches(member, target)) continue
+      let member: StoreMember
+      if (!membersByAlias) {
+        member = entry.members.find(item => item.userId === userId)!
+      } else {
+        let members = membersByAlias.get(alias)
+        if (!members) {
+          // 每个别名只扫描一次，并保留旧版 find 的首个重复编号命中。
+          members = new Map()
+          for (const candidate of entry.members) {
+            const id = candidate.userId
+            if (!members.has(id)) members.set(id, candidate)
+          }
+          membersByAlias.set(alias, members)
+        }
+        member = members.get(userId)!
+        if (!memberMatches(member, target)) continue
+      }
       label = String(member.displayName || '').trim() || member.userId
       matched.add(`${alias} (${entry.members.length})`)
     }

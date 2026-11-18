@@ -2,6 +2,7 @@ const fs = require('fs')
 const fsp = require('fs/promises')
 const os = require('os')
 const path = require('path')
+const { isDeepStrictEqual } = require('node:util')
 
 const PLUGIN_PATH = path.resolve(__dirname, '..', 'lib', 'index.js')
 const COOKIE_FILE_MODULE_PATH = path.resolve(__dirname, '..', 'lib', 'cookie-file.js')
@@ -1343,12 +1344,16 @@ async function testP1NormalizationAndResponseTimeout() {
   const deploySource = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dashboard', 'src', 'lib', 'routes', 'deploy.ts'), 'utf8')
   const deployLib = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-dashboard', 'lib', 'routes', 'deploy.js'), 'utf8')
   const videoSource = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-local-video-sender', 'src', 'index.ts'), 'utf8')
-  const stagingBlock = videoSource.slice(videoSource.indexOf('async function removeRequestStagingDirectory'), videoSource.indexOf('function detachVideoCacheEntry'))
+  const downloadSource = fs.readFileSync(path.join(REPO_ROOT, 'packages', 'koishi-plugin-local-video-sender', 'src', 'video-download.ts'), 'utf8')
+  const stagingEntry = videoSource.slice(videoSource.indexOf('async function removeRequestStagingDirectory'), videoSource.indexOf('function detachVideoCacheEntry'))
+  const stagingBlock = downloadSource.slice(downloadSource.indexOf('async function removeVideoStagingDirectory'), downloadSource.indexOf('// --- 单次下载所有权'))
   check('example config uses 240-second OneBot timeout', example.includes('responseTimeout: 240000'))
   check('setup template uses 240-second OneBot timeout', setup.includes('responseTimeout: 240000'))
   check('Dashboard source template uses 240-second OneBot timeout', deploySource.includes('responseTimeout: 240000'))
   check('Dashboard built template uses 240-second OneBot timeout', deployLib.includes('responseTimeout: 240000'))
-  check('staging cleanup has no timer, scan or repeated delete', !/setInterval|setTimeout|readdir/.test(stagingBlock) && (stagingBlock.match(/\.rm\(/g) || []).length === 1)
+  check('staging cleanup has no timer, scan or repeated delete',
+    !/setInterval|setTimeout|readdir/.test(stagingEntry + stagingBlock) && (stagingEntry.match(/removeVideoStagingDirectory\(/g) || []).length === 1
+    && (stagingBlock.match(/\.rm\(/g) || []).length === 1)
   check('registered bvidl command marks explicit cache retry', videoSource.includes("downloadAndSend(ctx, session, url, text || url, {}, { explicitCommand: true })"))
 }
 
@@ -1420,18 +1425,33 @@ async function testChineseUserErrorCatalog() {
 async function testFormatPicking() {
   section('format picking')
   await withIsolatedPlugin(async ({ plugin }) => {
-    const picked = plugin.pickFormat(sampleInfo())
-    check('prefers explicit 720P candidate', picked && picked.format === '30064+30280', JSON.stringify(picked))
-    check('computes split stream size', picked && picked.totalSize === 50_000_000, JSON.stringify(picked))
-
-    const approximate = plugin.pickFormat({
-      formats: [
-        { format_id: 'v720', height: 720, fps: 30, vcodec: 'avc1', acodec: 'none', filesize_approx: 42_000_000 },
-        { format_id: 'a1', vcodec: 'none', acodec: 'mp4a', abr: 160, filesize_approx: 8_000_000 },
-      ],
-    })
-    check('uses approximate sizes for split streams', approximate && approximate.totalSize === 50_000_000, JSON.stringify(approximate))
-    check('rejects audio-only format sets', plugin.pickFormat({ formats: [{ format_id: 'a1', vcodec: 'none', acodec: 'mp4a' }] }) === null)
+    // 模拟下载器的视频格式元数据和可选缺失字段。
+    const video = (format_id, height, fields = {}) => ({ format_id, height, vcodec: 'avc1', acodec: 'none', ...fields })
+    // 模拟独立音轨与其码率、文件大小。
+    const audio = (format_id, fields = {}) => ({ format_id, vcodec: 'none', acodec: 'mp4a', ...fields })
+    const cases = [
+      ['explicit 720P split', sampleInfo(), { format: '30064+30280', label: '720P AVC', totalSize: 50_000_000, height: 720 }],
+      ['approximate split size', { formats: [video('v720', 720, { filesize_approx: 42_000_000 }), audio('a1', { filesize_approx: 8_000_000 })] },
+        { format: 'v720+a1', label: '720P split stream', totalSize: 50_000_000, height: 720 }],
+      ['ties preserve input order', { formats: [video('v-first', 719, { fps: 30, filesize: 10 }), video('v-second', 719, { fps: 30, filesize: 10 }),
+        audio('a-first', { abr: 128, filesize: 5 }), audio('a-second', { abr: 128, filesize: 5 })] },
+      { format: 'v-first+a-first', label: '719P split stream', totalSize: 15, height: 719 }],
+      ['unknown size reaches later size gate', { formats: [video('split', 640), audio('audio')] },
+        { format: 'split+audio', label: '640P split stream', totalSize: 0, height: 640 }],
+      ['known merged fallback', { formats: [video('64', 720, { acodec: 'mp4a', filesize: 12 })] },
+        { format: '64', label: '720P single file', totalSize: 12, height: 720 }],
+      ['larger split fallback', { formats: [video('v1080', 1080, { filesize: 10 }), audio('a1', { filesize: 5 })] },
+        { format: 'v1080+a1', label: '1080P fallback split stream', totalSize: 15, height: 1080 }],
+      ['unlisted merged fallback', { formats: [video('joined', 480, { acodec: 'mp4a', filesize: 16 })] },
+        { format: 'joined', label: '480P fallback single file', totalSize: 16, height: 480 }],
+      ['audio-only input', { formats: [audio('solo')] }, null],
+      ['missing formats', {}, null],
+    ]
+    for (const [label, info, expected] of cases) {
+      const picked = plugin.pickFormat(info)
+      check(`format contract: ${label}`, isDeepStrictEqual(picked, expected), JSON.stringify(picked))
+    }
+    check('public entry reuses the pure format selector', plugin.pickFormat === require('../lib/video-format').pickFormat)
   })
 }
 
@@ -2097,6 +2117,96 @@ async function testSingleCleanupCallPerRequest() {
   })
 }
 
+// 验证目录、下载、文件验收、发送及闸门的实际所有权顺序。
+async function testDownloadedFileOwnership() {
+  section('downloaded file ownership and cleanup order')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const workdir = plugin.getRuntimeConfig().workdir
+    const cases = [
+      { name: 'confirmed', tail: ['stat', 'send', 'staging-cleanup', 'release'], cached: true },
+      { name: 'uncertain', tail: ['stat', 'send', 'staging-cleanup', 'release'], cached: true },
+      { name: 'send-failed', tail: ['stat', 'send', 'output-cleanup', 'staging-cleanup', 'release'], cached: false },
+      { name: 'uncached', tail: ['stat', 'send', 'output-cleanup', 'staging-cleanup', 'release'], cached: false, size: 0 },
+      { name: 'oversize', tail: ['stat', 'output-cleanup', 'refusal', 'staging-cleanup', 'release'], cached: false },
+      { name: 'command-failed', tail: ['output-cleanup', 'staging-cleanup', 'failure-log', 'release'], cached: false },
+    ]
+    for (const scenario of cases) {
+      const events = []
+      const ctx = makeCtx()
+      const staging = path.join(workdir, '.staging', 'bili-job-fixture-1000-abc')
+      let output = ''
+      let fileDuringSend = false
+      let filesAtRelease
+      const logger = ctx.logger('bvidl')
+      ctx.logger = () => ({ ...logger, warn(message) {
+        if (String(message).startsWith('video_download_failed:')) events.push('failure-log')
+        logger.warn(message)
+      } })
+      const session = makeSession({ guildId: scenario.name, channelId: scenario.name, async send(message) {
+        if (String(message).includes('<video')) {
+          events.push('send')
+          fileDuringSend = fs.existsSync(output)
+          if (scenario.name === 'uncertain') throw new TimeoutError()
+          if (scenario.name === 'send-failed') throw new SenderError(1200)
+        } else if (String(message).includes('video-021')) events.push('refusal')
+        else events.push('preview')
+        return message
+      } })
+      const deps = {
+        resourceModules: makeResourceModules({ decision: 'run_now', resourceState: 'green', memAvailableMb: 1024 }, async () => {
+          events.push('acquire')
+          return { updateStep() {}, release() {
+            events.push('release')
+            filesAtRelease = { output: fs.existsSync(output), staging: fs.existsSync(staging), cache: plugin.getVideoCacheStatus().entries }
+          } }
+        }),
+        async probeVideo() { events.push('probe'); return makeProbe(1_000_000)() },
+        async createStagingDirectory() { events.push('staging-create'); await fsp.mkdir(staging); return { status: 'ready', path: staging } },
+        async removeStagingDirectory(...args) { events.push('staging-cleanup'); return plugin.removeRequestStagingDirectory(...args) },
+        fs: makeVideoFs({
+          async stat(file) { events.push('stat'); return fsp.stat(file) },
+          async rm(file, options) { events.push('output-cleanup'); return fsp.rm(file, options) },
+        }),
+        async run(_command, args) {
+          events.push('download')
+          output = path.join(getYtdlpPath(args, 'home'), args[args.indexOf('-o') + 1].replace('%(ext)s', 'mp4'))
+          createSparseFile(output, scenario.size ?? (scenario.name === 'oversize' ? MAX_SIZE + 1 : 1_000_000))
+          if (scenario.name === 'command-failed') throw Object.assign(new Error('fixture command failure'), { code: 'EIO' })
+          return { stdout: '', stderr: '' }
+        },
+      }
+      await plugin.downloadAndSend(ctx, session, TEST_URL, TEST_BV, deps)
+      const expected = ['acquire', 'probe', 'preview', 'staging-create', 'download', ...scenario.tail]
+      check(`${scenario.name} preserves ordered file ownership and one release`, isDeepStrictEqual(events, expected), JSON.stringify(events))
+      check(`${scenario.name} releases with the expected files and cache ownership`,
+        isDeepStrictEqual(filesAtRelease, { output: scenario.cached, staging: false, cache: Number(scenario.cached) })
+        && fileDuringSend === scenario.tail.includes('send'), JSON.stringify({ filesAtRelease, fileDuringSend }))
+      await plugin.clearVideoRuntimeState()
+    }
+  })
+}
+
+// 验证清理依赖意外抛错时外层仍释放闸门并解除共享在途状态。
+async function testReleaseWhenStagingCleanupThrows() {
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const error = new Error('fixture staging cleanup failure')
+    let releases = 0
+    let removals = 0
+    const resourceModules = makeResourceModules({ decision: 'run_now', resourceState: 'green', memAvailableMb: 1024 }, async () => ({
+      updateStep() {},
+      release() { releases += 1 },
+    }))
+    const result = await plugin.downloadAndSend(makeCtx(), makeSession(), TEST_URL, TEST_BV, makeDeps(10, 10, null, {
+      resourceGate: undefined,
+      resourceModules,
+      async removeStagingDirectory() { removals += 1; throw error },
+    })).then(() => null, failure => failure)
+    check('unexpected staging cleanup error still releases gate once and clears inflight',
+      result === error && removals === 1 && releases === 1 && plugin.getVideoCacheStatus().inflight === 0,
+      JSON.stringify({ releases, removals, cache: plugin.getVideoCacheStatus() }))
+  })
+}
+
 // 验证失败路径不会留下缓存或错误去重状态。
 async function testFailurePaths() {
   section('failure and blacklist paths')
@@ -2362,6 +2472,8 @@ async function run() {
   await testCleanupAndSafety()
   await testStagingCleanupAlerts()
   await testSingleCleanupCallPerRequest()
+  await testDownloadedFileOwnership()
+  await testReleaseWhenStagingCleanupThrows()
   await testFailurePaths()
   await testDetailedErrorRouting()
   await testStagingDownloadLifecycle()
