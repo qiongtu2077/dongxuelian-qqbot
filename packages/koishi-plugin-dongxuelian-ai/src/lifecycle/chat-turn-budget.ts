@@ -1,5 +1,5 @@
 /**
- * 单轮聊天时限与取消所有权。前处理计入业务，排队另算；开始执行只能发生一次。
+ * 单轮聊天时限与取消所有权。普通明确交互从开始执行计时，随机和记录图片扣除前处理。
  * 不发送消息、不修改历史、不读取模型配置。独立后台任务必须显式退出本轮作用域。
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -7,9 +7,9 @@ import { randomUUID } from 'node:crypto'
 import { runWithModelRequestContext, outsideModelRequestContext } from '../core/model-request-context'
 import type { ModelTimeBudget } from '../core/model-request-context'
 
-export const CHAT_TURN_LIMITS = Object.freeze({ normal: 60000, record: 180000, queue: 45000, randomQueue: 20000,
+export const CHAT_TURN_LIMITS = Object.freeze({ normal: 60000, record: 180000, randomQueue: 20000,
   forward: 10000, topic: 8000, vision: 90000, visionPrimary: 60000, visionFallback: 30000,
-  textPrimary: 40000, textFallback: 30000, normalFallbackReserve: 10000, recordFallbackReserve: 30000,
+  textPrimary: 40000, textFallback: 30000, textFallbackExtension: 40000, normalFallbackReserve: 10000, recordFallbackReserve: 30000,
   normalSend: 3000, recordSend: 5000, cleanup: 2000 })
 
 export interface TurnIdentity { channelKey: string; messageId?: string; random?: boolean }
@@ -40,6 +40,7 @@ export class ChatTurnBudget {
   submittedSends = 0
   pendingSends = 0
   private timer?: ReturnType<typeof setTimeout>
+  private textFallbackExtended = false
   private validity?: () => boolean
   private work = new Set<Promise<unknown>>()
 
@@ -56,7 +57,7 @@ export class ChatTurnBudget {
     this.recordImages = recordImages && !random
   }
 
-  // 入队时固定前处理消耗；等待期间不会消耗业务时间或启动业务计时器。
+  // 入队时记录前处理耗时；等待期间不会消耗执行时间或启动执行计时器。
   enqueue(validity?: () => boolean): void {
     if (this.queuedAt !== null) throw new Error('chat_turn_already_queued')
     this.queuedAt = Date.now()
@@ -68,20 +69,38 @@ export class ChatTurnBudget {
   // 正式开始只允许一次，所有后继阶段共享这一个绝对截止时间。
   start(validity?: () => boolean): void {
     if (this.startedAt !== null) throw new Error('chat_turn_already_started')
+    const runBudget = this.remaining()
     this.startedAt = Date.now()
     if (validity) this.validity = validity
-    this.deadline = this.startedAt + (this.recordImages ? CHAT_TURN_LIMITS.record : CHAT_TURN_LIMITS.normal) - this.preprocessMs
+    this.deadline = this.startedAt + runBudget
     this.stage = 'running'
     this.assertActive()
-    this.timer = setTimeout(() => this.cancel('run_timeout'), this.remaining())
+    this.resetRunTimer()
     this.event('started')
   }
 
-  // 取得整轮剩余时间；正式执行前从同一创建时刻核算已选择档位。
+  // 入队前限制前处理；入队后普通明确交互保留完整执行预算。
   remaining(): number {
     if (this.startedAt !== null) return Math.max(0, this.deadline - Date.now())
     const limit = this.recordImages ? CHAT_TURN_LIMITS.record : CHAT_TURN_LIMITS.normal
-    return Math.max(0, limit - (this.queuedAt === null ? Date.now() - this.createdAt : this.preprocessMs))
+    if (this.queuedAt === null) return Math.max(0, limit - (Date.now() - this.createdAt))
+    return this.random || this.recordImages ? Math.max(0, limit - this.preprocessMs) : limit
+  }
+
+  // 首次切换普通文字备用模型时延长整轮期限，工具续轮共用这一次延期。
+  extendTextFallback(): void {
+    if (this.startedAt === null || this.random || this.recordImages || this.textFallbackExtended) return
+    this.assertActive()
+    this.textFallbackExtended = true
+    this.deadline += CHAT_TURN_LIMITS.textFallbackExtension
+    this.resetRunTimer()
+    this.event('text_fallback_extended', { deadline: this.deadline, addedMs: CHAT_TURN_LIMITS.textFallbackExtension })
+  }
+
+  // 更新根计时器，确保旧截止时间不会取消获准延期的轮次。
+  private resetRunTimer(): void {
+    clearTimeout(this.timer)
+    this.timer = setTimeout(() => this.cancel('run_timeout'), this.remaining())
   }
 
   // 在模型、工具、保存和发送前复检；计时器尚未被调度时也不能越过截止边界。

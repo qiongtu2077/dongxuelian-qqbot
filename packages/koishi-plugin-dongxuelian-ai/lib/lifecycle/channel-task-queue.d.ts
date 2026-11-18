@@ -3,7 +3,6 @@ import { ChatTurnBudget } from './chat-turn-budget';
 type QueueResult = 'completed' | 'failed' | 'queue_timeout' | 'queue_full' | 'run_timeout' | 'revoked' | 'disposed' | 'cleanup_failed';
 interface QueueOptions {
     ctx?: unknown;
-    maxQueueAgeMs?: number;
     turn?: ChatTurnBudget;
     isActive?: () => boolean;
     onSettled?: (reason: QueueResult) => void | Promise<void>;

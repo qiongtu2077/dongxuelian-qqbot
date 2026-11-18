@@ -4,7 +4,6 @@ import { ChatTurnBudget, CHAT_TURN_LIMITS, runWithChatTurn } from './chat-turn-b
 type QueueResult = 'completed' | 'failed' | 'queue_timeout' | 'queue_full' | 'run_timeout' | 'revoked' | 'disposed' | 'cleanup_failed'
 interface QueueOptions {
   ctx?: unknown
-  maxQueueAgeMs?: number
   turn?: ChatTurnBudget
   isActive?: () => boolean
   onSettled?: (reason: QueueResult) => void | Promise<void>
@@ -62,7 +61,10 @@ function cancelRunning(key: string, state: ChannelState, item: QueueItem): void 
     item.state = 'cleanup_failed'
     item.turn.event('cleanup_failed', { pendingSends: item.turn.pendingSends })
     settleQueueItem(item, 'cleanup_failed')
-    for (const waiting of [...state.waiting]) removeWaiting(key, state, waiting, 'cleanup_failed')
+    // 保留已接纳的明确发问，等旧所有者实际退出后按原顺序继续。
+    for (const waiting of [...state.waiting]) {
+      if (waiting.turn.random) removeWaiting(key, state, waiting, 'cleanup_failed')
+    }
   }, CHAT_TURN_LIMITS.cleanup)
 }
 
@@ -108,8 +110,9 @@ function enqueueForChannel(channelKey: string, fn: () => Promise<unknown> | unkn
   let resolveExit!: () => void
   const item: QueueItem = { turn, fn, options, state: 'waiting', settled: false, abort: () => {},
     exited: new Promise(resolve => { resolveExit = resolve }), resolveExit: () => resolveExit() }
-  if (state.cleanupFailed || state.waiting.length + (state.running ? 1 : 0) >= maxDepth) {
-    const reason = state.cleanupFailed ? 'cleanup_failed' : 'queue_full'
+  const full = state.waiting.length + (state.running ? 1 : 0) >= maxDepth
+  if (full || state.cleanupFailed) {
+    const reason = full ? 'queue_full' : 'cleanup_failed'
     turn.cancel(reason); settleQueueItem(item, reason); turn.finish(); resolveExit()
     return false
   }
@@ -123,8 +126,9 @@ function enqueueForChannel(channelKey: string, fn: () => Promise<unknown> | unkn
   turn.signal.addEventListener('abort', item.abort, { once: true })
   // 等待期间也撤销失效授权，避免短暂关群再开启后复活旧任务。
   item.monitor = setInterval(() => { try { turn.assertActive() } catch { /* 取消监听负责摘除或清理。 */ } }, 250)
-  item.waitTimer = setTimeout(() => removeWaiting(key, state, item, 'queue_timeout'),
-    options.maxQueueAgeMs ?? (turn.random ? CHAT_TURN_LIMITS.randomQueue : CHAT_TURN_LIMITS.queue))
+  if (turn.random) {
+    item.waitTimer = setTimeout(() => removeWaiting(key, state, item, 'queue_timeout'), CHAT_TURN_LIMITS.randomQueue)
+  }
   if (turn.signal.aborted) item.abort()
   else drainChannel(key, state)
   return true

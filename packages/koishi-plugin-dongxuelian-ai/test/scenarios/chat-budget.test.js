@@ -72,8 +72,10 @@ async function run(t) {
     t.check('finished budget stages leave no timers', clock.pendingCount() === baseline, String(clock.pendingCount()))
     const queued = new ChatTurnBudget({ channelKey: 'ordinary-queue-accounting' })
     await clock.tick(20000); queued.enqueue(); await clock.tick(45000)
-    t.check('queued validity checks exclude wait time from ordinary business budget', queued.remaining() === 40000)
-    queued.start(); queued.finish()
+    t.check('ordinary explicit reply preserves the full run budget after preprocessing and waiting', queued.remaining() === 60000)
+    queued.start()
+    t.check('ordinary execution deadline starts at dispatch', queued.deadline - Date.now() === 60000)
+    queued.finish()
   })
 
   await withScenario({ fakeTimers: true }, async ({ clock }) => {
@@ -91,9 +93,9 @@ async function run(t) {
     await clock.tick(20000)
     t.check('random waiter expires independently at twenty seconds', results.length === 1 && results[0][0] === 'random' && results[0][2] - begin === 20000)
     await clock.tick(25000)
-    t.check('explicit waiter expires independently at forty-five seconds', results.length === 2 && results[1][0] === 'explicit' && results[1][2] - begin === 45000)
+    t.check('admitted explicit waiter survives forty-five seconds', results.length === 1 && starts === 0)
     release(); await flushAsync(30)
-    t.check('expired closures never execute after predecessor exits', starts === 0 && results.every(item => item[1] === 'queue_timeout'))
+    t.check('explicit waiter runs after the predecessor while the expired random waiter stays removed', starts === 1 && results[0][1] === 'queue_timeout' && results[1]?.[0] === 'explicit' && results[1][1] === 'completed')
     t.check('queue wait expiry and release remove all timers', clock.pendingCount() === baseline, String(clock.pendingCount()))
   })
 
@@ -112,12 +114,12 @@ async function run(t) {
     await flushAsync(20)
     await clock.tick(32000)
     const rejected = enqueueForChannel('isolation', () => { starts++ }, 4)
-    t.check('uncooperative owner isolates channel after cleanup grace', turn.signal.aborted && !rejected && starts === 0 && settlements.join(',') === 'cleanup_failed,cleanup_failed')
+    t.check('uncooperative owner isolates the channel and holds already admitted work', turn.signal.aborted && !rejected && starts === 0 && settlements.join(',') === 'cleanup_failed')
     t.check('different channel runs while one owner is stuck', otherStarted)
     release(); await flushAsync(30)
     const recovered = enqueueForChannel('isolation', () => { starts++ }, 4)
     await flushAsync(30)
-    t.check('late real exit clears only its own isolation', recovered && starts === 1 && settlements.length === 2)
+    t.check('late real exit resumes the admitted waiter and clears only its own isolation', recovered && starts === 2 && settlements.join(',') === 'cleanup_failed,completed')
     t.check('diagnostics preserve cancellation cleanup exit and release order', ['cancel', 'cleanup_start', 'cleanup_failed', 'request_exit', 'queue_release'].every((name, index, order) => events.indexOf(name) >= 0 && (!index || events.indexOf(name) > events.indexOf(order[index - 1]))), events.join(','))
     t.check('isolated channel recovery leaves no timers', clock.pendingCount() === baseline)
   })
@@ -137,7 +139,7 @@ async function run(t) {
     await clock.tick(1000); await flushAsync(30)
     t.check('next task starts only after cooperative cleanup completes', exitAt > 0 && nextAt >= exitAt)
     const releases = []
-    for (const [channel, capacity] of [['group-capacity', 4], ['private-capacity', 2]]) {
+    for (const [channel, capacity] of [['group-capacity', 5], ['private-capacity', 2]]) {
       for (let index = 0; index < capacity; index++) t.check(`${channel} accepts slot ${index + 1}`, enqueueForChannel(channel, () => new Promise(resolve => releases.push(resolve)), capacity))
       t.check(`${channel} rejects overflow`, !enqueueForChannel(channel, () => {}, capacity))
     }
@@ -146,6 +148,81 @@ async function run(t) {
     releases.forEach(release => release())
     await flushAsync(20); await clearing
     t.check('dispose cancels queued closures and clears timers', releases.length === 2 && clock.pendingCount() === baseline)
+  })
+
+  // 通过群聊消息入口重放十秒内的五问，首条在四个模型上耗尽延期预算。
+  await withScenario({ fakeTimers: true }, async ({ data, clock, makeSession, run, harness }) => {
+    const models = ['deepseek-v4-flash', 'deepseek-chat', 'deepseek-reasoner', 'glm-4.7']
+    seedCapabilityConfig(data, { text: models.map((model, index) => ({ provider: ['opencode', 'deepseek', 'deepseek', 'glm'][index], model })) })
+    const { currentChatTurn } = require('../../lib/lifecycle/chat-turn-budget')
+    const sessions = Array.from({ length: 6 }, (_, index) => {
+      const userId = String(200000001 + index)
+      return makeSession({ userId, author: { id: userId, name: `群友${index + 1}` }, messageId: `queue-burst-${index + 1}`,
+        content: `<at id="90000"/> 第${index + 1}个问题，水星离太阳有多远？` })
+    })
+    const origin = Date.now(), requests = [], originalFetch = global.fetch
+    const success = { json: { choices: [{ message: { content: '水星距离太阳平均约五千八百万公里。' } }] } }
+    global.fetch = (url, options) => {
+      const messageId = currentChatTurn()?.identity.messageId
+      const event = { at: Date.now(), body: JSON.parse(options.body), messageId }
+      requests.push(event)
+      return messageId === sessions[0].messageId ? abortableRequest(options.signal, event) : mockFetch([success]).fetch(url, options)
+    }
+    try {
+      await run(sessions[0], { flush: false })
+      await until(() => requests.length === 1)
+      for (const session of sessions.slice(1)) {
+        await clock.tick(1800)
+        await run(session, { flush: false })
+      }
+      t.check('five group slots include the running question and the sixth receives the exact overflow notice',
+        sessions.slice(0, 5).every(session => session.sent.length === 0) && sessions[5].sent.join('\n') === '消息回不过来了，等下再发吧' && requests.length === 1)
+
+      await clock.tick(60000 - (Date.now() - origin))
+      t.check('the running question crosses its original deadline while all admitted waiters remain queued',
+        requests.length === 3 && requests.every(request => request.messageId === sessions[0].messageId) && sessions.slice(0, 5).every(session => session.sent.length === 0))
+
+      await clock.tick(37000)
+      await until(() => sessions.slice(0, 5).every(session => session.sent.length > 0))
+      const events = harness.logs.filter(item => item.msg.startsWith('chat_turn ')).map(item => JSON.parse(item.msg.slice(10)))
+      const started = events.filter(event => event.event === 'started')
+      const firstRequests = requests.filter(request => request.messageId === sessions[0].messageId)
+      const firstNotice = events.findIndex(event => event.event === 'send_result' && event.messageId === sessions[0].messageId)
+      t.check('all four models get their time in order, with three seconds left to send the timeout',
+        firstRequests.map(request => request.body.model).join(',') === models.join(',')
+        && firstRequests.map(request => request.abortedAt - request.at).join(',') === '40000,19000,19000,19000'
+        && firstRequests.at(-1).abortedAt - origin === 97000 && events.filter(event => event.event === 'text_fallback_extended').length === 1)
+      t.check('first failure sends one notice before the next question starts', sessions[0].sent.join('\n') === `<quote id="${sessions[0].messageId}"/>请求超时了，一会再来`
+        && firstNotice >= 0 && firstNotice < events.indexOf(started[1]), JSON.stringify({ sent: sessions[0].sent, firstNotice, nextStarted: events.indexOf(started[1]) }))
+      t.check('five admitted questions run FIFO with a fresh sixty-second budget and the sixth never runs',
+        started.map(event => event.messageId).join(',') === sessions.slice(0, 5).map(session => session.messageId).join(',')
+        && started.every(event => event.remainingMs === 60000) && started.slice(1).every(event => event.queueMs > 45000)
+        && sessions.slice(1, 5).every(session => session.sent.length === 1 && String(session.sent[0]).includes('五千八百万公里')))
+    } finally { global.fetch = originalFetch }
+  })
+
+  // 同一轮的工具续问可再次走备用链，整轮仍只增加一次四十秒。
+  await withScenario({ fakeTimers: true }, async ({ data, clock }) => {
+    seedCapabilityConfig(data, { text: [{ provider: 'opencode', model: 'deepseek-v4-flash' }, { provider: 'deepseek', model: 'deepseek-chat' }] })
+    const { ChatTurnBudget, runWithChatTurn } = require('../../lib/lifecycle/chat-turn-budget')
+    const { requestChatCompletions } = require('../../lib/core/api')
+    const { loadConfig } = require('../../lib/core/runtime-config')
+    const config = await loadConfig(true), events = []
+    const turn = new ChatTurnBudget({ channelKey: 'one-fallback-extension' }, event => events.push(event))
+    turn.enqueue(); turn.start()
+    const originalFetch = global.fetch
+    const success = { json: { choices: [{ message: { content: '备用已回答' } }] } }
+    global.fetch = mockFetch([{ status: 503 }, success, { status: 503 }, success]).fetch
+    try {
+      const messages = [{ role: 'user', content: '备用续问' }], options = { _extendTextFallback: true }
+      const first = await runWithChatTurn(turn, () => requestChatCompletions(messages, config, options))
+      await clock.tick(60000)
+      const second = await runWithChatTurn(turn, () => requestChatCompletions(messages, config, options))
+      t.check('a later tool request reuses the same extended deadline', first.content === '备用已回答' && second.content === '备用已回答'
+        && events.filter(event => event.event === 'text_fallback_extended').length === 1 && turn.remaining() === 40000)
+      await clock.tick(40000)
+      t.check('the root timer still ends the extended turn at one hundred seconds', turn.signal.aborted && turn.reason === 'run_timeout')
+    } finally { global.fetch = originalFetch; turn.finish() }
   })
 
   for (const record of [false, true]) await withScenario({ fakeTimers: true }, async ({ data, clock }) => {

@@ -8,6 +8,7 @@ export interface ModelRequestContext {
   assertActive(): void
   sendWindow(): number
   modelBudget(): ModelTimeBudget
+  extendTextFallback(): void
   own<T>(promise: Promise<T>): Promise<T>
   event(name: string, detail?: Record<string, string | number | boolean | null | undefined>): void
 }

@@ -158,6 +158,7 @@ function shouldDropQueuedBotWork(ctx, channelKey, commandType, label) {
 function shouldUseLightweightAiStatusFallback(plain, action) {
     return plain === 'AI状态' && (action === 'silent_drop' || action === 'defer' || action === 'reject');
 }
+const GROUP_CHAT_QUEUE_CAPACITY = 5;
 const RESOURCE_NOTICE_COOLDOWN_MS = Math.max(30000, Math.min(60000, Number(process.env.RESOURCE_NOTICE_COOLDOWN_MS || 45000)));
 const resourceNoticeAtByChannel = new Map();
 // 返回低内存固定提示；同频道同一资源状态在短窗口内只发送一次。
@@ -593,7 +594,7 @@ function apply(ctx) {
                                 }
                                 await safeSendReplyWithFreshness(ctx, liveSession, reply, true, resolveBot, { ...randomSendOptions, personaName: p.personaName || '' });
                             }
-                        }, 4, { random: true, recordImages: false, isFresh: () => getExplicitInteractionVersion(channelKey) === p.explicitVersion && getChannelMessageVersion(channelKey) === p.triggerMessageVersion });
+                        }, GROUP_CHAT_QUEUE_CAPACITY, { random: true, recordImages: false, isFresh: () => getExplicitInteractionVersion(channelKey) === p.explicitVersion && getChannelMessageVersion(channelKey) === p.triggerMessageVersion });
                     }
                     else {
                         incrementRandomMiss(channelKey);
@@ -743,7 +744,7 @@ function apply(ctx) {
             explicitVersion: getExplicitInteractionVersion(channelKey),
             triggerAt: Date.now(),
         });
-        const maxDepth = inGuild ? 4 : 2;
+        const maxDepth = inGuild ? GROUP_CHAT_QUEUE_CAPACITY : 2;
         if (isFileQuickReadIntent(userText) && !isVisionSession(session)) {
             const liveSession = withCurrentBot(session, resolveBot());
             const reply = await resolveFileQuickReadReply(channelKey);
@@ -831,7 +832,7 @@ function apply(ctx) {
                 else if (/data_inspection|DataInspection|inappropriate content|content_filter|content policy|moderation|safety|审核|风控|ResponsibleAIPolicy|ResponsibleAI|blocked|censored/i.test(m)) {
                     msg = /data_inspection|DataInspection|inappropriate content|图/i.test(m) ? '这个图不合适，不说了吧' : '这话我接不了，换一句吧。';
                 }
-                else if (/timeout|ETIMEDOUT|aborted|AbortError|deadline/i.test(m) || /TIMED_OUT|ETIMEDOUT/i.test(code)) {
+                else if (/timeout|ETIMEDOUT|aborted|AbortError|deadline/i.test(m) || code === 'TIMEOUT' || /TIMED_OUT|ETIMEDOUT/i.test(code)) {
                     msg = entryTurn.imagesRead > 0 && entryTurn.imagesRead === entryTurn.imagesTotal
                         ? '已完成图片读取，本轮回答已超时或取消。' : '请求超时了，一会再来。';
                 }

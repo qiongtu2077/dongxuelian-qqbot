@@ -25,9 +25,10 @@ export function submitChatTurn(turn: ChatTurnBudget, session: TurnSession, fn: (
     turn,
     isActive: () => isSessionParticipationEnabled(session) && !existsSync(MAINTENANCE_FILE) && options.isFresh(),
     onSettled: reason => outsideChatTurn(async () => {
-      if (turn.random || !['queue_full', 'queue_timeout', 'run_timeout', 'cleanup_failed'].includes(reason)
+      if (turn.random || !['queue_full', 'run_timeout', 'cleanup_failed'].includes(reason)
         || turn.submittedSends || !isSessionParticipationEnabled(session) || existsSync(MAINTENANCE_FILE)) return
-      const message = reason === 'queue_full' || reason === 'queue_timeout' || reason === 'cleanup_failed' && turn.reason !== 'run_timeout'
+      const message = reason === 'queue_full' ? '消息回不过来了，等下再发吧'
+        : reason === 'cleanup_failed' && turn.reason !== 'run_timeout'
         ? '现在有点忙，请稍后再试。'
         : turn.imagesRead > 0 && turn.imagesRead === turn.imagesTotal
           ? '已完成图片读取，本轮回答已超时或取消。'

@@ -717,7 +717,10 @@ async function executeOwnedChatModelStage(input: ExecuteChatModelStageOptions, i
     if (options.meta) options.meta.rareConfirmed = semanticRareConfirmed
     return decision.reply
   }
-  // 元数据只随实际含原图的调用传递，避免文字降级被误记为视觉尝试。
+  const isVisionTurn = isVisionSession(session)
+  const extendTextFallback = !isRandomTriggered && !isVisionTurn && imageTurn.status === 'none'
+    && !options.preparedImageEvidence && !currentChatTurn()?.recordImages
+  // 元数据只随实际含原图的调用传递，备用延期由普通文字回复显式启用。
   const callTurnModel: ChatToolFlowCallModel = async (turnMessages, randomTriggered, extra = {}, tools = null) => {
     assertChatTurnActive()
     if (messagesContainImage(turnMessages) && options.isImageReplyFresh && !options.isImageReplyFresh()) return ''
@@ -728,7 +731,7 @@ async function executeOwnedChatModelStage(input: ExecuteChatModelStageOptions, i
         if (typeof extra._onRequestAttempt === 'function') extra._onRequestAttempt(step)
       },
     } : {}
-    const result = await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard }, tools) as ChatToolFlowReply
+    const result = await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard, _extendTextFallback: extendTextFallback }, tools) as ChatToolFlowReply
     assertChatTurnActive()
     if (typeof result === 'string') return readTurnRareDecision(result)
     if (result.message?.content) result.message.content = readTurnRareDecision(result.message.content)
@@ -738,7 +741,7 @@ async function executeOwnedChatModelStage(input: ExecuteChatModelStageOptions, i
 
   let wasVisionRequest = false
   let visionContext = null
-  if (isVisionSession(session)) {
+  if (isVisionTurn) {
     const vc = await loadCapabilityConfig('vision', true)
     if (!isVisionModel(vc.provider, vc.model)) throw new Error('该能力未配置模型')
     const visionInstruction = options.randomTriggered

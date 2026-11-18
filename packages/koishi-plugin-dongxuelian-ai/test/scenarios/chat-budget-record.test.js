@@ -47,6 +47,7 @@ async function run(t) {
     const previousEndpoint = process.env.DONGXUELIAN_ONEBOT_WS_URL, originalFetch = global.fetch
     process.env.DONGXUELIAN_ONEBOT_WS_URL = `ws://127.0.0.1:${server.address().port}/onebot/v11/ws`
     const reads = [], requests = []
+    const { currentChatTurn } = require('../../lib/lifecycle/chat-turn-budget')
     let active = 0, maxActive = 0
     server.on('connection', socket => socket.on('message', raw => {
       const request = JSON.parse(String(raw))
@@ -60,8 +61,12 @@ async function run(t) {
       const body = JSON.parse(options.body)
       const images = body.messages.flatMap(item => Array.isArray(item.content) ? item.content.filter(part => part.type === 'image_url') : [])
       const kind = String(body.messages[0]?.content).includes('判断用户是否切换了话题') ? 'topic' : images.length ? 'vision' : body.model === 'deepseek-chat' ? 'backup' : 'primary'
-      const event = { kind, body, at: Date.now(), images: images.length, signal: options.signal }
+      const event = { kind, body, at: Date.now(), images: images.length, signal: options.signal, messageId: currentChatTurn()?.identity.messageId }
       requests.push(event); active++; maxActive = Math.max(maxActive, active)
+      if (event.messageId === second.messageId) {
+        active--
+        return mockFetch([{ json: { choices: [{ message: { content: '也看到了你引用的记录。' } }] } }]).fetch(url, options)
+      }
       const delay = kind === 'vision' ? 11600 : kind === 'backup' ? 9500 : null
       return delayedModel(url, options, delay, kind === 'vision' ? '十张原图都已读取，内容完整。' : '看到了，记录里的十张图我都读完啦。', event, () => active--)
     }
@@ -83,23 +88,25 @@ async function run(t) {
       await clock.tick(36600)
       await untilRecord(() => requests.some(item => item.kind === 'backup'))
       await clock.tick(8400); await flushAsync(30)
-      t.check('second original question expires at independent forty-five-second wait limit', Date.now() - secondQueuedAt === 45000 && second.sent.length === 1 && String(second.sent[0]).includes('忙'), JSON.stringify(second.sent))
-      t.check('expired second question never starts its own model request', requests.map(item => item.kind).join(',') === 'topic,vision,primary,backup')
+      t.check('second original question stays queued after forty-five seconds', Date.now() - secondQueuedAt === 45000 && second.sent.length === 0, JSON.stringify(second.sent))
+      t.check('second question waits for the first request to exit', requests.map(item => item.kind).join(',') === 'topic,vision,primary,backup')
       await clock.tick(1100)
       await untilRecord(() => first.sent.length > 0)
+      await untilRecord(() => second.sent.length > 0)
       t.check('original first question receives valid backup answer after main timeout', first.sent.some(item => String(item).includes('十张图我都读完')) && !first.sent.some(item => /超时|无法连接|读取失败|fallback/.test(String(item))), JSON.stringify(first.sent))
+      t.check('admitted record question receives its reply after the first question exits', second.sent.some(item => String(item).includes('也看到了你引用的记录')), JSON.stringify(second.sent))
       t.check('incident vision receives all ten originals in one real request', requests.find(item => item.kind === 'vision').images === 10 && new Set(reads).size === 10 && reads.length === 10)
       const primary = requests.find(item => item.kind === 'primary')
-      t.check('incident primary is cancelled at forty seconds before ordered backup', primary.signal.aborted && primary.abortedAt - primary.at === 40000 && requests.at(-1).at >= primary.abortedAt)
+      t.check('incident primary is cancelled at forty seconds before ordered backup', primary.signal.aborted && primary.abortedAt - primary.at === 40000 && requests.find(item => item.kind === 'backup').at >= primary.abortedAt)
       t.check('no same-channel model overlap throughout original input replay', maxActive === 1 && active === 0)
       const events = harness.logs.filter(item => item.msg.startsWith('chat_turn ')).map(item => JSON.parse(item.msg.slice(10)))
       const started = events.find(item => item.event === 'started' && item.messageId === first.messageId)
       const completed = events.find(item => item.event === 'image_complete' && item.messageId === first.messageId)
-      t.check('diagnostics associate original message, record tier, complete images and remaining budget', started?.tier === 'record_images' && completed?.read === 10 && completed?.unread === 0 && completed?.batches === 1)
+      t.check('diagnostics associate the record tier and all read images, without a text fallback extension', started?.tier === 'record_images' && completed?.read === 10 && completed?.unread === 0 && completed?.batches === 1 && !events.some(item => item.event === 'text_fallback_extended'))
       t.check('internal deadline and cancellation fields remain local', requests.every(item => !Object.keys(item.body).some(key => key.startsWith('_') || key === 'signal')))
       const sentCount = first.sent.length + second.sent.length
       await clock.tick(120000); await flushAsync(30)
-      t.check('expired original messages never produce late extra replies', first.sent.length + second.sent.length === sentCount)
+      t.check('both original questions settle without late extra replies', first.sent.length + second.sent.length === sentCount)
     } finally {
       global.fetch = originalFetch
       if (previousEndpoint === undefined) delete process.env.DONGXUELIAN_ONEBOT_WS_URL

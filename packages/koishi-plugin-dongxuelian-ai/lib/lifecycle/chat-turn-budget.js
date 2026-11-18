@@ -10,15 +10,15 @@ exports.sendWithChatTurn = sendWithChatTurn;
 exports.delayWithSignal = delayWithSignal;
 exports.waitWithSignal = waitWithSignal;
 /**
- * 单轮聊天时限与取消所有权。前处理计入业务，排队另算；开始执行只能发生一次。
+ * 单轮聊天时限与取消所有权。普通明确交互从开始执行计时，随机和记录图片扣除前处理。
  * 不发送消息、不修改历史、不读取模型配置。独立后台任务必须显式退出本轮作用域。
  */
 const node_async_hooks_1 = require("node:async_hooks");
 const node_crypto_1 = require("node:crypto");
 const model_request_context_1 = require("../core/model-request-context");
-exports.CHAT_TURN_LIMITS = Object.freeze({ normal: 60000, record: 180000, queue: 45000, randomQueue: 20000,
+exports.CHAT_TURN_LIMITS = Object.freeze({ normal: 60000, record: 180000, randomQueue: 20000,
     forward: 10000, topic: 8000, vision: 90000, visionPrimary: 60000, visionFallback: 30000,
-    textPrimary: 40000, textFallback: 30000, normalFallbackReserve: 10000, recordFallbackReserve: 30000,
+    textPrimary: 40000, textFallback: 30000, textFallbackExtension: 40000, normalFallbackReserve: 10000, recordFallbackReserve: 30000,
     normalSend: 3000, recordSend: 5000, cleanup: 2000 });
 const turnScope = new node_async_hooks_1.AsyncLocalStorage();
 const activeStages = new Map();
@@ -45,6 +45,7 @@ class ChatTurnBudget {
         this.imagesTotal = 0;
         this.submittedSends = 0;
         this.pendingSends = 0;
+        this.textFallbackExtended = false;
         this.work = new Set();
         this.random = identity.random === true;
         this.validity = validity;
@@ -56,7 +57,7 @@ class ChatTurnBudget {
         this.random = random;
         this.recordImages = recordImages && !random;
     }
-    // 入队时固定前处理消耗；等待期间不会消耗业务时间或启动业务计时器。
+    // 入队时记录前处理耗时；等待期间不会消耗执行时间或启动执行计时器。
     enqueue(validity) {
         if (this.queuedAt !== null)
             throw new Error('chat_turn_already_queued');
@@ -70,21 +71,39 @@ class ChatTurnBudget {
     start(validity) {
         if (this.startedAt !== null)
             throw new Error('chat_turn_already_started');
+        const runBudget = this.remaining();
         this.startedAt = Date.now();
         if (validity)
             this.validity = validity;
-        this.deadline = this.startedAt + (this.recordImages ? exports.CHAT_TURN_LIMITS.record : exports.CHAT_TURN_LIMITS.normal) - this.preprocessMs;
+        this.deadline = this.startedAt + runBudget;
         this.stage = 'running';
         this.assertActive();
-        this.timer = setTimeout(() => this.cancel('run_timeout'), this.remaining());
+        this.resetRunTimer();
         this.event('started');
     }
-    // 取得整轮剩余时间；正式执行前从同一创建时刻核算已选择档位。
+    // 入队前限制前处理；入队后普通明确交互保留完整执行预算。
     remaining() {
         if (this.startedAt !== null)
             return Math.max(0, this.deadline - Date.now());
         const limit = this.recordImages ? exports.CHAT_TURN_LIMITS.record : exports.CHAT_TURN_LIMITS.normal;
-        return Math.max(0, limit - (this.queuedAt === null ? Date.now() - this.createdAt : this.preprocessMs));
+        if (this.queuedAt === null)
+            return Math.max(0, limit - (Date.now() - this.createdAt));
+        return this.random || this.recordImages ? Math.max(0, limit - this.preprocessMs) : limit;
+    }
+    // 首次切换普通文字备用模型时延长整轮期限，工具续轮共用这一次延期。
+    extendTextFallback() {
+        if (this.startedAt === null || this.random || this.recordImages || this.textFallbackExtended)
+            return;
+        this.assertActive();
+        this.textFallbackExtended = true;
+        this.deadline += exports.CHAT_TURN_LIMITS.textFallbackExtension;
+        this.resetRunTimer();
+        this.event('text_fallback_extended', { deadline: this.deadline, addedMs: exports.CHAT_TURN_LIMITS.textFallbackExtension });
+    }
+    // 更新根计时器，确保旧截止时间不会取消获准延期的轮次。
+    resetRunTimer() {
+        clearTimeout(this.timer);
+        this.timer = setTimeout(() => this.cancel('run_timeout'), this.remaining());
     }
     // 在模型、工具、保存和发送前复检；计时器尚未被调度时也不能越过截止边界。
     assertActive() {

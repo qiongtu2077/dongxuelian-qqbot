@@ -644,9 +644,8 @@ async function executeChatCompletions(messages, config, extraBody, tools) {
     const externalSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0] || null;
     const requestedTimeout = Number(extraBody._timeoutMs);
     const purpose = extraBody._purpose || (capability === 'vision' ? 'vision' : 'chat');
-    // 只有明确进入聊天作用域的调用获得轮次预算；独立任务沿用自身配置。
-    const timeBudget = extraBody._timeBudget || (purpose === 'chat' && capability === 'text' ? turn?.modelBudget() : undefined);
-    const turnDeadline = Math.min(timeBudget?.deadline ?? Infinity, turn ? turn.deadline - turn.sendWindow() : Infinity);
+    const isTextChat = purpose === 'chat' && capability === 'text';
+    const canExtendTextFallback = turn && isTextChat && extraBody._extendTextFallback && !extraBody._timeBudget;
     const imageRequest = readImageRequestDiagnostic(extraBody._imageRequest);
     const imageDiagnostic = imageRequest ? { imageSource: imageRequest.source, imageTarget: imageRequest.target, imageDemandId: imageRequest.demandId } : {};
     const budget = purpose === 'retaliation_score' ? RETALIATION_BUDGET
@@ -660,6 +659,11 @@ async function executeChatCompletions(messages, config, extraBody, tools) {
         turn?.assertActive();
         if (externalSignal?.aborted)
             throw externalSignal.reason;
+        // 真正进入第一个备用节点时才申请延期，并在本节点重新读取整轮期限。
+        if (canExtendTextFallback && index === 1 && startIndex === 0)
+            turn.extendTextFallback();
+        const timeBudget = extraBody._timeBudget || (isTextChat ? turn?.modelBudget() : undefined);
+        const turnDeadline = Math.min(timeBudget?.deadline ?? Infinity, turn ? turn.deadline - turn.sendWindow() : Infinity);
         if (Date.now() >= turnDeadline)
             throw new Error('chat_request_deadline');
         const attempt = attempts[index];
@@ -677,12 +681,11 @@ async function executeChatCompletions(messages, config, extraBody, tools) {
         const maxTokens = budget ? recoveryNext ? budget.recovery : budget.initial : Number(filtered.max_tokens) || 1500;
         const diagnosticMaxTokens = structuredFields?.[index]?._nativeStructuredOutput ? undefined : maxTokens;
         recoveryNext = false;
-        const attemptStartedAt = Date.now();
-        attemptNumber += 1;
-        const controller = new AbortController();
         const remaining = turnDeadline - Date.now();
         const reserve = timeBudget && index === 0 && index + 1 < attempts.length ? timeBudget.fallbackReserveMs : 0;
-        const allocation = timeBudget ? Math.min(index === 0 ? timeBudget.primaryMs : timeBudget.fallbackMs, remaining - reserve) : remaining;
+        // 普通文字备用节点平分剩余时间；提前结束的节点把未用时间留给后面的节点。
+        const remainingNodes = canExtendTextFallback && index > 0 ? attempts.length - index : 1;
+        const allocation = timeBudget ? Math.min(index === 0 ? timeBudget.primaryMs : timeBudget.fallbackMs, Math.floor((remaining - reserve) / remainingNodes)) : remaining;
         // 备用真实存在才预留；剩余不足时直接切入备用，不用最小时限钳制越界。
         if (allocation <= 0)
             continue;
@@ -690,6 +693,9 @@ async function executeChatCompletions(messages, config, extraBody, tools) {
             ? Math.min(REQUEST_TIMEOUT_CAP, timeBudget || turn ? requestedTimeout : Math.max(1000, requestedTimeout))
             : timeBudget ? Infinity : index > 0 ? 10000 : REQUEST_TIMEOUT;
         const timeout = Math.min(deadline - Date.now(), allocation, configuredTimeout);
+        const attemptStartedAt = Date.now();
+        attemptNumber += 1;
+        const controller = new AbortController();
         turn?.event('model_attempt', { requestId, purpose, provider: attempt.provider, model: attempt.model,
             fallback: index > 0, allocatedMs: timeout, deadline: turnDeadline });
         const timer = setTimeout(() => controller.abort(), timeout);

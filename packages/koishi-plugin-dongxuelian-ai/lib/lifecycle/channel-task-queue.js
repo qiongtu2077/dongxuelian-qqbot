@@ -44,8 +44,11 @@ function cancelRunning(key, state, item) {
         item.state = 'cleanup_failed';
         item.turn.event('cleanup_failed', { pendingSends: item.turn.pendingSends });
         settleQueueItem(item, 'cleanup_failed');
-        for (const waiting of [...state.waiting])
-            removeWaiting(key, state, waiting, 'cleanup_failed');
+        // 保留已接纳的明确发问，等旧所有者实际退出后按原顺序继续。
+        for (const waiting of [...state.waiting]) {
+            if (waiting.turn.random)
+                removeWaiting(key, state, waiting, 'cleanup_failed');
+        }
     }, chat_turn_budget_1.CHAT_TURN_LIMITS.cleanup);
 }
 // 真实业务退出后核对所有者再放行，迟到退出不能删除其他代的频道状态。
@@ -98,8 +101,9 @@ function enqueueForChannel(channelKey, fn, maxDepth, options = {}) {
     let resolveExit;
     const item = { turn, fn, options, state: 'waiting', settled: false, abort: () => { },
         exited: new Promise(resolve => { resolveExit = resolve; }), resolveExit: () => resolveExit() };
-    if (state.cleanupFailed || state.waiting.length + (state.running ? 1 : 0) >= maxDepth) {
-        const reason = state.cleanupFailed ? 'cleanup_failed' : 'queue_full';
+    const full = state.waiting.length + (state.running ? 1 : 0) >= maxDepth;
+    if (full || state.cleanupFailed) {
+        const reason = full ? 'queue_full' : 'cleanup_failed';
         turn.cancel(reason);
         settleQueueItem(item, reason);
         turn.finish();
@@ -121,7 +125,9 @@ function enqueueForChannel(channelKey, fn, maxDepth, options = {}) {
         turn.assertActive();
     }
     catch { /* 取消监听负责摘除或清理。 */ } }, 250);
-    item.waitTimer = setTimeout(() => removeWaiting(key, state, item, 'queue_timeout'), options.maxQueueAgeMs ?? (turn.random ? chat_turn_budget_1.CHAT_TURN_LIMITS.randomQueue : chat_turn_budget_1.CHAT_TURN_LIMITS.queue));
+    if (turn.random) {
+        item.waitTimer = setTimeout(() => removeWaiting(key, state, item, 'queue_timeout'), chat_turn_budget_1.CHAT_TURN_LIMITS.randomQueue);
+    }
     if (turn.signal.aborted)
         item.abort();
     else

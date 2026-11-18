@@ -19,14 +19,15 @@ function submitChatTurn(turn, session, fn, maxDepth, options) {
         turn,
         isActive: () => (0, participation_policy_1.isSessionParticipationEnabled)(session) && !(0, node_fs_1.existsSync)(MAINTENANCE_FILE) && options.isFresh(),
         onSettled: reason => (0, chat_turn_budget_1.outsideChatTurn)(async () => {
-            if (turn.random || !['queue_full', 'queue_timeout', 'run_timeout', 'cleanup_failed'].includes(reason)
+            if (turn.random || !['queue_full', 'run_timeout', 'cleanup_failed'].includes(reason)
                 || turn.submittedSends || !(0, participation_policy_1.isSessionParticipationEnabled)(session) || (0, node_fs_1.existsSync)(MAINTENANCE_FILE))
                 return;
-            const message = reason === 'queue_full' || reason === 'queue_timeout' || reason === 'cleanup_failed' && turn.reason !== 'run_timeout'
-                ? '现在有点忙，请稍后再试。'
-                : turn.imagesRead > 0 && turn.imagesRead === turn.imagesTotal
-                    ? '已完成图片读取，本轮回答已超时或取消。'
-                    : turn.imagesTotal > turn.imagesRead ? `本轮图片读取超时，仍有${turn.imagesTotal - turn.imagesRead}张未读完，请稍后再试。` : '请求超时了，一会再来。';
+            const message = reason === 'queue_full' ? '消息回不过来了，等下再发吧'
+                : reason === 'cleanup_failed' && turn.reason !== 'run_timeout'
+                    ? '现在有点忙，请稍后再试。'
+                    : turn.imagesRead > 0 && turn.imagesRead === turn.imagesTotal
+                        ? '已完成图片读取，本轮回答已超时或取消。'
+                        : turn.imagesTotal > turn.imagesRead ? `本轮图片读取超时，仍有${turn.imagesTotal - turn.imagesRead}张未读完，请稍后再试。` : '请求超时了，一会再来。';
             let timer;
             turn.event('settlement_send_start');
             try {

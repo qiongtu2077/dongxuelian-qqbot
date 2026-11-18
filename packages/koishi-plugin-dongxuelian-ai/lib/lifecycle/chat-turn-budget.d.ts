@@ -2,7 +2,6 @@ import type { ModelTimeBudget } from '../core/model-request-context';
 export declare const CHAT_TURN_LIMITS: Readonly<{
     normal: 60000;
     record: 180000;
-    queue: 45000;
     randomQueue: 20000;
     forward: 10000;
     topic: 8000;
@@ -11,6 +10,7 @@ export declare const CHAT_TURN_LIMITS: Readonly<{
     visionFallback: 30000;
     textPrimary: 40000;
     textFallback: 30000;
+    textFallbackExtension: 40000;
     normalFallbackReserve: 10000;
     recordFallbackReserve: 30000;
     normalSend: 3000;
@@ -50,6 +50,7 @@ export declare class ChatTurnBudget {
     submittedSends: number;
     pendingSends: number;
     private timer?;
+    private textFallbackExtended;
     private validity?;
     private work;
     constructor(identity: TurnIdentity, log?: ((event: TurnEvent) => void) | undefined, validity?: () => boolean);
@@ -57,6 +58,8 @@ export declare class ChatTurnBudget {
     enqueue(validity?: () => boolean): void;
     start(validity?: () => boolean): void;
     remaining(): number;
+    extendTextFallback(): void;
+    private resetRunTimer;
     assertActive(): void;
     modelBudget(): ModelTimeBudget;
     sendWindow(): number;
