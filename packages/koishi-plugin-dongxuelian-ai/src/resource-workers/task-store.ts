@@ -9,6 +9,7 @@ const { isFixedReportExecutionKind } = require('../resource-common/resource-task
 const {
   appendJsonlEvent,
   ensureDir,
+  isProcessAlive,
   listJsonFiles,
   nowIso,
   readJsonFile,
@@ -85,6 +86,8 @@ const RESOURCE_TASK_CANONICAL_STATUS_ORDER: ResourceTaskStatus[] = [
 ]
 
 const DEFAULT_ACTIVE_TASK_STATUSES: ResourceTaskStatus[] = ['pending', 'claiming', 'running', 'deferred']
+const TASK_TRANSITION_ROOT = path.join(WORKERS_ROOT, 'task-transitions')
+const TASK_TRANSITION_OWNER = /^(\d+)-[a-zA-Z0-9]+\.owner$/
 
 // 任务完成回调集合 - 用于事件驱动通知
 const taskCompletedCallbacks: Set<(taskId: string) => void> = new Set()
@@ -221,6 +224,12 @@ function normalizeKinds(kinds: string[] = []): string[] {
   return Array.from(new Set(kinds.map(String).filter(Boolean)))
 }
 
+// 按原队列优先级和创建时间比较，完全相同时由目录顺序决定。
+function compareTaskQueueOrder(left: ResourceTask, right: ResourceTask): number {
+  return Number(left.priority || 50) - Number(right.priority || 50)
+    || String(left.createdAt || '').localeCompare(String(right.createdAt || ''))
+}
+
 // 扫描指定状态的任务，pending 会递归扫描 kind 子目录。
 function scanTasksByStatus(status: string, limit = 500, options: ScanTasksOptions = {}): ResourceTask[] {
   const recursive = status === 'pending'
@@ -229,7 +238,7 @@ function scanTasksByStatus(status: string, limit = 500, options: ScanTasksOption
     ? kinds.flatMap(kind => listJsonFiles(getPendingKindDir(kind), { recursive, maxFiles: limit }))
     : listJsonFiles(getTaskStatusDir(status), { recursive, maxFiles: limit })
   const tasks = files.map(readTaskFile).filter((task): task is ResourceTask => Boolean(task))
-  tasks.sort((a, b) => Number(a.priority || 50) - Number(b.priority || 50) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')))
+  tasks.sort(compareTaskQueueOrder)
   return tasks.slice(0, limit)
 }
 
@@ -389,38 +398,110 @@ function getTaskQueueSummary(): Record<string, unknown> {
   return summary
 }
 
-// claim 一个 pending 任务；rename 成功才算抢到。
+// --- 领取与状态迁移 --- #
+
+// 只移除空目录，避免清理刚由另一进程接管的同名互斥目录。
+function removeEmptyTaskTransition(directory: string): void {
+  try {
+    fs.rmdirSync(directory)
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    // Windows 上竞争者的目录句柄会暂时阻止删除，下一次尝试可回收空目录。
+    if (code === 'ENOENT' || code === 'ENOTEMPTY' || code === 'EEXIST' || (process.platform === 'win32' && code === 'EPERM')) return
+    throw error
+  }
+}
+
+// 释放指定持有者的标记，唯一文件名使迟到清理无法误删新持有者。
+function releaseTaskTransition(directory: string, owner: string): void {
+  try {
+    fs.unlinkSync(path.join(directory, owner))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  removeEmptyTaskTransition(directory)
+}
+
+// 仅回收已确认退出的持有者，或释放时留下的空目录。
+function reclaimTaskTransition(directory: string): boolean {
+  let entries: string[]
+  try {
+    entries = fs.readdirSync(directory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true
+    throw error
+  }
+  if (!entries.length) {
+    removeEmptyTaskTransition(directory)
+    return true
+  }
+  const owner = entries.length === 1 ? TASK_TRANSITION_OWNER.exec(entries[0]) : null
+  if (!owner || isProcessAlive(Number(owner[1]))) return false
+  releaseTaskTransition(directory, owner[0])
+  return true
+}
+
+// 用独立非空目录发布同编号互斥，Windows 同源文件的并行重命名不能作为获胜凭证。
+function withTaskTransition<T>(taskId: string, operation: () => T): T | null {
+  ensureDir(TASK_TRANSITION_ROOT)
+  const directory = path.join(TASK_TRANSITION_ROOT, `${sanitizeId(taskId)}.lock`)
+  const candidatePrefix = '.candidate-'
+  const candidate = fs.mkdtempSync(path.join(TASK_TRANSITION_ROOT, candidatePrefix))
+  const owner = `${process.pid}-${path.basename(candidate).slice(candidatePrefix.length)}.owner`
+  let acquired = false
+  try {
+    fs.writeFileSync(path.join(candidate, owner), '')
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fs.renameSync(candidate, directory)
+        acquired = true
+        break
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'EPERM') throw error
+        if (attempt > 0 || !reclaimTaskTransition(directory)) return null
+      }
+    }
+    return acquired ? operation() : null
+  } finally {
+    releaseTaskTransition(acquired ? directory : candidate, owner)
+  }
+}
+
+// 领取在互斥内读出最新待处理记录，完成文件迁移和事件写入。
+function claimPendingTask(taskId: string, workerName: string, readPending: () => ResourceTask | null): ResourceTask | null {
+  if (!taskId || sanitizeId(taskId) !== taskId) return null
+  return withTaskTransition(taskId, () => {
+    const task = readPending()
+    // 回队列时先移动文件再写 pending，不能抢走仍在发布旧状态的记录。
+    if (task?.status !== 'pending' || hasNonPendingTaskCopy(task.kind, task.id)) return null
+    const pendingFile = getTaskFile('pending', task.kind, task.id)
+    const claimingFile = getTaskFile('claiming', task.kind, task.id)
+    if (!renameFileAtomic(pendingFile, claimingFile)) return null
+    const next: ResourceTask = { ...task, status: 'claiming', claimedBy: workerName, claimedAt: nowIso(), updatedAt: nowIso() }
+    writeJsonAtomic(claimingFile, next)
+    writeWorkerEvent('task_claimed', { taskId: next.id, kind: next.kind, workerName })
+    return next
+  })
+}
+
+// 按原优先级与扫描边界选择队列前部可领取的任务。
 function claimNextTask(kind: string | string[], workerName: string): ResourceTask | null {
   ensureTaskDirs()
   const kinds = normalizeKinds(Array.isArray(kind) ? kind : [String(kind || '')])
   const tasks = scanTasksByStatus('pending', 1000, { kinds }).filter(task => !kinds.length || kinds.includes(String(task.kind || '')))
   for (const task of tasks) {
-    if (hasNonPendingTaskCopy(task.kind, task.id)) continue
     const pendingFile = getTaskFile('pending', task.kind, task.id)
-    const claimingFile = getTaskFile('claiming', task.kind, task.id)
-    if (!renameFileAtomic(pendingFile, claimingFile)) continue
-    const next: ResourceTask = { ...task, status: 'claiming', claimedBy: workerName, claimedAt: nowIso(), updatedAt: nowIso() }
-    writeJsonAtomic(claimingFile, next)
-    writeWorkerEvent('task_claimed', { taskId: next.id, kind: next.kind, workerName })
-    return next
+    const claimed = claimPendingTask(task.id, workerName, () => readMatchingTaskFile(pendingFile, task.id, task.kind))
+    if (claimed) return claimed
   }
   return null
 }
 
-// 按 taskId claim 一个 pending 任务；用于过渡期 inline 执行器标记状态。
-function claimTaskById(taskId: string, workerName: string): ResourceTask | null {
+// 按编号领取待处理任务，已知类型时只读该类型的目标文件。
+function claimTaskById(taskId: string, workerName: string, kind?: string): ResourceTask | null {
   ensureTaskDirs()
-  const tasks = scanTasksByStatus('pending', 20000)
-  const task = tasks.find(item => item.id === taskId)
-  if (!task) return null
-  if (hasNonPendingTaskCopy(task.kind, task.id)) return null
-  const pendingFile = getTaskFile('pending', task.kind, task.id)
-  const claimingFile = getTaskFile('claiming', task.kind, task.id)
-  if (!renameFileAtomic(pendingFile, claimingFile)) return null
-  const next: ResourceTask = { ...task, status: 'claiming', claimedBy: workerName, claimedAt: nowIso(), updatedAt: nowIso() }
-  writeJsonAtomic(claimingFile, next)
-  writeWorkerEvent('task_claimed', { taskId: next.id, kind: next.kind, workerName })
-  return next
+  return claimPendingTask(taskId, workerName, () => getCanonicalTaskCopyById(taskId, ['pending'], kind))
 }
 
 // 找到任务当前所在文件，兼容 inline 过渡执行器的状态迁移。
@@ -457,9 +538,34 @@ function hasHigherRankTaskCopy(task: ResourceTask): boolean {
   )
 }
 
-function getCanonicalTaskCopyById(taskId: string, statuses?: ResourceTaskStatus[]): ResourceTask | null {
+// 点查沿用扫描只接受普通文件的约束，并核对持久记录的身份。
+function readMatchingTaskFile(file: string, taskId: string, kind?: string): ResourceTask | null {
+  try {
+    if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) return null
+  } catch {
+    return null
+  }
+  const task = readTaskFile(file)
+  return task?.id === taskId && (kind === undefined || task.kind === kind) ? task : null
+}
+
+// 待处理记录按类型分目录；只解析同名候选并保持原队列选优规则。
+function findPendingTaskById(taskId: string): ResourceTask | null {
+  const files = listJsonFiles(getTaskStatusDir('pending'), { recursive: true, maxFiles: 20000 })
+  const basename = `${taskId}.json`
+  let selected: ResourceTask | null = null
+  for (const file of files) {
+    if (path.basename(file) !== basename) continue
+    const task = readMatchingTaskFile(file, taskId)
+    if (task && (!selected || compareTaskQueueOrder(task, selected) < 0)) selected = task
+  }
+  return selected
+}
+
+// 按稳定的目录状态优先级读取目标副本；文件刚迁移时兼容仍待写回的正文状态。
+function getCanonicalTaskCopyById(taskId: string, statuses?: ResourceTaskStatus[], kind?: string): ResourceTask | null {
   const target = String(taskId || '')
-  if (!target) return null
+  if (!target || sanitizeId(target) !== target) return null
   const allowedStatuses = new Set<ResourceTaskStatus>(
     Array.isArray(statuses) && statuses.length
       ? statuses.map(String).filter(Boolean) as ResourceTaskStatus[]
@@ -467,27 +573,18 @@ function getCanonicalTaskCopyById(taskId: string, statuses?: ResourceTaskStatus[
   )
   for (const status of RESOURCE_TASK_CANONICAL_STATUS_ORDER) {
     if (!allowedStatuses.has(status)) continue
-    const task = scanTasksByStatus(status, 20000).find(item => String(item.id || '') === target)
+    const task = status === 'pending' && kind === undefined
+      ? findPendingTaskById(target)
+      : readMatchingTaskFile(getTaskFile(status, kind ?? '', target), target, kind)
     if (task) return task
   }
   return null
 }
 
+// 已知任务类型时在每个允许状态直接读取目标路径。
 function getResourceTaskByIdForKind(taskId: string, kind: string, statuses?: ResourceTaskStatus[]): ResourceTask | null {
-  const target = String(taskId || '')
   const targetKind = String(kind || '')
-  if (!target || !targetKind) return null
-  const allowedStatuses = new Set<ResourceTaskStatus>(
-    Array.isArray(statuses) && statuses.length
-      ? statuses.map(String).filter(Boolean) as ResourceTaskStatus[]
-      : RESOURCE_TASK_CANONICAL_STATUS_ORDER,
-  )
-  for (const status of RESOURCE_TASK_CANONICAL_STATUS_ORDER) {
-    if (!allowedStatuses.has(status)) continue
-    const task = readTaskFile(getTaskFile(status, targetKind, target))
-    if (task) return task
-  }
-  return null
+  return targetKind ? getCanonicalTaskCopyById(taskId, statuses, targetKind) : null
 }
 
 // 迁移前校验当前状态副本；日报执行态还必须匹配原领取，旧执行不得覆盖新领取。
@@ -738,18 +835,23 @@ function cancelTaskWithResult(taskId: string, actor = 'system', reason = 'cancel
     const labels: Record<string, string> = { claiming: '准备执行', running: '处理中', done: '已完成', failed: '失败', cancelled: '已取消' }
     return { ok: false, code: 'TASK_NOT_CANCELLABLE', message: `任务当前为“${labels[current.status] || current.status}”，只能取消排队中或暂缓处理的任务。请刷新任务列表。` }
   }
-  // 同 ID 的终态或执行中记录不能被排队记录覆盖，明确报告冲突而不是隐藏失败。
-  if (hasHigherRankTaskCopy(task) || fs.existsSync(getTaskFile('cancelled', task.kind, task.id))) {
-    const guidance = task.kind === 'external_video_download' ? '视频服务启动时会归档这条冲突记录，请刷新任务列表。' : '请检查重复的任务记录后重试。'
-    return { ok: false, code: 'TASK_ID_CONFLICT', message: `任务 ID 与已有记录重复，系统为保留历史记录拒绝取消。${guidance}` }
-  }
-  const target = prepareTaskTransition(task, 'cancelled')
-  if (!target) return { ok: false, code: 'TASK_TRANSITION_FAILED', message: '任务文件未能更新，取消操作未完成。请刷新后重试；若仍失败，请检查服务器日志。' }
-  const safeReason = redactSensitiveText(reason)
-  const next: ResourceTask = { ...task, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: safeReason }
-  writeJsonAtomic(target.file, next)
-  writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason: safeReason })
-  return { ok: true }
+  const transitionFailed = { ok: false, code: 'TASK_TRANSITION_FAILED', message: '任务文件未能更新，取消操作未完成。请刷新后重试；若仍失败，请检查服务器日志。' } as const
+  return withTaskTransition<ReturnType<typeof cancelTaskWithResult>>(task.id, () => {
+    // 与领取共用互斥，已有终态或执行中副本不能被排队记录覆盖。
+    if (hasHigherRankTaskCopy(task) || fs.existsSync(getTaskFile('cancelled', task.kind, task.id))) {
+      const guidance = task.kind === 'external_video_download' ? '视频服务启动时会归档这条冲突记录，请刷新任务列表。' : '请检查重复的任务记录后重试。'
+      return { ok: false, code: 'TASK_ID_CONFLICT', message: `任务 ID 与已有记录重复，系统为保留历史记录拒绝取消。${guidance}` }
+    }
+    const current = readMatchingTaskFile(getTaskFile(task.status, task.kind, task.id), task.id, task.kind)
+    if (current?.status !== task.status) return transitionFailed
+    const target = prepareTaskTransition(current, 'cancelled')
+    if (!target) return transitionFailed
+    const safeReason = redactSensitiveText(reason)
+    const next: ResourceTask = { ...current, status: 'cancelled', updatedAt: nowIso(), finishedAt: nowIso(), error: safeReason }
+    writeJsonAtomic(target.file, next)
+    writeWorkerEvent('task_cancelled', { taskId, kind: task.kind, actor, reason: safeReason })
+    return { ok: true }
+  }) ?? transitionFailed
 }
 
 // 保留内部调用方的布尔取消接口，实际状态迁移共用同一实现。

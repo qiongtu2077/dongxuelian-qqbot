@@ -53,7 +53,7 @@ declare function countResourceTasksByKind(options: CountTasksByKindOptions, matc
 declare function findResourceTaskByKindAndChannel(kind: string, channelKey: string, statuses?: string[]): ResourceTask | null;
 declare function getTaskQueueSummary(): Record<string, unknown>;
 declare function claimNextTask(kind: string | string[], workerName: string): ResourceTask | null;
-declare function claimTaskById(taskId: string, workerName: string): ResourceTask | null;
+declare function claimTaskById(taskId: string, workerName: string, kind?: string): ResourceTask | null;
 declare function getResourceTaskByIdForKind(taskId: string, kind: string, statuses?: ResourceTaskStatus[]): ResourceTask | null;
 declare function getResourceTaskById(taskId: string): ResourceTask | null;
 declare function markTaskRunning(task: ResourceTask, workerName: string, step?: string): ResourceTask;

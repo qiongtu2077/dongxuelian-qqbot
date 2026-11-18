@@ -42,7 +42,7 @@ async function runAgentWithResourceGate(options) {
         runTimeoutMs: timeoutMs,
     };
     const admission = admitTask(budget);
-    let task = submitResourceTask({
+    const submittedTask = submitResourceTask({
         id: taskId,
         kind,
         source: String(options.source || 'koishi-worker'),
@@ -54,28 +54,33 @@ async function runAgentWithResourceGate(options) {
         notify: { target: channel === 'dashboard' ? 'dashboard' : 'qq-group', channelKey, status: 'pending' },
     });
     if (admission.decision === 'reject' || admission.decision === 'silent_drop') {
-        failTask(task, createAdmissionError(admission.decision, admission.reason), { reason: admission.reason || admission.decision });
+        failTask(submittedTask, createAdmissionError(admission.decision, admission.reason), { reason: admission.reason || admission.decision });
         throw createAdmissionError(admission.decision, admission.reason);
     }
     if (admission.decision === 'defer') {
-        deferTask(task, String(admission.reason || 'resource defer'));
+        deferTask(submittedTask, String(admission.reason || 'resource defer'));
         throw createAdmissionError(admission.decision, admission.reason);
     }
-    task = claimTaskById(taskId, 'agent-inline-worker') || task;
-    task = markTaskRunning(task, 'agent-inline-worker', 'waiting_lock');
-    if (task.status !== 'running') {
-        failIsolatedClaimingTask(task, new Error('resource task did not enter running'), { mode: 'agent', reason: 'task_did_not_enter_running' });
+    const workerName = 'agent-inline-worker';
+    // 领取使用提交后已规范化的身份，竞争失败不能让初始记录进入运行。
+    const claimedTask = claimTaskById(submittedTask.id, workerName, submittedTask.kind);
+    if (!claimedTask)
         throw new Error('resource task did not enter running');
+    const task = markTaskRunning(claimedTask, workerName, 'waiting_lock');
+    if (task.status !== 'running') {
+        const error = new Error('resource task did not enter running');
+        failIsolatedClaimingTask(task, error, { mode: 'agent', reason: 'task_did_not_enter_running' });
+        throw error;
     }
     let gateHandle = null;
     try {
         gateHandle = await acquireResourceGate({
             ...budget,
-            owner: 'agent-inline-worker',
+            owner: workerName,
             step: options.step || 'thinking',
         });
         gateHandle.updateStep(options.step || 'thinking');
-        updateTaskStep(String(task.id || taskId), String(task.kind || 'agent_task'), options.step || 'thinking');
+        updateTaskStep(task.id, task.kind, options.step || 'thinking');
         const result = await Promise.resolve().then(options.run);
         const doneTask = completeTask(task, { mode: 'agent', reason: 'completed' });
         updateTaskNotifyStatus(doneTask, 'skipped');

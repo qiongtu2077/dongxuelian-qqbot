@@ -2,6 +2,7 @@ const fs = require('fs')
 const os = require('os')
 const path = require('path')
 const { spawnSync } = require('child_process')
+const { createTestDataDir } = require('./fake/file')
 
 let passed = 0
 let failed = 0
@@ -876,6 +877,51 @@ main().catch(error => {
     JSON.stringify(byName.maintenance))
 }
 
+// 在独立数据目录运行资源任务仓库夹具，结束后回收文件。
+function runTaskStoreFixture(label, statements) {
+  const data = createTestDataDir()
+  const script = `const fixture = require('./packages/koishi-plugin-dongxuelian-ai/test/helpers/resource-task-store-fixture'); ${statements}`
+  try {
+    return runScenario(label, script, { DONGXUELIAN_AI_DATA_DIR: data.dataDir })
+  } finally {
+    data.cleanup()
+  }
+}
+
+// 验证点查只读目标，并兼容旧编号与副本选择规则。
+function testTaskStoreLookup() {
+  const summary = runTaskStoreFixture('task store exact lookup', `
+    console.log(JSON.stringify({ ...fixture.measureTaskLookup(), ...fixture.verifyTaskLookupContracts() }))
+  `)
+  if (!summary) return
+  check('task lookup reads one known record on hit and zero on miss', summary.hitReads === 1 && summary.missReads === 0 && summary.typedReads === 1, JSON.stringify(summary))
+  check('task lookup preserves canonical and pending ordering and ignores unrelated bodies', summary.contractsPassed === true && summary.pendingCandidateReads === 4, JSON.stringify(summary))
+}
+
+// 验证真实进程的互斥竞争、领取之后的落盘和死亡持有者恢复。
+function testTaskStoreClaim() {
+  const summary = runTaskStoreFixture('task store atomic claims', `
+    Promise.resolve().then(async () => ({
+      ...fixture.verifyTaskClaimContracts(),
+      ...await fixture.verifyTaskClaimRaces(),
+      ...await fixture.verifyTaskClaimRecovery(),
+    })).then(summary => console.log(JSON.stringify(summary))).catch(error => { console.error(error); process.exitCode = 1 })
+  `)
+  if (!summary) return
+  check('typed claim reads only target and preserves legacy and queue claims', summary.typedReads === 1 && summary.contractsPassed === true, JSON.stringify(summary))
+  check('cross-process claim and cancellation each leave one winner and event', summary.claimEvents === 1 && summary.cancelEvents === 1, JSON.stringify(summary))
+  check('next claimant recovers a lock from a genuinely exited process', summary.recovered === true, JSON.stringify(summary))
+}
+
+// 验证 Agent 竞争失败时保留另一进程的真实领取结果。
+function testAgentLosesTaskClaim() {
+  const summary = runTaskStoreFixture('Agent loses task claim', `
+    fixture.verifyAgentLosesClaim().then(summary => console.log(JSON.stringify(summary))).catch(error => { console.error(error); process.exitCode = 1 })
+  `)
+  if (!summary) return
+  check('Agent uses persisted id and kind and cannot move a competing claim to running', summary.untouchedWinner === true)
+}
+
 // Run all resource flow regression checks.
 function main() {
   console.log('=== resource-flow S2/S10 tests ===')
@@ -886,6 +932,9 @@ function main() {
   testDailyFinalInputPathContract()
   testStartupRecoveryDiscardsInterruptedRuntimeState()
   testAnalyzeHistoricalImageAdmissionQueueContract()
+  testTaskStoreLookup()
+  testTaskStoreClaim()
+  testAgentLosesTaskClaim()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)
   process.exit(failed > 0 ? 1 : 0)
