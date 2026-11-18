@@ -1,7 +1,7 @@
 /** 固定来源、完整分片与真实回复材料测试；纯材料入口，无模型或群消息mock。 */
 'use strict'
 const assert = require('assert').strict
-const { createReportEvidence, buildReportEvidenceBatch, partitionReportEvidence, packReportEvidenceBatches } = require('../lib/report-evidence')
+const { createReportEvidence, buildReportEvidenceBatch, partitionReportEvidence, packReportEvidenceBatches, countReportCodePoints } = require('../lib/report-evidence')
 
 // 每个场景独立验证，异常计入正式日报测试结果。
 function evidenceCase(check, label, run) {
@@ -102,6 +102,35 @@ function checkAuxiliaryBudget() {
   assert.ok(middle.context.some(item => item.text.endsWith('末尾2')))
 }
 
+// 用旧版完整数组长度生成精确边界，验证逗号、Unicode、转义及拒绝后的剩余预算。
+function checkOrdinarySerializationBoundary() {
+  const text = '原话😀引号"转义\\换行\n'
+  const item = (ref, time) => ({ role: 'auxiliary', ref, author: 'p8', time, text, excerptOnly: true, truncated: false })
+  const available = 2000 - Array.from(JSON.stringify([item('m1', ''), item('m2', '')])).length
+  for (const extra of ['', '再']) {
+    const snapshot = createReportEvidence([
+      { messageId: 'second', userId: 'b', content: text, time: '😀'.repeat(available) + extra },
+      { messageId: 'first', userId: 'a', content: text, replyToId: 'second' },
+      { userId: 'a', content: '隔开一' }, { userId: 'a', content: '隔开二' }, { userId: 'a', content: '可用邻居' },
+      { userId: 'a', content: '明确回复', replyToId: 'first' },
+    ])
+    const batch = buildReportEvidenceBatch(snapshot, [snapshot.fragments.at(-1)])
+    const { items, context } = JSON.parse(batch.input)
+    assert.deepEqual(items[0].replies.map(reply => reply.state), ['available', extra ? 'budget_not_provided' : 'available'])
+    assert.equal(batch.auxiliaryCharacters, Array.from(JSON.stringify(context)).length)
+    if (extra) assert(context.some(entry => entry.text === '可用邻居'))
+    else assert.equal(batch.auxiliaryCharacters, 2000)
+  }
+  const single = createReportEvidence([{ userId: 'a', content: text }])
+  const batch = buildReportEvidenceBatch(single, single.fragments)
+  const overhead = 16000 - Array.from(batch.input).length
+  assert.deepEqual(packReportEvidenceBatches(single, overhead), [batch])
+  assert.throws(() => packReportEvidenceBatches(single, overhead + 1), /超过模型材料预算/)
+  // 成对代理合并，孤立代理各占一个代码点。
+  const codePoints = '\uD800x😀\uDC00'
+  assert.equal(countReportCodePoints(codePoints), Array.from(codePoints).length)
+}
+
 // 缺少身份、重复真实标识、跨快照片段和重复核心准确拒绝，不猜补所有权。
 function checkIllegalOwnership() {
   for (const message of [{ content: '无成员' }, { userId: 'a' }, { userId: NaN, content: '非法成员' },
@@ -168,6 +197,7 @@ function runReportEvidenceTests(check) {
   evidenceCase(check, '精确纯图分区、完整长文尾部与实际64/16k预算', checkPartitionAndBatches)
   evidenceCase(check, '缺失身份、重复标识、跨快照与重复核心拒绝', checkIllegalOwnership)
   evidenceCase(check, '父消息和邻居共同2000字预算、未供料原因及前邻居末尾', checkAuxiliaryBudget)
+  evidenceCase(check, '普通分批严格匹配完整JSON的2000/16000代码点边界', checkOrdinarySerializationBoundary)
   evidenceCase(check, '候选局部邻居、共享辅助去重和精确核心分区', checkCandidateLocalContext)
   evidenceCase(check, '候选父链优先轮流供料且关联与正文共同2000字符', checkCandidateContextBudget)
 }

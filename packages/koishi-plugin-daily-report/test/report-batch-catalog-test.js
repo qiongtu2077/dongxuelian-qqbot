@@ -26,6 +26,83 @@ function catalogContext(nowMs = period.periodStartMs + 10 * 60 * 1000) {
   return { channelKey: 'group-A', period, nowMs, sourceCompleteness: 'complete', inputScope: 'full_business_window' }
 }
 
+// 原先完整序列化的容量规则，独立校验增量计量和所有固定预留。
+function legacyCatalogLengths(snapshot, fragments) {
+  const items = fragments.map(fragment => ({ ref: 'r160', role: 'core', author: 'p644',
+    time: snapshot.sources[fragment.sourceId - 1].time, text: fragment.text }))
+  const minimumAuxiliary = JSON.stringify({ role: 'auxiliary', ref: 'm1', author: 'p1', time: '', text: '', excerptOnly: true, truncated: true }).length
+  const maximum = { version: 'evidence-batch-4', members: Array.from({ length: fragments.length + Math.floor(2000 / minimumAuxiliary) }, () => ({ ref: 'p644' })),
+    items: items.map((item, index) => ({ ...item, replies: Array.from({ length: snapshot.sources[fragments[index].sourceId - 1].replyToId ? 3 : 1 },
+      () => ({ state: 'budget_not_provided' })) })), context: [] }
+  return { core: Array.from(JSON.stringify(items)).length,
+    request: Array.from(JSON.stringify(maximum) + getReportClassificationInstructions()).length + 2000 + 512 }
+}
+
+// 按旧判定生成预期边界，再比对实际目录和从旧尾批追加的结果。
+function checkLegacyCatalogPacking(messages, previousSize) {
+  const context = catalogContext(), snapshot = createReportEvidence(messages)
+  const groups = []
+  let pending = []
+  const fits = fragments => {
+    if (!fragments.length || fragments.length > 64) return false
+    const { core, request } = legacyCatalogLengths(snapshot, fragments)
+    return core <= 12000 && request <= 16000
+  }
+  for (const fragment of snapshot.fragments) {
+    if (pending.length && !fits([...pending, fragment])) { groups.push(pending); pending = [] }
+    pending.push(fragment)
+    if (!fits(pending)) {
+      assert.throws(() => updateReportBatchCatalog(null, snapshot, context), /无法容纳稳定预算/)
+      return
+    }
+  }
+  if (pending.length) groups.push(pending)
+  const first = updateReportBatchCatalog(null, snapshot, context)
+  assert.deepEqual(first.batches.map(batch => batch.parts), groups.map(group => group.map(fragment => fragment.permanentKey)))
+  if (previousSize !== undefined) {
+    const saved = updateReportBatchCatalog(null, createReportEvidence(messages.slice(0, previousSize)), context)
+    const resumed = updateReportBatchCatalog(JSON.parse(JSON.stringify(saved)), snapshot, context)
+    assert.deepEqual(resumed.batches.map(batch => batch.parts), first.batches.map(batch => batch.parts))
+    assert.deepEqual(resumed.batches.map(batch => batch.sealReason), first.batches.map(batch => batch.sealReason))
+  }
+}
+
+// 对照空批、64/65、精确请求/核心边界与有无三层回复预留。
+function checkCatalogBudgetBoundaries() {
+  checkLegacyCatalogPacking([])
+  checkLegacyCatalogPacking(catalogMessages(65).map(row => ({ ...row, content: '短' })), 13)
+  for (const count of [1, 2]) for (const hasReply of [false, true]) {
+    const messages = catalogMessages(count).map(row => ({ ...row, content: '多行😀引号"反斜线\\\n',
+      replyToId: hasReply ? 'known-parent' : undefined }))
+    const snapshot = createReportEvidence(messages)
+    const baseline = legacyCatalogLengths(snapshot, snapshot.fragments)
+    for (const [field, limit] of [['core', 12000], ['request', 16000]]) for (const delta of [-1, 0, 1]) {
+      // 非基本平面字符调节代码点，精确命中旧版 JSON 预算的上下各一位。
+      const padded = messages.map((row, index) => index ? row : { ...row, time: row.time + '😀'.repeat(limit + delta - baseline[field]) })
+      checkLegacyCatalogPacking(padded, count - 1)
+    }
+  }
+}
+
+// 记录只读追加时序列化的固定核心对象，旧尾批与新增片段各计一次。
+function checkCatalogBudgetWork() {
+  const context = catalogContext(), messages = catalogMessages(130)
+  const saved = updateReportBatchCatalog(null, createReportEvidence(messages.slice(0, 70)), context)
+  const previousTail = saved.batches.at(-1).parts.length
+  const snapshot = createReportEvidence(messages)
+  const original = JSON.stringify
+  let coreSerializations = 0
+  JSON.stringify = function countCatalogCore(value, ...args) {
+    if (value?.ref === 'r160' && value.role === 'core') coreSerializations++
+    return original.call(JSON, value, ...args)
+  }
+  try {
+    const updated = updateReportBatchCatalog(saved, snapshot, context)
+    assert.equal(updated.sources.length, messages.length)
+    assert.equal(coreSerializations, previousTail + 60)
+  } finally { JSON.stringify = original }
+}
+
 // 计算真正会提交的序列化请求身份，不能以缓存文件存在替代命中证明。
 function catalogRequestMap(catalog, evidence) {
   return new Map(selectReportCatalogBatches(catalog, evidence).filter(view => view.batch).map(view => [view.catalogId,
@@ -51,6 +128,8 @@ function catalogRecoveryFixture(f, count = 4000) {
 
 // 覆盖完整4000条后持续追加，而非只检查目录文件数量。
 async function runReportBatchCatalogTests(check) {
+  await catalogCase(check, '稳定目录增量容量与旧完整序列化在精确边界一致', checkCatalogBudgetBoundaries)
+  await catalogCase(check, '恢复旧尾批并跨批追加时每片固定核心仅序列化一次', checkCatalogBudgetWork)
   await catalogCase(check, '来源页损坏从独立入库顺序及当前全文恢复，旧封闭批次和实际请求身份不变', f => {
     const r = catalogRecoveryFixture(f), pages = r.inspection.pages.filter(page => page.records.some(row => row.type === 'source'))
     assert(pages.length > 1)

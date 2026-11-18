@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createReportEvidence = createReportEvidence;
+exports.countReportCodePoints = countReportCodePoints;
 exports.buildReportEvidenceBatch = buildReportEvidenceBatch;
 exports.partitionReportEvidence = partitionReportEvidence;
 exports.packReportEvidenceBatches = packReportEvidenceBatches;
@@ -66,6 +67,21 @@ function createReportEvidence(messages) {
         identity: evidenceDigest({ version: 1, sources: sources.map(source => source.identity) }), hasStableMessageIds: sources.length > 0 && sources.every(source => source.realMessageId === true && !!source.messageId) });
 }
 // --- 核心与有界辅助上下文 ---
+// 与字符串迭代器一样计代码点，避免为序列化结果创建临时字符数组。
+function countReportCodePoints(text) {
+    let count = text.length;
+    for (let index = 0; index + 1 < text.length; index++) {
+        const high = text.charCodeAt(index);
+        if (high < 0xd800 || high > 0xdbff)
+            continue;
+        const low = text.charCodeAt(index + 1);
+        if (low >= 0xdc00 && low <= 0xdfff) {
+            count--;
+            index++;
+        }
+    }
+    return count;
+}
 // 沿快照内已知回复最多读取三层；缺失与循环明确记录，不拉取外部历史。
 function evidenceReplies(source, snapshot) {
     if (!source.replyToId)
@@ -88,8 +104,27 @@ function evidenceReplies(source, snapshot) {
     }
     return replies;
 }
+// 同一来源的开头和结尾按各自长度缓存，不跨入选快照共享摘录。
+function getAuxiliaryExcerpt(source, maximum, fromEnd, cache) {
+    const key = `${source.sourceId}:${fromEnd ? -maximum : maximum}`;
+    const reused = cache?.get(key);
+    if (reused)
+        return reused;
+    const characters = Array.from(source.content);
+    const value = { text: (fromEnd ? characters.slice(-maximum) : characters.slice(0, maximum)).join(''), truncated: characters.length > maximum };
+    cache?.set(key, value);
+    return value;
+}
+// 实际辅助材料与预算估算使用相同字段和顺序，分别提供对应的人物别名。
+function auxiliaryItem({ ref, source, text, truncated }, author) {
+    return { role: 'auxiliary', ref, author, time: source.time, text, excerptOnly: true, truncated };
+}
 // 局部人物以永久身份稳定排序；核心全文与辅助摘录共同计入实际序列化长度。
 function buildReportEvidenceBatch(snapshot, fragments, options) {
+    return buildEvidenceBatch(snapshot, fragments, options);
+}
+// 试探批次可以复用快照材料，局部归属和预算仍按本批重新计算。
+function buildEvidenceBatch(snapshot, fragments, options, reuse) {
     if (!fragments.length || fragments.some(fragment => snapshot.byFragmentId.get(fragment.id) !== fragment))
         throw new Error('日报批次必须绑定当前快照的非空完整片段');
     if (new Set(fragments.map(fragment => fragment.id)).size !== fragments.length)
@@ -113,21 +148,31 @@ function buildReportEvidenceBatch(snapshot, fragments, options) {
     const maximumMemberAlias = 'p' + (partitions ? snapshot.sources.length : sourceIds.size * 4 + 4);
     const auxiliary = new Map();
     const associations = partitions?.map(() => new Set()), omitted = partitions?.map(() => 0);
+    let ordinaryAuxiliaryCharacters = 2; // 空数组的方括号。
     // 先父消息再首尾邻居，以最长人物别名预留包装；未供料父消息保留明确原因。
     const addAuxiliary = (source, maximum, fromEnd = false, candidateIndex) => {
-        if (auxiliary.has(source.sourceId) && (candidateIndex === undefined || associations[candidateIndex].has(source.sourceId)))
+        const existing = auxiliary.get(source.sourceId);
+        if (existing && (candidateIndex === undefined || associations[candidateIndex].has(source.sourceId)))
             return;
-        const characters = Array.from(source.content), text = (fromEnd ? characters.slice(-maximum) : characters.slice(0, maximum)).join('');
-        const entry = auxiliary.get(source.sourceId) || { ref: 'm' + (auxiliary.size + 1), source, text, truncated: characters.length > maximum };
+        const entry = existing ?? { ref: 'm' + (auxiliary.size + 1), source, ...getAuxiliaryExcerpt(source, maximum, fromEnd, reuse?.excerpts) };
+        if (!associations) {
+            // 普通分批只增加一个 JSON 对象及一个可选逗号，拒绝项不改变累计长度。
+            const length = ordinaryAuxiliaryCharacters + Number(auxiliary.size > 0)
+                + countReportCodePoints(JSON.stringify(auxiliaryItem(entry, maximumMemberAlias)));
+            if (length <= AUXILIARY_CHARACTERS) {
+                auxiliary.set(source.sourceId, entry);
+                ordinaryAuxiliaryCharacters = length;
+            }
+            return;
+        }
         const proposed = new Map(auxiliary).set(source.sourceId, entry);
-        const serialized = [...proposed.values()].map(value => ({ role: 'auxiliary', ref: value.ref,
-            author: maximumMemberAlias, time: value.source.time, text: value.text, excerptOnly: true, truncated: value.truncated }));
+        const serialized = [...proposed.values()].map(value => auxiliaryItem(value, maximumMemberAlias));
         // 候选关联也计入2000字符；省略数量按全快照位数预留，写回真实数量不会撑破预算。
-        const packaging = associations ? { context: serialized, candidateContexts: associations.map((refs, index) => ({
+        const packaging = { context: serialized, candidateContexts: associations.map((refs, index) => ({
                 contextRefs: [...refs, ...(index === candidateIndex ? [source.sourceId] : [])].map(id => proposed.get(id).ref),
                 contextBudgetOmitted: snapshot.sources.length
-            })) } : serialized;
-        if (Array.from(JSON.stringify(packaging)).length <= AUXILIARY_CHARACTERS) {
+            })) };
+        if (countReportCodePoints(JSON.stringify(packaging)) <= AUXILIARY_CHARACTERS) {
             auxiliary.set(source.sourceId, entry);
             if (candidateIndex !== undefined)
                 associations[candidateIndex].add(source.sourceId);
@@ -136,7 +181,11 @@ function buildReportEvidenceBatch(snapshot, fragments, options) {
             omitted[candidateIndex]++;
     };
     for (const sourceId of sourceIds) {
-        const chain = evidenceReplies(snapshot.sources[sourceId - 1], snapshot);
+        let chain = reuse?.replies.get(sourceId);
+        if (!chain) {
+            chain = evidenceReplies(snapshot.sources[sourceId - 1], snapshot);
+            reuse?.replies.set(sourceId, chain);
+        }
         replies.set(sourceId, chain);
         if (!partitions)
             for (const reply of chain)
@@ -176,10 +225,11 @@ function buildReportEvidenceBatch(snapshot, fragments, options) {
             });
     }
     else {
-        for (const sourceId of [Math.min(...sourceIds) - 2, Math.min(...sourceIds) - 1, Math.max(...sourceIds) + 1, Math.max(...sourceIds) + 2]) {
+        const first = Math.min(...sourceIds), last = Math.max(...sourceIds);
+        for (const sourceId of [first - 2, first - 1, last + 1, last + 2]) {
             const neighbor = snapshot.sources[sourceId - 1];
             if (neighbor && !sourceIds.has(sourceId))
-                addAuxiliary(neighbor, 200, sourceId < Math.min(...sourceIds));
+                addAuxiliary(neighbor, 200, sourceId < first);
         }
     }
     const people = new Map([...sourceIds].map(sourceId => [snapshot.sources[sourceId - 1].userId, snapshot.sources[sourceId - 1]]));
@@ -196,14 +246,13 @@ function buildReportEvidenceBatch(snapshot, fragments, options) {
             const provided = auxiliary.get(reply.message.sourceId);
             return provided ? { state: 'available', ref: provided.ref } : { state: 'budget_not_provided' };
         }) }));
-    const context = [...auxiliary.values()].map(({ ref, source, text, truncated }) => ({ role: 'auxiliary', ref,
-        author: aliases.get(source.userId), time: source.time, text, excerptOnly: true, truncated }));
+    const context = [...auxiliary.values()].map(entry => auxiliaryItem(entry, aliases.get(entry.source.userId)));
     const candidateContexts = associations?.map((refs, index) => ({ contextRefs: [...refs].map(id => auxiliary.get(id).ref), contextBudgetOmitted: omitted[index] }));
     const input = JSON.stringify({ version: 'evidence-batch-4', members: [...members.keys()].map(ref => ({ ref })), items, context });
     return { fragments, core, members, input, auxiliary: new Map([...auxiliary.values()].map(entry => [entry.ref,
             { sourceId: entry.source.sourceId, text: entry.text, truncated: entry.truncated }])),
-        coreCharacters: Array.from(JSON.stringify(items.map(({ replies: _replies, ...item }) => item))).length,
-        auxiliaryCharacters: Array.from(JSON.stringify(candidateContexts ? { context, candidateContexts } : context)).length,
+        coreCharacters: countReportCodePoints(JSON.stringify(items.map(({ replies: _replies, ...item }) => item))),
+        auxiliaryCharacters: countReportCodePoints(JSON.stringify(candidateContexts ? { context, candidateContexts } : context)),
         ...(candidateContexts ? { candidateContexts } : {}) };
 }
 // --- 处理分区与长度分批 ---
@@ -217,24 +266,28 @@ function partitionReportEvidence(snapshot) {
 // 片段数、稳定核心及完整封装同时受限，系统提示预算由请求入口再核验。
 function evidenceBatchFits(batch, overheadCharacters) {
     return batch.fragments.length <= BATCH_MESSAGES && batch.coreCharacters <= CORE_CHARACTERS
-        && batch.auxiliaryCharacters <= AUXILIARY_CHARACTERS && Array.from(batch.input).length + overheadCharacters <= BATCH_CHARACTERS;
+        && batch.auxiliaryCharacters <= AUXILIARY_CHARACTERS && countReportCodePoints(batch.input) + overheadCharacters <= BATCH_CHARACTERS;
 }
 // 使用方案固定的64片段/12k核心/16k实际材料上限，不裁正文来容纳辅助。
 function packReportEvidenceBatches(snapshot, overheadCharacters = 0) {
     if (!Number.isSafeInteger(overheadCharacters) || overheadCharacters < 0 || overheadCharacters >= BATCH_CHARACTERS)
         throw new Error('日报系统及恢复预留预算无效');
     const batches = [], fragments = partitionReportEvidence(snapshot).model;
+    const reuse = { replies: new Map(), excerpts: new Map() };
     let pending;
     for (const fragment of fragments) {
-        const next = buildReportEvidenceBatch(snapshot, [...(pending?.fragments ?? []), fragment]);
-        if (pending && !evidenceBatchFits(next, overheadCharacters)) {
-            batches.push(pending);
-            pending = buildReportEvidenceBatch(snapshot, [fragment]);
-        }
-        else
+        const next = buildEvidenceBatch(snapshot, [...(pending?.fragments ?? []), fragment], undefined, reuse);
+        if (evidenceBatchFits(next, overheadCharacters)) {
             pending = next;
-        if (!evidenceBatchFits(pending, overheadCharacters))
-            throw new Error('日报完整片段及上下文超过模型材料预算');
+            continue;
+        }
+        if (pending) {
+            batches.push(pending);
+            pending = buildEvidenceBatch(snapshot, [fragment], undefined, reuse);
+            if (evidenceBatchFits(pending, overheadCharacters))
+                continue;
+        }
+        throw new Error('日报完整片段及上下文超过模型材料预算');
     }
     if (pending)
         batches.push(pending);

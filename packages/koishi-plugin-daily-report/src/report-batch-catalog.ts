@@ -5,7 +5,7 @@
  */
 import { createHash } from 'crypto'
 import { isDeepStrictEqual } from 'util'
-import { buildReportEvidenceBatch } from './report-evidence'
+import { buildReportEvidenceBatch, countReportCodePoints } from './report-evidence'
 import type { EvidenceBatch, EvidenceFragment, ReportEvidence } from './report-evidence'
 import { getReportClassificationInstructions } from './report-candidates'
 import type { PagedReportStore } from './report-storage'
@@ -40,6 +40,12 @@ export interface LatestReportBatchCatalog { id: string; generation: number; valu
 const AGE_MS = 15 * 60 * 1000
 const CATALOG_HASH = /^[a-f0-9]{64}$/
 const CATALOG_RESERVE = 512
+const CATALOG_MAX_FRAGMENTS = 64
+const CATALOG_CORE_CHARACTERS = 12000
+const CATALOG_AUXILIARY_CHARACTERS = 2000
+const CATALOG_REQUEST_CHARACTERS = 16000
+const CATALOG_INPUT_VERSION = 'evidence-batch-4'
+const CATALOG_MEMBER_REF = 'p644'
 
 // --- 固定规则与源校验 ---
 
@@ -50,24 +56,48 @@ function catalogDigest(value: unknown): string {
 
 // 系统提示及固定封装上界进入分批版本；不使用任务编号、截止或全局来源序号。
 function catalogRule(): string {
-  return catalogDigest({ version: 'stable-classification-1', fragmentCharacters: 2400, coreFragments: 64, coreCharacters: 12000,
-    requestCharacters: 16000, auxiliaryCharacters: 2000, replyDepth: 3, neighbors: 4, ageMs: AGE_MS,
-    system: getReportClassificationInstructions(), recoveryReserve: CATALOG_RESERVE, inputVersion: 'evidence-batch-4' })
+  return catalogDigest({ version: 'stable-classification-1', fragmentCharacters: 2400, coreFragments: CATALOG_MAX_FRAGMENTS, coreCharacters: CATALOG_CORE_CHARACTERS,
+    requestCharacters: CATALOG_REQUEST_CHARACTERS, auxiliaryCharacters: CATALOG_AUXILIARY_CHARACTERS, replyDepth: 3, neighbors: 4, ageMs: AGE_MS,
+    system: getReportClassificationInstructions(), recoveryReserve: CATALOG_RESERVE, inputVersion: CATALOG_INPUT_VERSION })
 }
 
-// 以最宽局部引用和最多回复计量完整封装；辅助成员数量从最短合法辅助记录推导。
-function catalogFits(snapshot: ReportEvidence, parts: readonly EvidenceFragment[]): boolean {
-  if (!parts.length || parts.length > 64) return false
-  const items = parts.map(fragment => ({ ref: 'r160', role: 'core', author: 'p644',
-    time: snapshot.sources[fragment.sourceId - 1].time, text: fragment.text }))
-  if (Array.from(JSON.stringify(items)).length > 12000) return false
-  const minimumAuxiliary = JSON.stringify({ role: 'auxiliary', ref: 'm1', author: 'p1', time: '', text: '', excerptOnly: true, truncated: true }).length
-  const auxiliaryMembers = Math.floor(2000 / minimumAuxiliary)
-  const maximum = { version: 'evidence-batch-4', members: Array.from({ length: parts.length + auxiliaryMembers }, () => ({ ref: 'p644' })),
-    items: items.map((item, index) => ({ ...item, replies: Array.from({ length: snapshot.sources[parts[index].sourceId - 1].replyToId ? 3 : 1 },
-      () => ({ state: 'budget_not_provided' })) })), context: [] }
-  return Array.from(JSON.stringify(maximum) + getReportClassificationInstructions()).length + 2000 + CATALOG_RESERVE <= 16000
+// --- 稳定分批容量 ---
+
+interface CatalogBudget { fragments: number; coreCharacters: number; itemCharacters: number }
+const EMPTY_CATALOG_BUDGET: CatalogBudget = { fragments: 0, coreCharacters: 0, itemCharacters: 0 }
+const MINIMUM_AUXILIARY_CHARACTERS = JSON.stringify({ role: 'auxiliary', ref: 'm1', author: 'p1', time: '', text: '', excerptOnly: true, truncated: true }).length
+const CATALOG_AUXILIARY_MEMBERS = Math.floor(CATALOG_AUXILIARY_CHARACTERS / MINIMUM_AUXILIARY_CHARACTERS)
+const CATALOG_MEMBER_CHARACTERS = JSON.stringify({ ref: CATALOG_MEMBER_REF }).length
+const CATALOG_ENVELOPE_CHARACTERS = countReportCodePoints(JSON.stringify({ version: CATALOG_INPUT_VERSION, members: [], items: [], context: [] })
+  + getReportClassificationInstructions())
+// 去掉单字段对象的两个花括号，再加上并入核心对象时的一个逗号。
+const [CATALOG_SINGLE_REPLY_CHARACTERS, CATALOG_CHAIN_REPLY_CHARACTERS] = [1, 3].map(length =>
+  JSON.stringify({ replies: Array.from({ length }, () => ({ state: 'budget_not_provided' })) }).length - 1)
+
+// 单次序列化核心对象，按来源是否存在回复标识附加原规则预留的回复长度。
+function measureCatalogFragment(snapshot: ReportEvidence, fragment: EvidenceFragment): CatalogBudget {
+  const source = snapshot.sources[fragment.sourceId - 1]
+  const coreCharacters = countReportCodePoints(JSON.stringify({ ref: 'r160', role: 'core', author: CATALOG_MEMBER_REF,
+    time: source.time, text: fragment.text }))
+  return { fragments: 1, coreCharacters, itemCharacters: coreCharacters + (source.replyToId ? CATALOG_CHAIN_REPLY_CHARACTERS : CATALOG_SINGLE_REPLY_CHARACTERS) }
 }
+
+// 候选计量独立于当前尾批，拒绝的片段不会改变已有计量。
+function appendCatalogBudget(batch: CatalogBudget, fragment: CatalogBudget): CatalogBudget {
+  return { fragments: batch.fragments + fragment.fragments, coreCharacters: batch.coreCharacters + fragment.coreCharacters,
+    itemCharacters: batch.itemCharacters + fragment.itemCharacters }
+}
+
+// 固定封装已含数组方括号；这里只增加成员、核心项、逗号与原有预留。
+function catalogFits(batch: CatalogBudget): boolean {
+  const count = batch.fragments
+  if (!count || count > CATALOG_MAX_FRAGMENTS || batch.coreCharacters + count + 1 > CATALOG_CORE_CHARACTERS) return false
+  const members = (count + CATALOG_AUXILIARY_MEMBERS) * (CATALOG_MEMBER_CHARACTERS + 1) - 1
+  return CATALOG_ENVELOPE_CHARACTERS + members + batch.itemCharacters + count - 1
+    + CATALOG_AUXILIARY_CHARACTERS + CATALOG_RESERVE <= CATALOG_REQUEST_CHARACTERS
+}
+
+// --- 输入与目录验证 ---
 
 // 完整索引窗口与可靠消息身份是建目录前提；选中的最新4000条不能充当入库原点。
 function assertCatalogInput(snapshot: ReportEvidence, context: CatalogUpdateContext): void {
@@ -158,10 +188,14 @@ function reviseCatalogSources(catalog: ReportBatchCatalog, snapshot: ReportEvide
     }
     const groups: EvidenceFragment[][] = []
     let pending: EvidenceFragment[] = []
+    let budget = EMPTY_CATALOG_BUDGET
     for (const fragment of parts) {
-      if (pending.length && !catalogFits(snapshot, [...pending, fragment])) { groups.push(pending); pending = [] }
+      const measured = measureCatalogFragment(snapshot, fragment)
+      let candidate = appendCatalogBudget(budget, measured)
+      if (pending.length && !catalogFits(candidate)) { groups.push(pending); pending = []; candidate = measured }
       pending.push(fragment)
-      if (!catalogFits(snapshot, pending)) throw new Error('更正后的完整来源片段无法容纳稳定预算')
+      if (!catalogFits(candidate)) throw new Error('更正后的完整来源片段无法容纳稳定预算')
+      budget = candidate
     }
     if (pending.length) groups.push(pending)
     groups.forEach((group, groupIndex) => {
@@ -215,6 +249,7 @@ export function updateReportBatchCatalog(previous: ReportBatchCatalog | null, sn
   if (previous) checkTail(context.nowMs)
   let watermark = scope.periodStartMs
   const currentParts = new Map(snapshot.fragments.map(fragment => [fragment.permanentKey!, fragment]))
+  let tailBudget: CatalogBudget | undefined
   for (const source of snapshot.sources) {
     if (sources.has(source.messageId!)) continue
     const parts = partsBySource.get(source.sourceId)!
@@ -222,13 +257,22 @@ export function updateReportBatchCatalog(previous: ReportBatchCatalog | null, sn
     const row: CatalogSource = { messageId: source.messageId!, identity: source.identity, arrival: catalog.sources.length, ts: source.ts!, parts: parts.map(part => part.permanentKey!) }
     catalog.sources.push(row); sources.set(row.messageId, row)
     for (const fragment of parts) {
-      let tail = catalog.batches[catalog.batches.length - 1]
-      if (tail && !tail.sealed && !catalogFits(snapshot, [...tail.parts.map(key => currentParts.get(key)!), fragment])) sealCatalogBatch(tail, 'capacity', context.nowMs)
-      tail = catalog.batches[catalog.batches.length - 1]
-      if (!tail || tail.sealed) {
-        if (!catalogFits(snapshot, [fragment])) throw new Error('完整来源片段无法容纳稳定预算')
-        catalog.batches.push(newCatalogBatch(catalog, fragment, snapshot))
-      } else tail.parts.push(fragment.permanentKey!)
+      const measured = measureCatalogFragment(snapshot, fragment)
+      const tail = catalog.batches[catalog.batches.length - 1]
+      if (tail && !tail.sealed) {
+        // 旧目录或修订后的尾批仅在首次需要追加时恢复计量。
+        tailBudget ??= tail.parts.reduce((budget, key) => appendCatalogBudget(budget, measureCatalogFragment(snapshot, currentParts.get(key)!)), EMPTY_CATALOG_BUDGET)
+        const candidate = appendCatalogBudget(tailBudget, measured)
+        if (catalogFits(candidate)) {
+          tail.parts.push(fragment.permanentKey!)
+          tailBudget = candidate
+          continue
+        }
+        sealCatalogBatch(tail, 'capacity', context.nowMs)
+      }
+      if (!catalogFits(measured)) throw new Error('完整来源片段无法容纳稳定预算')
+      catalog.batches.push(newCatalogBatch(catalog, fragment, snapshot))
+      tailBudget = measured
     }
   }
   checkTail(context.nowMs)
@@ -262,7 +306,8 @@ export function selectReportCatalogBatches(catalog: ReportBatchCatalog, snapshot
     const deterministic = fragments.filter(fragment => snapshot.sources[fragment.sourceId - 1].content === '[图片]')
     const model = fragments.filter(fragment => snapshot.sources[fragment.sourceId - 1].content !== '[图片]')
     const batch = model.length ? buildReportEvidenceBatch(snapshot, model) : null
-    if (batch && (batch.coreCharacters > 12000 || Array.from(batch.input + getReportClassificationInstructions()).length + CATALOG_RESERVE > 16000)) {
+    if (batch && (batch.coreCharacters > CATALOG_CORE_CHARACTERS
+      || countReportCodePoints(batch.input + getReportClassificationInstructions()) + CATALOG_RESERVE > CATALOG_REQUEST_CHARACTERS)) {
       throw new Error('稳定批次实际封装超限，须显式修订分批版本')
     }
     const ruleIdentity = catalogDigest({ rule: catalog.ruleIdentity, id: unit.id, revision: unit.revision })
@@ -469,6 +514,7 @@ function recoverCatalogRanges(metadata: CatalogMetadata, pages: Array<{ index: n
   const replaceRange = (end: number, nextSlot: number): void => {
     if (end < cursor || (end > cursor) !== (nextSlot > previousSlot + 1)) throw new Error('稳定目录恢复区间与槽位边界不一致')
     let pending: EvidenceFragment[] = []
+    let budget = EMPTY_CATALOG_BUDGET
     // 当前恢复分组采用全新序号，封闭状态仅由已证明边界和固定容量确定。
     const flushRecoveryRangeBatch = (capacity = false): void => {
       if (!pending.length) return
@@ -479,9 +525,12 @@ function recoverCatalogRanges(metadata: CatalogMetadata, pages: Array<{ index: n
     }
     for (; cursor < end; cursor++) {
       const fragment = ordered[cursor]
-      if (pending.length && !catalogFits(snapshot, [...pending, fragment])) flushRecoveryRangeBatch(true)
+      const measured = measureCatalogFragment(snapshot, fragment)
+      let candidate = appendCatalogBudget(budget, measured)
+      if (pending.length && !catalogFits(candidate)) { flushRecoveryRangeBatch(true); candidate = measured }
       pending.push(fragment)
-      if (!catalogFits(snapshot, pending)) throw new Error('恢复来源无法容纳固定批次预算')
+      if (!catalogFits(candidate)) throw new Error('恢复来源无法容纳固定批次预算')
+      budget = candidate
     }
     flushRecoveryRangeBatch()
   }

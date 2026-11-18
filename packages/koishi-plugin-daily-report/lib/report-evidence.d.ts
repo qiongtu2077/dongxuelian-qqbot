@@ -60,6 +60,7 @@ export interface EvidenceCandidateContextOptions {
     candidateFragments: readonly (readonly EvidenceFragment[])[];
 }
 export declare function createReportEvidence(messages: readonly EvidenceMessage[]): ReportEvidence;
+export declare function countReportCodePoints(text: string): number;
 export declare function buildReportEvidenceBatch(snapshot: ReportEvidence, fragments: readonly EvidenceFragment[], options?: EvidenceCandidateContextOptions): EvidenceBatch;
 export declare function partitionReportEvidence(snapshot: ReportEvidence): {
     deterministic: EvidenceFragment[];
