@@ -1,3 +1,4 @@
+import { ChatTurnBudget } from '../lifecycle/chat-turn-budget';
 interface ForwardLogger {
     info?: (message: string) => void;
 }
@@ -31,8 +32,9 @@ interface ForwardSession {
 }
 interface ResolveForwardOptions {
     callGetForwardMsg?: ForwardGetter;
+    turn?: ChatTurnBudget;
 }
-type ForwardGetter = (forwardId: string) => Promise<unknown[] | unknown | null>;
+type ForwardGetter = (forwardId: string, signal?: AbortSignal, timeoutMs?: number) => Promise<unknown[] | unknown | null>;
 declare function resolveForwardSummary(session: ForwardSession, content: unknown, ctx: ForwardContext | null | undefined, options?: ResolveForwardOptions): Promise<string>;
 declare const _default: {
     resolveForwardSummary: typeof resolveForwardSummary;

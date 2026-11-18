@@ -3,6 +3,7 @@ interface AnalyzeFileParams {
     keyword?: unknown;
 }
 interface AnalyzeFileContext {
+    signal?: AbortSignal;
     channelKey?: string;
     activeFileMessageId?: unknown;
     userId?: string;

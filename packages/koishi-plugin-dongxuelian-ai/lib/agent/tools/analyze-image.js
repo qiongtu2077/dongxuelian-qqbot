@@ -8,6 +8,7 @@ const { enqueueMediaTask, buildImageAnalysisPayload, hasImageAnalysisDemand } = 
 const { shouldEnqueueMediaForAdmission } = require('../../media/backpressure/media-requests');
 const { admitTask } = require('../../resource-scheduler/admission');
 const { readRandomImageAuthorization } = require('../../media/image/image-random-demand');
+const chat_turn_budget_1 = require("../../lifecycle/chat-turn-budget");
 // 为 URL 直传图片生成稳定的媒体任务 messageId，供 S6 去重和展示。
 function createAgentImageMessageId(messageId, url) {
     if (messageId)
@@ -50,7 +51,7 @@ module.exports = {
             if (group.length > 1) {
                 const { collectExplicitImageTargets, readExplicitImageEvidence } = require('../../media/image/image-batch');
                 const targets = await collectExplicitImageTargets({ quote: { messageId } }, channelKey, channelKey);
-                return (await readExplicitImageEvidence(targets, question || '描述这组图片的内容及关系')).evidence;
+                return (await readExplicitImageEvidence(targets, question || '描述这组图片的内容及关系', { signal: context.signal })).evidence;
             }
             if (group.length === 1)
                 messageId = group[0].messageId;
@@ -88,14 +89,16 @@ module.exports = {
             const targetEntry = await getImageEntry(channelKey, mediaMessageId);
             if (!targetEntry)
                 return '该图片记录已过期或无法定位，请重新发送。';
-            const queued = enqueueMediaTask({
+            context.signal?.throwIfAborted();
+            (0, chat_turn_budget_1.assertChatTurnActive)();
+            const queued = (0, chat_turn_budget_1.outsideChatTurn)(() => enqueueMediaTask({
                 kind: 'media_image_analysis',
                 channelKey,
                 messageId: mediaMessageId,
                 url: url || String(cachedFile || ''),
                 expiresAt: new Date(Math.min(targetEntry.ts + 2 * 60 * 60 * 1000, context.source === 'random-image' && randomAuthorization ? randomAuthorization.expiresAt : Infinity)).toISOString(),
                 payload: { ...buildImageAnalysisPayload({ source: context.source || 'history-tool', question, force, userId, randomAuthorization }), entry: context.entry || 'agent-tool-analyze-image', originalMessageId: messageId },
-            });
+            }));
             if ('reused' in queued && queued.reused) {
                 const cachedResult = queued.cache && typeof queued.cache === 'object' ? queued.cache : null;
                 if (typeof cachedResult?.result?.analysis === 'string' && cachedResult.result.analysis)

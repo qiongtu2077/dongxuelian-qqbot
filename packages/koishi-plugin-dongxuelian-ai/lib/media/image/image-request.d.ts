@@ -6,6 +6,7 @@ interface ImageRequestOptions {
     waitMs?: number;
     targetIds?: string[];
     sourceIdentity?: string;
+    signal?: AbortSignal;
 }
 interface ImageDiagnostic {
     source: ImageSource;

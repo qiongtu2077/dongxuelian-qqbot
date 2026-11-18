@@ -13,10 +13,9 @@ const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-conf
 const { requestChatCompletions, freezeChatRoute } = require('../../core/api');
 const { ModelRequestError, resolveModelQueueFailure } = require('../../core/request-diagnostics');
 const { admitTask } = require('../../resource-scheduler/admission');
-const { normalizeTaskBudget } = require('../../resource-scheduler/task-budget');
+const chat_turn_budget_1 = require("../../lifecycle/chat-turn-budget");
 const { writeMediaEvent } = require('../backpressure/media-queue');
 const { sanitizeImageAnalysis } = require('./image-analysis-sanitizer');
-const { REQUEST_TIMEOUT } = require('../../core/constants');
 // 本机编码预算约束内存峰值，不冒充未公开的模型请求体上限。
 const IMAGE_ENCODING_BUDGET_BYTES = 32 * 1024 * 1024;
 // --- 节点契约与分批 --- //
@@ -76,15 +75,21 @@ async function collectExplicitImageTargets(session, channelKey, conversationKey)
 // 在首次回答前固定执行整组视觉读取，任何目标都有终态，失败目标不污染成功证据。
 async function readExplicitImageEvidence(targets, question, options = {}) {
     const channelKey = targets[0].channelKey;
-    const releaseTargets = await storeImageTargets(channelKey, targets, true);
-    const controller = new AbortController();
-    const timeoutMs = normalizeTaskBudget({ kind: 'normal_chat' }).runTimeoutMs;
-    const deadline = Date.now() + timeoutMs;
-    const timer = setTimeout(() => controller.abort(new Error('image_turn_deadline')), timeoutMs);
-    const cancelExplicitImageRead = () => controller.abort(options.signal?.reason);
-    options.signal?.addEventListener('abort', cancelExplicitImageRead, { once: true });
-    if (options.signal?.aborted)
-        cancelExplicitImageRead();
+    const turn = options.turn || (0, chat_turn_budget_1.currentChatTurn)() || new chat_turn_budget_1.ChatTurnBudget({ channelKey });
+    const ownsTurn = !options.turn && !(0, chat_turn_budget_1.currentChatTurn)();
+    if (ownsTurn) {
+        turn.select(targets.some(target => target.aliases.some(alias => alias.group === 'forwarded')));
+        turn.enqueue();
+        turn.start();
+    }
+    const textSteps = resolveCapabilityRuntimeSteps('text');
+    const answerReserve = turn.recordImages ? chat_turn_budget_1.CHAT_TURN_LIMITS.textPrimary + (textSteps.length > 1 ? chat_turn_budget_1.CHAT_TURN_LIMITS.recordFallbackReserve : 0)
+        : chat_turn_budget_1.CHAT_TURN_LIMITS.normalFallbackReserve;
+    const stage = turn.openStage('vision', chat_turn_budget_1.CHAT_TURN_LIMITS.vision, answerReserve + turn.sendWindow());
+    const controller = { signal: options.signal ? AbortSignal.any([stage.signal, options.signal]) : stage.signal };
+    const deadline = turn.deadline;
+    let releaseTargets;
+    turn.imagesTotal = targets.length;
     const results = targets.map(target => ({ target, state: 'ready', reason: '' }));
     const evidence = [];
     let batchCount = 0;
@@ -92,13 +97,16 @@ async function readExplicitImageEvidence(targets, question, options = {}) {
     let queueFailure = null;
     // 每个下载和上游节点开始前复检取消、总截止与现有资源准入，不新增无界等待。
     const checkActive = () => {
-        if (controller.signal.aborted || options.canContinue?.() === false)
+        turn.assertActive();
+        if (controller.signal.aborted || Date.now() >= stage.deadline || options.canContinue?.() === false)
             throw new Error('image_turn_cancelled');
         const admission = admitTask({ kind: 'normal_chat', source: 'explicit-image', channelKey, exclusive: false });
         if (!['run_now', 'downgrade'].includes(admission.decision))
             throw new Error('image_resource_paused');
     };
     try {
+        checkActive();
+        releaseTargets = await storeImageTargets(channelKey, targets, true);
         const contentOwners = new Map();
         for (const item of results) {
             checkActive();
@@ -129,7 +137,9 @@ async function readExplicitImageEvidence(targets, question, options = {}) {
             const sourceIdentity = createHash('sha256').update(JSON.stringify(results.map(item => [item.target.id, item.hash, item.state, item.target.aliases]))).digest('hex');
             request = await acquireImageRequest(channelKey, ready[0].target.id, {
                 source: 'explicit-image', question, force: true, targetIds: ready.map(item => item.target.id), sourceIdentity,
+                signal: controller.signal, waitMs: Math.max(0, stage.deadline - Date.now()),
             });
+            checkActive();
             if (request.status === 'reused') {
                 evidence.push(request.analysis);
                 ready.forEach(item => { item.state = 'read'; });
@@ -170,9 +180,10 @@ async function readExplicitImageEvidence(targets, question, options = {}) {
                         try {
                             const response = await requestChatCompletions([{ role: 'user', content }], step, {
                                 _frozenRoute: route, signal: controller.signal, _imageRequest: diagnostic,
-                                _timeoutMs: Math.min(timeoutMs, step.priorityIndex > 0 ? 10000 : REQUEST_TIMEOUT), max_tokens: 3000,
+                                _timeBudget: { deadline: stage.deadline, primaryMs: step.priorityIndex > 0 ? chat_turn_budget_1.CHAT_TURN_LIMITS.visionFallback : chat_turn_budget_1.CHAT_TURN_LIMITS.visionPrimary, fallbackMs: chat_turn_budget_1.CHAT_TURN_LIMITS.visionFallback, fallbackReserveMs: 0 }, max_tokens: 3000,
                                 _onRequestAttempt: checkActive,
                             });
+                            checkActive();
                             if (response.type !== 'text' || !response.content.trim())
                                 throw new Error('image_empty_response');
                             evidence.push(`[视觉批次${batchCount}：${covered.map(item => imageTargetLabel(item.target)).join('、')}]\n${response.content}`);
@@ -230,8 +241,9 @@ async function readExplicitImageEvidence(targets, question, options = {}) {
                             try {
                                 const response = await requestChatCompletions([{ role: 'user', content }], step, {
                                     _frozenRoute: freezeChatRoute(step, [step]), signal: controller.signal, _imageRequest: diagnostic,
-                                    _timeoutMs: Math.min(timeoutMs, step.priorityIndex > 0 ? 10000 : REQUEST_TIMEOUT), max_tokens: 3000, _onRequestAttempt: checkActive,
+                                    _timeBudget: { deadline: stage.deadline, primaryMs: step.priorityIndex > 0 ? chat_turn_budget_1.CHAT_TURN_LIMITS.visionFallback : chat_turn_budget_1.CHAT_TURN_LIMITS.visionPrimary, fallbackMs: chat_turn_budget_1.CHAT_TURN_LIMITS.visionFallback, fallbackReserveMs: 0 }, max_tokens: 3000, _onRequestAttempt: checkActive,
                                 });
+                                checkActive();
                                 if (response.type !== 'text' || !response.content.trim())
                                     continue;
                                 evidence.push(`[补充原图对照：${pair.map(item => imageTargetLabel(item.target)).join('、')}]\n${response.content}`);
@@ -268,7 +280,7 @@ async function readExplicitImageEvidence(targets, question, options = {}) {
         }
     }
     catch (error) {
-        const reason = controller.signal.aborted ? Date.now() >= deadline ? 'image_turn_deadline' : 'image_turn_cancelled'
+        const reason = controller.signal.aborted ? Date.now() >= stage.deadline ? 'image_turn_deadline' : 'image_turn_cancelled'
             : error instanceof Error ? error.message : 'image_turn_cancelled';
         const cancelled = controller.signal.aborted || ['image_turn_cancelled', 'image_resource_paused'].includes(reason);
         for (const item of results)
@@ -300,9 +312,16 @@ async function readExplicitImageEvidence(targets, question, options = {}) {
                     await request.release();
             }
             finally {
-                clearTimeout(timer);
-                options.signal?.removeEventListener('abort', cancelExplicitImageRead);
-                await releaseTargets();
+                stage.close();
+                try {
+                    await releaseTargets?.();
+                }
+                finally {
+                    turn.imagesRead = results.filter(item => ['read', 'reused'].includes(item.state)).length;
+                    turn.event('image_complete', { total: results.length, read: turn.imagesRead, unread: results.length - turn.imagesRead, batches: batchCount });
+                    if (ownsTurn)
+                        turn.finish();
+                }
             }
         }
     }

@@ -34,8 +34,8 @@ const {
   withCurrentBot,
 } = require('./lifecycle/bot-resolver') as typeof import('./lifecycle/bot-resolver') // 当前 bot 解析与异步 session 注入
 const {
-  enqueueForChannel,
-} = require('./lifecycle/channel-task-queue') as typeof import('./lifecycle/channel-task-queue') // 同频道任务串行队列
+  createChatTurn, submitChatTurn,
+} = require('./lifecycle/chat-turn-execution') as typeof import('./lifecycle/chat-turn-execution') // 同频道任务预算与结算接线
 const {
   getArmedEventDump,
   armEventDump,
@@ -223,6 +223,7 @@ interface IndexContext {
 }
 
 interface IndexSession {
+  _forwardImageMessages?: Array<{ messageId: string; message: Array<{ type: string; data: Record<string, unknown> }> }>
   [key: string]: unknown
   content?: string
   selfId?: string
@@ -528,7 +529,8 @@ function apply(ctx: IndexContext): void {
       cancelPendingRandom(channelKey, reason)
     }
 
-    const forwardSummaryText = await resolveForwardSummary(session, content, ctx)
+    const entryTurn = createChatTurn(channelKey, session, ctx)
+    const forwardSummaryText = await resolveForwardSummary(session, content, ctx, { turn: entryTurn })
 
     const armedEventDump = getArmedEventDump(getChannelKey(session))
     if (armedEventDump) {
@@ -818,7 +820,7 @@ function apply(ctx: IndexContext): void {
           if (shouldTriggerRandom(Math.min(resolveRandomTriggerRate(channelKey) * willFactor, 1.0))) {
             resetRandomMiss(channelKey)
             markRandomReplySent(channelKey)
-            enqueueForChannel(channelKey, async () => {
+            submitChatTurn(entryTurn, session, async () => {
               if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion) return
               if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion) return
               if (shouldDropQueuedBotWork(ctx, channelKey, 'normal_chat', 'delayed-random-queue')) return
@@ -885,7 +887,7 @@ function apply(ctx: IndexContext): void {
                 }
                 await safeSendReplyWithFreshness(ctx, liveSession, reply, true, resolveBot, { ...randomSendOptions, personaName: p.personaName || '' })
               }
-            }, 4, { ctx, maxQueueAgeMs: 20000 })
+            }, 4, { random: true, recordImages: false, isFresh: () => getExplicitInteractionVersion(channelKey) === p.explicitVersion && getChannelMessageVersion(channelKey) === p.triggerMessageVersion })
           } else {
             incrementRandomMiss(channelKey)
           }
@@ -1038,7 +1040,7 @@ function apply(ctx: IndexContext): void {
       return
     }
 
-    enqueueForChannel(channelKey, async () => {
+    submitChatTurn(entryTurn, session, async () => {
         if (shouldDropQueuedBotWork(ctx, channelKey, botCommandType, randomTriggered ? 'random-chat-queue' : 'chat-queue')) return
         const liveSession = withCurrentBot(session, resolveBot()) as IndexSession
         try {
@@ -1113,7 +1115,8 @@ function apply(ctx: IndexContext): void {
         else if (/data_inspection|DataInspection|inappropriate content|content_filter|content policy|moderation|safety|审核|风控|ResponsibleAIPolicy|ResponsibleAI|blocked|censored/i.test(m)) {
           msg = /data_inspection|DataInspection|inappropriate content|图/i.test(m) ? '这个图不合适，不说了吧' : '这话我接不了，换一句吧。'
         } else if (/timeout|ETIMEDOUT|aborted|AbortError|deadline/i.test(m) || /TIMED_OUT|ETIMEDOUT/i.test(code)) {
-          msg = '请求超时了，一会再来。'
+          msg = entryTurn.imagesRead > 0 && entryTurn.imagesRead === entryTurn.imagesTotal
+            ? '已完成图片读取，本轮回答已超时或取消。' : '请求超时了，一会再来。'
         } else if (/ECONNRESET|ECONNREFUSED|ENOTFOUND|ENETUNREACH|socket hang|TLS|SSL|fetch failed/i.test(m) || /^ECONN/.test(code)) {
           msg = '网络抖了一下，一会再来。'
         } else if (/429|rate limit|too many requests|quota/i.test(m)) {
@@ -1121,7 +1124,8 @@ function apply(ctx: IndexContext): void {
         }
         return safeSendReplyWithFreshness(ctx, liveSession, msg, randomTriggered, resolveBot, randomSendOptions)
       }
-    }, maxDepth, { ctx, maxQueueAgeMs: randomTriggered ? 20000 : 45000 })
+    }, maxDepth, { random: randomTriggered, recordImages: explicitBotInteraction && !!session._forwardImageMessages?.length,
+      isFresh: () => !randomTriggered || isRandomReplyFresh(randomSendOptions) })
   })
 }
 

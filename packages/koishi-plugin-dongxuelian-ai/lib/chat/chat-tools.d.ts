@@ -25,6 +25,7 @@ interface ChatToolCall {
     };
 }
 interface ChatToolContext extends ChatToolOptions {
+    signal?: AbortSignal;
     userId?: string;
     channelKey?: string;
     allowParsedReminderAction?: boolean;

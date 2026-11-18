@@ -12,6 +12,7 @@ const { DATA_DIR } = require('../../core/constants');
 const { readJsonFile, writeJsonAtomic, isProcessAlive } = require('../../resource-common/files');
 const { getImageEntry, getImageEntryCached, finishImageAnalysisStatus } = require('./image-store');
 const { recordImageRequestEvent } = require('../../core/request-diagnostics');
+const chat_turn_budget_1 = require("../../lifecycle/chat-turn-budget");
 const REQUEST_ROOT = path.join(DATA_DIR, 'image-analysis-requests');
 const IMAGE_WINDOW_MS = 2 * 60 * 60 * 1000;
 const MAX_RESULTS = 8;
@@ -46,6 +47,7 @@ function hasActiveImageRequest(channelKey, messageId) {
 }
 // 领取目标图片的识别权；等待有界，只有持有者能发起新模型请求。
 async function acquireImageRequest(channelKey, messageId, options) {
+    options.signal?.throwIfAborted();
     if (!channelKey || !messageId || !['explicit-image', 'random-image', 'history-tool'].includes(options.source))
         return { status: 'unavailable' };
     if (!options.targetIds) {
@@ -66,6 +68,7 @@ async function acquireImageRequest(channelKey, messageId, options) {
     await fs.mkdir(dir, { recursive: true });
     const deadline = Date.now() + Math.max(0, Math.min(30000, options.waitMs ?? 20000));
     while (true) {
+        options.signal?.throwIfAborted();
         const entry = await getImageEntry(channelKey, messageId);
         if (!entry) {
             recordImageRequestEvent({ ...diagnostic, event: 'unavailable' });
@@ -95,7 +98,7 @@ async function acquireImageRequest(channelKey, messageId, options) {
                 recordImageRequestEvent({ ...diagnostic, event: 'pending' });
                 return { status: 'pending' };
             }
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await (0, chat_turn_budget_1.delayWithSignal)(Math.min(100, Math.max(0, deadline - Date.now())), options.signal);
             continue;
         }
         finally {
@@ -104,7 +107,9 @@ async function acquireImageRequest(channelKey, messageId, options) {
         // 竞争者可能在最后一次缓存检查后完成；持锁后再次检查，避免顺序重复消费。
         let fresh;
         try {
+            options.signal?.throwIfAborted();
             fresh = await getImageEntry(channelKey, messageId);
+            options.signal?.throwIfAborted();
         }
         catch (error) {
             // 所有权尚未交给调用方，复检失败必须由领取端释放，不能留下活进程锁。

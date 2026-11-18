@@ -59,8 +59,6 @@ interface ChatSessionLike {
 }
 interface ChatRunOptions {
     signal?: AbortSignal;
-    imageEvidenceDeadline?: number;
-    imageEvidenceSignal?: AbortSignal;
     randomTriggered?: boolean;
     isAgentResult?: boolean;
     agentResultText?: string;

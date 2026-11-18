@@ -191,7 +191,7 @@ async function run(t) {
     t.check('scenario QQ reply grouping preserves model line breaks', session.sent.length === 3 && session.sent[0].includes('第一段') && session.sent[1].includes('第二段') && session.sent[2].includes('第三段'), JSON.stringify(session.sent))
   })
 
-  await withScenario({}, async ({ harness, makeSession, run, ready }) => {
+  await withScenario({ participationGroups: ['10002'] }, async ({ harness, makeSession, run, ready }) => {
     await ready()
     const mocked = mockFetch([{ json: { choices: [{ message: { content: TEXT.funny } }] } }])
     await withFetch(mocked, async () => {
@@ -214,7 +214,7 @@ async function run(t) {
     })
   })
 
-  await withScenario({}, async ({ harness, makeSession, run, ready }) => {
+  await withScenario({ participationGroups: ['10003'] }, async ({ harness, makeSession, run, ready }) => {
     await ready()
     const mocked = mockFetch([{ json: { choices: [{ message: { content: TEXT.funny } }] } }])
     await withFetch(mocked, async () => {

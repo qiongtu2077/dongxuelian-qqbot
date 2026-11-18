@@ -29,7 +29,7 @@ function writePolicy(data, groups, privateEnabled = false) {
 // 验证总开关的事件入口、实际适配器出口、热切换与卸载还原。
 async function run(t) {
   t.section('scenario: group and private participation')
-  await withScenario({}, async ({ data, harness }) => {
+  await withScenario({ participation: false }, async ({ data, harness }) => {
     const events = []
     const { bot, requests } = makeBot(session => events.push(session))
     const originalInternal = bot.internal
@@ -97,7 +97,7 @@ async function run(t) {
     t.check('scenario participation survives reconnect, fails closed and restores on dispose', true)
   })
 
-  await withScenario({}, async ({ data, harness, makeSession, run }) => {
+  await withScenario({ participation: false }, async ({ data, harness, makeSession, run }) => {
     const { bot } = makeBot(session => run(session))
     await harness.ctx.emit('bot-connect', bot)
     const command = makeSession({ content: '东雪莲复读开' })
@@ -119,7 +119,7 @@ async function run(t) {
     t.check('scenario participation gates real middleware and hot-loads first-enable repeat defaults', true)
   })
 
-  await withScenario({}, async ({ data, harness }) => {
+  await withScenario({ participation: false }, async ({ data, harness }) => {
     const events = []
     const { bot } = makeBot(session => events.push(session))
     await harness.ctx.emit('bot-connect', bot)

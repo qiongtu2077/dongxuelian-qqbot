@@ -101,6 +101,9 @@ async function runCoreContracts(context) {
     path.join(LIB, 'lifecycle', 'session-compat.js'),
     path.join(LIB, 'lifecycle', 'bot-resolver.js'),
     path.join(LIB, 'lifecycle', 'channel-task-queue.js'),
+    path.join(LIB, 'lifecycle', 'chat-turn-budget.js'),
+    path.join(LIB, 'lifecycle', 'chat-turn-execution.js'),
+    path.join(LIB, 'core', 'model-request-context.js'),
     path.join(LIB, 'lifecycle', 'locate-snapshot.js'),
     path.join(LIB, 'lifecycle', 'event-dump.js'),
     path.join(LIB, 'lifecycle', 'startup-schedulers.js'),
@@ -245,6 +248,8 @@ async function runCoreContracts(context) {
   duplicateScanFiles.push('../../koishi-plugin-dashboard/lib/group-directory.js')
   duplicateScanFiles.push('diagnostics/rare-voice-diagnostics.js')
   duplicateScanFiles.push('message/forward-images.js', 'media/image/image-source.js', 'media/image/image-request.js', 'media/image/image-turn.js', 'media/image/image-random-demand.js', 'media/image/image-manifest.js', 'core/image-content.js', 'media/image/image-batch.js')
+  duplicateScanFiles.push('lifecycle/chat-turn-budget.js', 'lifecycle/chat-turn-execution.js')
+  duplicateScanFiles.push('core/model-request-context.js')
   duplicateScanFiles.push('diagnostics/model-connectivity.js')
   duplicateScanFiles.push(...['models', 'input', 'settings', 'repositories', 'client', 'page-screenshot', 'renderer', 'body-content', 'issue-renderer', 'pull-card', 'themes', 'runtime'].map(name => 'github-preview/' + name + '.js'))
   duplicateScanFiles.push('core/request-diagnostics.js', 'reply/model-quota.js')

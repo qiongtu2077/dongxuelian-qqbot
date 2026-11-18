@@ -19,6 +19,9 @@ const vision = require('./vision.test')
 const random = require('./random.test')
 const persistence = require('./persistence.test')
 const concurrency = require('./concurrency.test')
+const chatBudget = require('./chat-budget.test')
+const chatBudgetRecord = require('./chat-budget-record.test')
+const chatBudgetCancellation = require('./chat-budget-cancellation.test')
 const setup = require('./setup.test')
 const personaPrompt = require('./persona-prompt.test')
 const personaRegression = require('./persona-regression.test')
@@ -56,6 +59,9 @@ const SCENARIOS = [
   random,
   persistence,
   concurrency,
+  chatBudget,
+  chatBudgetRecord,
+  chatBudgetCancellation,
   setup,
   personaPrompt,
   personaRegression,

@@ -5,6 +5,8 @@
  * 状态: 仅持有 sensitiveTimer；其他定时器由 startup-schedulers / agent cron 自己持有。
  * ========================================================================== */
 const fsSync = require('fs')
+import { cancelChatTurnStages } from './chat-turn-budget'
+const { clearTopicSwitchLocks } = require('../chat/chat-topic-switch') as typeof import('../chat/chat-topic-switch')
 const path = require('path')
 const {
   DATA_DIR,
@@ -405,7 +407,8 @@ function registerPluginLifecycle(ctx: LifecycleContext, options: PluginLifecycle
     clearInterval(supervisorTimer)
     clearInterval(hostSampleTimer)
     try { agentCron.stopCronScheduler() } catch (error) { ctx.logger('dongxuelian-ai').warn(`agent cron scheduler stop failed: ${getLifecycleErrorMessage(error)}`) }
-    clearChannelQueues()
+    clearTopicSwitchLocks()
+    await Promise.all([cancelChatTurnStages(), clearChannelQueues()])
     clearLocateSnapshots()
     clearRandomPendingState()
     clearStartupSchedulers()

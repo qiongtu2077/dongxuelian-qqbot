@@ -17,6 +17,7 @@ const CHAT_TOOL_ANALYZE_TIMEOUT_MS = 25000;
 const CHAT_TOOLS_TOTAL_DEADLINE_MS = 5000;
 const DEFAULT_CHAT_TOOL_CHANNEL = 'qq';
 const { createRandomImageDemand } = require('../media/image/image-random-demand');
+const chat_turn_budget_1 = require("../lifecycle/chat-turn-budget");
 function getChatToolErrorMessage(error) {
     return error instanceof Error ? error.message : String(error || 'unknown error');
 }
@@ -383,6 +384,8 @@ function guardDangerousChatTool(name = '', args = {}, context = {}, channel = DE
 }
 // 执行本轮获准工具，图片目标须经过随机或双候选范围校验。
 async function executeChatTool(toolCall, context = {}) {
+    (0, chat_turn_budget_1.assertChatTurnActive)();
+    context.signal?.throwIfAborted();
     const name = toolCall?.function?.name || '';
     const channel = resolveChatToolChannel(context);
     if (!isChatToolAllowed(channel, name))
@@ -458,7 +461,7 @@ async function executeChatTool(toolCall, context = {}) {
                     return '本轮随机图片话题已经过时，未安排新的识图。';
             }
             const analyzeImage = require('../agent/tools/analyze-image');
-            return analyzeImage.execute(args, { channelKey: context.channelKey, userId: context.userId, source: context.randomTriggered ? 'random-image' : 'history-tool', entry: 'chat-tool-analyze-historical-image', randomAuthorization });
+            return analyzeImage.execute(args, { channelKey: context.channelKey, userId: context.userId, source: context.randomTriggered ? 'random-image' : 'history-tool', entry: 'chat-tool-analyze-historical-image', randomAuthorization, signal: context.signal });
         }
         case 'create_reminder': {
             const reminder = require('../agent/tools/create-reminder');
@@ -508,6 +511,7 @@ async function executeChatTool(toolCall, context = {}) {
             return null;
     }
 }
+// 工具短上限与整轮截止取最小值；作用域内等待真实工具退出后才继续。
 async function handleChatToolCalls(toolCalls, context = {}) {
     if (!Array.isArray(toolCalls) || !toolCalls.length)
         return { results: [], heavyTools: [] };
@@ -519,6 +523,7 @@ async function handleChatToolCalls(toolCalls, context = {}) {
         : context.randomTriggered ? 1 : Infinity;
     let handledToolCalls = 0;
     for (const tc of toolCalls) {
+        (0, chat_turn_budget_1.assertChatTurnActive)();
         const name = tc?.function?.name || '';
         if (handledToolCalls >= maxToolCalls) {
             results.push({ tool_call_id: tc.id, role: 'tool', content: `工具 ${name || 'unknown'} 未执行：当前场景工具预算已用完。` });
@@ -536,15 +541,26 @@ async function handleChatToolCalls(toolCalls, context = {}) {
         if (Date.now() >= deadline)
             break;
         const timeout = isAnalysisTimeoutTool(name) ? CHAT_TOOL_ANALYZE_TIMEOUT_MS : CHAT_TOOL_TIMEOUT_MS;
+        const turn = (0, chat_turn_budget_1.currentChatTurn)();
+        const stage = turn?.openStage('tool', timeout, turn.sendWindow());
+        let timer;
         try {
-            const resultPromise = executeChatTool(tc, context);
-            const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('tool timeout')), timeout));
-            const result = await Promise.race([resultPromise, timeoutPromise]);
+            const resultPromise = executeChatTool(tc, { ...context, signal: stage?.signal || context.signal });
+            const result = stage ? await turn.own(resultPromise) : await Promise.race([resultPromise,
+                new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('tool timeout')), timeout); })]);
+            (0, chat_turn_budget_1.assertChatTurnActive)();
+            if (stage?.signal.aborted)
+                throw new Error('tool timeout');
             results.push({ tool_call_id: tc.id, role: 'tool', content: String(result || '') });
         }
         catch (err) {
+            (0, chat_turn_budget_1.assertChatTurnActive)();
             console.warn('[chat-tools] lightweight tool failed:', name || 'unknown', getChatToolErrorMessage(err));
             results.push({ tool_call_id: tc.id, role: 'tool', content: buildChatToolFailureContent(name, err) });
+        }
+        finally {
+            clearTimeout(timer);
+            stage?.close();
         }
     }
     return { results, heavyTools };

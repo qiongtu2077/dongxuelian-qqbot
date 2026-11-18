@@ -7,6 +7,7 @@ const { enqueueMediaTask, buildImageAnalysisPayload, hasImageAnalysisDemand } = 
 const { shouldEnqueueMediaForAdmission } = require('../../media/backpressure/media-requests') as typeof import('../../media/backpressure/media-requests')
 const { admitTask } = require('../../resource-scheduler/admission') as typeof import('../../resource-scheduler/admission')
 const { readRandomImageAuthorization } = require('../../media/image/image-random-demand') as typeof import('../../media/image/image-random-demand')
+import { assertChatTurnActive, outsideChatTurn } from '../../lifecycle/chat-turn-budget'
 
 interface AnalyzeImageParams {
   url?: unknown
@@ -16,6 +17,7 @@ interface AnalyzeImageParams {
 }
 
 interface AnalyzeImageContext {
+  signal?: AbortSignal
   channelKey?: string
   userId?: string
   source?: 'history-tool' | 'explicit-image' | 'random-image'
@@ -62,7 +64,7 @@ export = {
       if (group.length > 1) {
         const { collectExplicitImageTargets, readExplicitImageEvidence } = require('../../media/image/image-batch') as typeof import('../../media/image/image-batch')
         const targets = await collectExplicitImageTargets({ quote: { messageId } }, channelKey, channelKey)
-        return (await readExplicitImageEvidence(targets, question || '描述这组图片的内容及关系')).evidence
+        return (await readExplicitImageEvidence(targets, question || '描述这组图片的内容及关系', { signal: context.signal })).evidence
       }
       if (group.length === 1) messageId = group[0].messageId
     }
@@ -96,14 +98,16 @@ export = {
       }
       const targetEntry = await getImageEntry(channelKey, mediaMessageId)
       if (!targetEntry) return '该图片记录已过期或无法定位，请重新发送。'
-      const queued = enqueueMediaTask({
+      context.signal?.throwIfAborted()
+      assertChatTurnActive()
+      const queued = outsideChatTurn(() => enqueueMediaTask({
         kind: 'media_image_analysis',
         channelKey,
         messageId: mediaMessageId,
         url: url || String(cachedFile || ''),
         expiresAt: new Date(Math.min(targetEntry.ts + 2 * 60 * 60 * 1000, context.source === 'random-image' && randomAuthorization ? randomAuthorization.expiresAt : Infinity)).toISOString(),
         payload: { ...buildImageAnalysisPayload({ source: context.source || 'history-tool', question, force, userId, randomAuthorization }), entry: context.entry || 'agent-tool-analyze-image', originalMessageId: messageId },
-      })
+      }))
       if ('reused' in queued && queued.reused) {
         const cachedResult = queued.cache && typeof queued.cache === 'object' ? queued.cache as { result?: { analysis?: unknown } } : null
         if (typeof cachedResult?.result?.analysis === 'string' && cachedResult.result.analysis) return `图片分析结果：${cachedResult.result.analysis}`

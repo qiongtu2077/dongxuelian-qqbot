@@ -29,7 +29,7 @@ const { installSlOnebotReconnect } = require('./lifecycle/sl-onebot-reconnect');
 const { getModelQuotaReply } = require('./reply/model-quota');
 const { installSessionCompatibility, } = require('./lifecycle/session-compat'); // Koishi/Satori Session 兼容补丁
 const { createBotResolver, withCurrentBot, } = require('./lifecycle/bot-resolver'); // 当前 bot 解析与异步 session 注入
-const { enqueueForChannel, } = require('./lifecycle/channel-task-queue'); // 同频道任务串行队列
+const { createChatTurn, submitChatTurn, } = require('./lifecycle/chat-turn-execution'); // 同频道任务预算与结算接线
 const { getArmedEventDump, armEventDump, clearArmedEventDump, dumpSessionEvent, } = require('./lifecycle/event-dump'); // 原始事件一次性抓取与安全落盘
 const { registerPluginLifecycle, } = require('./lifecycle/plugin-lifecycle'); // ready/dispose 生命周期注册
 const { logReplyTimingDiagnostic, logAffectRouterDiagnosticForOutputShadow, logStickerShadowSendDiagnostic, } = require('./diagnostics/diagnostics'); // 入口旁路诊断日志
@@ -239,7 +239,8 @@ function apply(ctx) {
             }
             cancelPendingRandom(channelKey, reason);
         };
-        const forwardSummaryText = await resolveForwardSummary(session, content, ctx);
+        const entryTurn = createChatTurn(channelKey, session, ctx);
+        const forwardSummaryText = await resolveForwardSummary(session, content, ctx, { turn: entryTurn });
         const armedEventDump = getArmedEventDump(getChannelKey(session));
         if (armedEventDump) {
             try {
@@ -520,7 +521,7 @@ function apply(ctx) {
                     if (shouldTriggerRandom(Math.min(resolveRandomTriggerRate(channelKey) * willFactor, 1.0))) {
                         resetRandomMiss(channelKey);
                         markRandomReplySent(channelKey);
-                        enqueueForChannel(channelKey, async () => {
+                        submitChatTurn(entryTurn, session, async () => {
                             if (getExplicitInteractionVersion(channelKey) !== p.explicitVersion)
                                 return;
                             if (getChannelMessageVersion(channelKey) !== p.triggerMessageVersion)
@@ -592,7 +593,7 @@ function apply(ctx) {
                                 }
                                 await safeSendReplyWithFreshness(ctx, liveSession, reply, true, resolveBot, { ...randomSendOptions, personaName: p.personaName || '' });
                             }
-                        }, 4, { ctx, maxQueueAgeMs: 20000 });
+                        }, 4, { random: true, recordImages: false, isFresh: () => getExplicitInteractionVersion(channelKey) === p.explicitVersion && getChannelMessageVersion(channelKey) === p.triggerMessageVersion });
                     }
                     else {
                         incrementRandomMiss(channelKey);
@@ -749,7 +750,7 @@ function apply(ctx) {
             await safeSendReplyWithFreshness(ctx, liveSession, reply, randomTriggered, resolveBot, randomSendOptions);
             return;
         }
-        enqueueForChannel(channelKey, async () => {
+        submitChatTurn(entryTurn, session, async () => {
             if (shouldDropQueuedBotWork(ctx, channelKey, botCommandType, randomTriggered ? 'random-chat-queue' : 'chat-queue'))
                 return;
             const liveSession = withCurrentBot(session, resolveBot());
@@ -831,7 +832,8 @@ function apply(ctx) {
                     msg = /data_inspection|DataInspection|inappropriate content|图/i.test(m) ? '这个图不合适，不说了吧' : '这话我接不了，换一句吧。';
                 }
                 else if (/timeout|ETIMEDOUT|aborted|AbortError|deadline/i.test(m) || /TIMED_OUT|ETIMEDOUT/i.test(code)) {
-                    msg = '请求超时了，一会再来。';
+                    msg = entryTurn.imagesRead > 0 && entryTurn.imagesRead === entryTurn.imagesTotal
+                        ? '已完成图片读取，本轮回答已超时或取消。' : '请求超时了，一会再来。';
                 }
                 else if (/ECONNRESET|ECONNREFUSED|ENOTFOUND|ENETUNREACH|socket hang|TLS|SSL|fetch failed/i.test(m) || /^ECONN/.test(code)) {
                     msg = '网络抖了一下，一会再来。';
@@ -841,7 +843,8 @@ function apply(ctx) {
                 }
                 return safeSendReplyWithFreshness(ctx, liveSession, msg, randomTriggered, resolveBot, randomSendOptions);
             }
-        }, maxDepth, { ctx, maxQueueAgeMs: randomTriggered ? 20000 : 45000 });
+        }, maxDepth, { random: randomTriggered, recordImages: explicitBotInteraction && !!session._forwardImageMessages?.length,
+            isFresh: () => !randomTriggered || isRandomReplyFresh(randomSendOptions) });
     });
 }
 module.exports = {

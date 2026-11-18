@@ -6,6 +6,7 @@
 const { admitTask } = require('../../resource-scheduler/admission') as typeof import('../../resource-scheduler/admission')
 const { acquireResourceGate } = require('../../resource-gate/gate') as typeof import('../../resource-gate/gate')
 const { sanitizeId } = require('../../resource-common/files') as typeof import('../../resource-common/files')
+import { currentChatTurn } from '../../lifecycle/chat-turn-budget'
 
 interface VoiceTtsLogger {
   warn(message: string): void
@@ -64,6 +65,8 @@ function buildRejectedTtsResult<T>(decision: AdmissionDecisionLike): VoiceTtsGat
 
 // 在 S1/S0 保护下运行一次短交互 TTS；资源不可用时不等待长期排队。
 async function runVoiceTtsWithResourceGate<T>(options: VoiceTtsGateOptions<T>): Promise<VoiceTtsGateResult<T>> {
+  const turn = currentChatTurn()
+  turn?.assertActive()
   const taskId = sanitizeId(options.taskId || buildVoiceTtsTaskId(options as VoiceTtsGateOptions<unknown>))
   const source = String(options.source || 'voice-tts')
   const owner = String(options.owner || source)
@@ -101,8 +104,10 @@ async function runVoiceTtsWithResourceGate<T>(options: VoiceTtsGateOptions<T>): 
       pollMs: 500,
       memAvailableMb: admission.memAvailableMb,
       step: 'tts_prepare',
+      signal: turn?.signal,
     })
   } catch (error) {
+    turn?.assertActive()
     const message = error instanceof Error ? error.message : String(error || 'unknown error')
     try { options.logger?.warn(`voice tts gate rejected: ${message}`) } catch { /* non-critical: logging failure must not break fallback */ }
     return {
@@ -115,8 +120,10 @@ async function runVoiceTtsWithResourceGate<T>(options: VoiceTtsGateOptions<T>): 
   }
 
   try {
+    turn?.assertActive()
     gateHandle.updateStep('tts_synthesizing', admission.memAvailableMb)
     const value = await options.run()
+    turn?.assertActive()
     return {
       ok: true,
       value,

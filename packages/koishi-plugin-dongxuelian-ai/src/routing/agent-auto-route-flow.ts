@@ -6,6 +6,7 @@
  */
 const { heuristicRoute, buildExplicitSearchRunOptions } = require('../agent/router') as typeof import('../agent/router')
 const { getAgentConfig } = require('../agent/config') as typeof import('../agent/config')
+import { assertChatTurnActive, outsideChatTurn } from '../lifecycle/chat-turn-budget'
 const { hasAdminPermission, isJailbreakAttempt, sanitizeUserInput } = require('../core/utils') as typeof import('../core/utils')
 const { logDebug } = require('../core/logging-config') as typeof import('../core/logging-config')
 const { submitAgentWorkerTask } = require('../agent/worker-submission') as typeof import('../agent/worker-submission')
@@ -125,7 +126,8 @@ async function handleAgentAutoRoute({
       isAdmin: hasAdminPermission(liveSession),
       ...searchRunOptions,
     }
-    const submission = submitAgentWorkerTask({
+    assertChatTurnActive()
+    const submission = outsideChatTurn(() => submitAgentWorkerTask({
       channel: 'qq',
       channelKey,
       userId: currentUserId,
@@ -134,7 +136,7 @@ async function handleAgentAutoRoute({
       acceptedMessageMode: 'silent',
       blockedMessageMode: 'natural',
       payload: { entry: 'qq-auto-route', reason: route.reason || '', agentWorker: createAgentRunWorkerPayload('qq-auto-route', agentRunInput) },
-    })
+    }))
     return { handled: true, reply: submission.message }
   } catch (error) {
     const errorLike = error && typeof error === 'object' ? error as AutoRouteErrorLike : {}

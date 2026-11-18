@@ -1,3 +1,4 @@
+import type { TurnStage } from '../lifecycle/chat-turn-budget';
 type TopicSwitchResult = boolean | null;
 interface TopicSwitchSessionLike {
     guildId?: string;
@@ -19,7 +20,7 @@ interface TopicSwitchOptions {
     session?: TopicSwitchSessionLike;
     currentText?: string;
 }
-declare function detectTopicSwitch(lastMsg: string, currentMsg: string): Promise<TopicSwitchResult>;
+declare function detectTopicSwitch(lastMsg: string, currentMsg: string, stage?: TurnStage): Promise<TopicSwitchResult>;
 declare function resolveTopicSwitch({ topicKey, session, currentText }?: TopicSwitchOptions): Promise<TopicSwitchResult>;
 declare function clearTopicSwitchLocks(): void;
 declare const _default: {

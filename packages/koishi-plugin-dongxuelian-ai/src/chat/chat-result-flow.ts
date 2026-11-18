@@ -5,6 +5,7 @@
  * 状态: 无。
  */
 const { getRecentUserMessages } = require('../conversation') as typeof import('../conversation')
+import { assertChatTurnActive, outsideChatTurn } from '../lifecycle/chat-turn-budget'
 const { externalToolsDenied } = require('../routing/external-tool-policy') as typeof import('../routing/external-tool-policy')
 const { isToolEnabled: isAgentToolEnabled, getAgentConfig } = require('../agent/config') as typeof import('../agent/config')
 const {
@@ -258,7 +259,8 @@ async function handleChatResult(chatResult: unknown, {
         isAdmin,
         ...searchRunOptions,
       }
-      const submission = submitAgentWorkerTask({
+      assertChatTurnActive()
+      const submission = outsideChatTurn(() => submitAgentWorkerTask({
         channel: 'qq',
         channelKey,
         userId: currentUserId,
@@ -268,7 +270,7 @@ async function handleChatResult(chatResult: unknown, {
         blockedMessageMode: 'natural',
         notifyTarget: 'qq-group',
         payload: { entry: 'chat-heavy-tool', agentWorker: createAgentRunWorkerPayload('chat-heavy-tool', agentRunInput) },
-      })
+      }))
       return submission.message
     } catch (error) {
       const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code || '') : ''

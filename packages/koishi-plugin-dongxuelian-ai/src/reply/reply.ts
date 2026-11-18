@@ -5,10 +5,11 @@
  */
 const fs = require('fs')
 const path = require('path')
+import { assertChatTurnActive, currentChatTurn, sendWithChatTurn, delayWithSignal } from '../lifecycle/chat-turn-budget'
 const { h } = require('koishi')
 const { STICKER_DIR, THROTTLE_CONFIG_FILE } = require('../core/constants') as typeof import('../core/constants')
 const { getChannelKey, getConversationKey, saveSharedChannelTurn } = require('../conversation') as typeof import('../conversation')
-const { splitReplyForQQBubbles, sleep, getRandomDelayMs, sanitizeUserName } = require('../core/utils') as typeof import('../core/utils')
+const { splitReplyForQQBubbles, getRandomDelayMs, sanitizeUserName } = require('../core/utils') as typeof import('../core/utils')
 const { logDebug } = require('../core/logging-config') as typeof import('../core/logging-config')
 
 const STICKER_GLOBAL_COOLDOWN_MS = 30000
@@ -261,17 +262,18 @@ async function sendStickerImage(ctx: ReplyContext, session: ReplySessionLike, st
       if (isDirect) {
         const sendPrivateMsg = bot.internal.sendPrivateMsg
         if (typeof sendPrivateMsg !== 'function') throw new Error('missing sendPrivateMsg for private sticker send')
-        result = await sendPrivateMsg.bind(bot.internal)(userId, segArr)
+        result = await sendWithChatTurn(() => sendPrivateMsg.call(bot.internal, userId, segArr))
       } else {
         if (!session.guildId) throw new Error('missing guildId for group sticker send')
         const sendGroupMsg = bot.internal.sendGroupMsg
         if (typeof sendGroupMsg !== 'function') throw new Error('missing sendGroupMsg for group sticker send')
-        result = await sendGroupMsg.bind(bot.internal)(session.guildId, segArr)
+        result = await sendWithChatTurn(() => sendGroupMsg.call(bot.internal, session.guildId!, segArr))
       }
       const messageId = result && (result.message_id || result.messageId || result.id || result.data?.message_id)
       logger.info(`sticker sent via internal API${file ? `: ${file}` : ''}`)
       return { ok: true, messageId: messageId || '' }
     } catch (error) {
+      assertChatTurnActive()
       internalError = error
       logger.warn(`sticker internal send failed${file ? ` (${file})` : ''}: ${getReplyErrorMessage(error)}`)
     }
@@ -280,7 +282,7 @@ async function sendStickerImage(ctx: ReplyContext, session: ReplySessionLike, st
   }
 
   try {
-    const result = await session.send(h.image(image))
+    const result = await sendWithChatTurn(() => session.send(h.image(image)))
     const messageId = result && (result.messageId || result.message_id || result.id)
     logger.info(`sticker sent via Koishi image fallback${file ? `: ${file}` : ''}`)
     return { ok: true, messageId: messageId || '' }
@@ -327,6 +329,7 @@ function resolveNow(options: SendReplyOptions): () => number {
 }
 
 async function sendReply(ctx: ReplyContext, session: ReplySessionLike, reply: string, isRandom: boolean = false, options: SendReplyOptions = {}): Promise<number> {
+  assertChatTurnActive()
   const nowMs = resolveNow(options)
   // 全局发送节流：检查该频道是否超过每分钟上限
   try {
@@ -406,7 +409,8 @@ async function sendReply(ctx: ReplyContext, session: ReplySessionLike, reply: st
       //     .replace(new RegExp(esc, 'g'), '你')
       // }
     try {
-      const sentResult = await session.send(i === 0 ? quotePrefix + part : part)
+      const sentResult = await sendWithChatTurn(() => session.send(i === 0 ? quotePrefix + part : part))
+      assertChatTurnActive()
       const sentMessageId = sentResult && (sentResult.messageId || sentResult.message_id || sentResult.id)
       saveSharedChannelTurn(session, getAssistantSpeakerName(options), part, 'assistant', { messageId: sentMessageId || '', personaName: options.personaName || '' })
     } catch (sendError) {
@@ -417,7 +421,7 @@ async function sendReply(ctx: ReplyContext, session: ReplySessionLike, reply: st
     }
     sentParts++
     if (i < parts.length - 1) {
-      await sleep(getRandomDelayMs())
+      await delayWithSignal(getRandomDelayMs(), currentChatTurn()?.signal)
     }
   }
   // 发送收集到的表情包图片；fallback 只在 sticker 图片这里触发，不接管普通文本。
@@ -425,6 +429,7 @@ async function sendReply(ctx: ReplyContext, session: ReplySessionLike, reply: st
   const stickerBatchStart = nowMs()
   const lastStickerAtBeforeBatch = lastStickerSentAt.get(stickerChannelKey) || 0
   for (const sticker of pendingStickers) {
+    assertChatTurnActive()
     const now = nowMs()
     if (stickerBatchStart - lastStickerAtBeforeBatch < STICKER_GLOBAL_COOLDOWN_MS) {
       logDebug(ctx, 'reply', `sticker global cooldown ${Math.ceil((STICKER_GLOBAL_COOLDOWN_MS - (stickerBatchStart - lastStickerAtBeforeBatch)) / 1000)}s skip=${sticker.file}`)

@@ -15,6 +15,7 @@ interface ApiConfig {
     searchEnabled?: boolean;
 }
 interface RequestExtraBody {
+    _timeBudget?: import('./model-request-context').ModelTimeBudget;
     _purpose?: 'chat' | 'topic_switch' | 'identity_judge' | 'retaliation_score';
     _imageRequest?: {
         source: 'explicit-image' | 'random-image' | 'history-tool';
@@ -174,7 +175,7 @@ declare function getFallbackSteps(): Record<string, FallbackStep[]>;
 declare function callGetImage(fileName: string, signal?: AbortSignal): Promise<Record<string, unknown> | null>;
 declare function callGetFile(fileId: string, signal?: AbortSignal): Promise<Record<string, unknown> | null>;
 declare function callGetRecord(fileName: string): Promise<Record<string, unknown> | null>;
-declare function callGetForwardMsg(forwardId: string): Promise<unknown[] | unknown | null>;
+declare function callGetForwardMsg(forwardId: string, signal?: AbortSignal, timeoutMs?: number): Promise<unknown[] | unknown | null>;
 declare function sendForwardMsg(groupId: string | number, nodes: unknown[], timeoutMs?: number): Promise<Record<string, unknown> | null>;
 declare function getGroupMemberInfo(groupId: string | number, userId: string | number, timeoutMs?: number): Promise<Record<string, unknown> | null>;
 declare function getGroupInfo(groupId: string | number, timeoutMs?: number): Promise<Record<string, unknown> | null>;

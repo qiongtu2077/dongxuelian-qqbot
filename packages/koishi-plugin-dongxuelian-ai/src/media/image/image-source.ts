@@ -12,13 +12,15 @@ const { callGetImage, callGetFile, readImageAsBase64, downloadImageAsBase64 } = 
 const { getImageEntry, getImagesForSource, readCachedImage, cacheImageFile } = require('./image-store') as typeof import('./image-store')
 const { validateImageContent } = require('../../core/image-content') as typeof import('../../core/image-content')
 const { fileURLToPath } = require('url') as typeof import('url')
+import { delayWithSignal, waitWithSignal } from '../../lifecycle/chat-turn-budget'
 
 const SOURCE_LOCK_DIR = path.join(DATA_DIR, 'image-source-locks')
 const MAX_ACTIVE_READS = 64
 const SOURCE_WAIT_MS = 20000
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 interface ImageReadResult { dataUrl: string | null; reason: string; bytes?: number; mime?: string; width?: number; height?: number; animated?: boolean }
-const inFlight = new Map<string, Promise<ImageReadResult>>()
+interface SourceOwner { controller: AbortController; users: number; work: Promise<ImageReadResult> }
+const inFlight = new Map<string, SourceOwner>()
 
 // --- 图片身份与下载所有权 --- //
 
@@ -74,7 +76,7 @@ async function loadImageSource(channelKey: string, messageId: string, key: strin
           console.warn(`[image-source] source_wait_timeout target=${key}`)
           return null
         }
-        await new Promise(resolve => setTimeout(resolve, 100))
+        await delayWithSignal(100, signal)
       }
     }
 
@@ -129,31 +131,54 @@ async function loadImageSource(channelKey: string, messageId: string, key: strin
 
 // 合并当前进程的同目标读取，容量满时直接退让，不新增内存下载队列。
 async function readImageSourceResult(channelKey: string, messageId: string, signal?: AbortSignal): Promise<ImageReadResult> {
+  signal?.throwIfAborted()
   if (!channelKey || !messageId) return Promise.resolve({ dataUrl: null, reason: 'source_unavailable' })
   const entry = await getImageEntry(channelKey, messageId)
   if (!entry) return { dataUrl: null, reason: 'source_unavailable' }
   messageId = entry.imageId || messageId
   const key = getSourceKey(channelKey, entry.file ? JSON.stringify([entry.sourceKind || 'image', entry.file]) : messageId)
-  const active = inFlight.get(key)
-  if (active) return active
-  if (inFlight.size >= MAX_ACTIVE_READS) {
+  let active = inFlight.get(key)
+  if (!active && inFlight.size >= MAX_ACTIVE_READS) {
     console.warn(`[image-source] source_capacity_full target=${key}`)
     return Promise.resolve({ dataUrl: null, reason: 'source_capacity_full' })
   }
-  const work = loadImageSource(channelKey, messageId, key, signal).then(async dataUrl => {
-    if (!dataUrl) return { dataUrl: null, reason: 'source_unavailable' }
-    // 旧缓存同样完整验证，不能绕过大小和内容校验。
-    const actual = await validateImageContent(dataUrl)
-    return { dataUrl: dataUrl.replace(/^data:[^;]+;/, `data:${actual.mime};`), reason: '', ...actual }
-  }).catch(error => {
-    console.warn(`[image-source] source_failed target=${key} detail=${error instanceof Error ? error.message : String(error)}`)
-    const code = error instanceof Error ? error.message : ''
-    return { dataUrl: null, reason: ['image_too_large', 'image_empty', 'image_invalid', 'image_unsupported_format'].includes(code) ? code : 'image_invalid_or_unavailable' }
-  }).finally(() => {
-    if (inFlight.get(key) === work) inFlight.delete(key)
-  })
-  inFlight.set(key, work)
-  return work
+  if (!active) {
+    const controller = new AbortController()
+    const owner: SourceOwner = { controller, users: 0, work: Promise.resolve({ dataUrl: null, reason: 'source_unavailable' }) }
+    owner.work = loadImageSource(channelKey, messageId, key, controller.signal).then(async dataUrl => {
+      if (!dataUrl) return { dataUrl: null, reason: 'source_unavailable' }
+      // 旧缓存同样完整验证，不能绕过大小和内容校验。
+      const actual = await validateImageContent(dataUrl)
+      return { dataUrl: dataUrl.replace(/^data:[^;]+;/, `data:${actual.mime};`), reason: '', ...actual }
+    }).catch(error => {
+      console.warn(`[image-source] source_failed target=${key} detail=${error instanceof Error ? error.message : String(error)}`)
+      const code = error instanceof Error ? error.message : ''
+      return { dataUrl: null, reason: ['image_too_large', 'image_empty', 'image_invalid', 'image_unsupported_format'].includes(code) ? code : 'image_invalid_or_unavailable' }
+    }).finally(() => {
+      if (inFlight.get(key) === owner) inFlight.delete(key)
+    })
+    inFlight.set(key, owner)
+    active = owner
+  }
+  const owner = active
+  owner.users++
+  let released = false
+  // 每个合法使用者独立撤销；最后一位退出才取消底层下载。
+  const releaseSourceUser = (): void => {
+    if (released) return
+    released = true
+    owner.users--
+    if (!owner.users) owner.controller.abort(new Error('image_source_no_owners'))
+  }
+  signal?.addEventListener('abort', releaseSourceUser, { once: true })
+  try {
+    return await (signal ? waitWithSignal(owner.work, signal) : owner.work)
+  } catch (error) {
+    releaseSourceUser()
+    // 无其他使用者承接时必须等待真实网络/锁清理，不能提前释放频道。
+    if (!owner.users) await owner.work
+    throw error
+  } finally { signal?.removeEventListener('abort', releaseSourceUser); releaseSourceUser() }
 }
 
 // 既有单图入口保持返回契约，共用逐目标读取和校验结果。

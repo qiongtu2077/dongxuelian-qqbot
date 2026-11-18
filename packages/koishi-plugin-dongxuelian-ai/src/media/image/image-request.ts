@@ -11,9 +11,10 @@ const { DATA_DIR } = require('../../core/constants') as typeof import('../../cor
 const { readJsonFile, writeJsonAtomic, isProcessAlive } = require('../../resource-common/files') as typeof import('../../resource-common/files')
 const { getImageEntry, getImageEntryCached, finishImageAnalysisStatus } = require('./image-store') as typeof import('./image-store')
 const { recordImageRequestEvent } = require('../../core/request-diagnostics') as typeof import('../../core/request-diagnostics')
+import { delayWithSignal } from '../../lifecycle/chat-turn-budget'
 
 type ImageSource = 'explicit-image' | 'random-image' | 'history-tool'
-interface ImageRequestOptions { source: ImageSource; question?: string; force?: boolean; waitMs?: number; targetIds?: string[]; sourceIdentity?: string }
+interface ImageRequestOptions { source: ImageSource; question?: string; force?: boolean; waitMs?: number; targetIds?: string[]; sourceIdentity?: string; signal?: AbortSignal }
 interface ImageDiagnostic { source: ImageSource; target: string; demandId: string }
 interface ImageOwner { token: string; pid: number; channelKey: string; messageId: string; createdAt: number }
 interface ImageResults {
@@ -66,6 +67,7 @@ function hasActiveImageRequest(channelKey: string, messageId: string): boolean {
 
 // 领取目标图片的识别权；等待有界，只有持有者能发起新模型请求。
 async function acquireImageRequest(channelKey: string, messageId: string, options: ImageRequestOptions): Promise<ImageRequestResult> {
+  options.signal?.throwIfAborted()
   if (!channelKey || !messageId || !['explicit-image', 'random-image', 'history-tool'].includes(options.source)) return { status: 'unavailable' }
   if (!options.targetIds) {
     const resolved = await getImageEntry(channelKey, messageId)
@@ -84,6 +86,7 @@ async function acquireImageRequest(channelKey: string, messageId: string, option
   await fs.mkdir(dir, { recursive: true })
   const deadline = Date.now() + Math.max(0, Math.min(30000, options.waitMs ?? 20000))
   while (true) {
+    options.signal?.throwIfAborted()
     const entry = await getImageEntry(channelKey, messageId)
     if (!entry) {
       recordImageRequestEvent({ ...diagnostic, event: 'unavailable' })
@@ -107,12 +110,12 @@ async function acquireImageRequest(channelKey: string, messageId: string, option
         recordImageRequestEvent({ ...diagnostic, event: 'pending' })
         return { status: 'pending' }
       }
-      await new Promise(resolve => setTimeout(resolve, 100))
+      await delayWithSignal(Math.min(100, Math.max(0, deadline - Date.now())), options.signal)
       continue
     } finally { await fs.unlink(candidate).catch(() => {}) }
     // 竞争者可能在最后一次缓存检查后完成；持锁后再次检查，避免顺序重复消费。
     let fresh: Awaited<ReturnType<typeof getImageEntry>>
-    try { fresh = await getImageEntry(channelKey, messageId) } catch (error) {
+    try { options.signal?.throwIfAborted(); fresh = await getImageEntry(channelKey, messageId); options.signal?.throwIfAborted() } catch (error) {
       // 所有权尚未交给调用方，复检失败必须由领取端释放，不能留下活进程锁。
       await releaseImageOwner(lockFile, token)
       recordImageRequestEvent({ ...diagnostic, event: 'failed' })

@@ -5,9 +5,12 @@
  */
 const { getFileEntry, getRecentFiles } = require('../../media/file/file-store');
 const { queueFileAnalysisRequest, formatFileQueuedReply } = require('../../media/backpressure/media-requests');
+const chat_turn_budget_1 = require("../../lifecycle/chat-turn-budget");
 // 将未缓存的文件分析请求交给 S6/media-worker，不在 Agent 当前进程下载或解析。
-function queueAnalyzeFile(channelKey, messageId, entry, userId = '') {
-    const { admission } = queueFileAnalysisRequest({
+function queueAnalyzeFile(channelKey, messageId, entry, userId = '', signal) {
+    (0, chat_turn_budget_1.assertChatTurnActive)();
+    signal?.throwIfAborted();
+    const { admission } = (0, chat_turn_budget_1.outsideChatTurn)(() => queueFileAnalysisRequest({
         channelKey,
         messageId,
         url: String(entry?.url || ''),
@@ -17,7 +20,7 @@ function queueAnalyzeFile(channelKey, messageId, entry, userId = '') {
         ext: String(entry?.ext || ''),
         userId: userId || String(entry?.userId || ''),
         source: 'agent-tool-analyze-file',
-    });
+    }));
     return formatFileQueuedReply(admission);
 }
 module.exports = {
@@ -44,7 +47,7 @@ module.exports = {
                 return `这个文件被跳过了：${entry.skipReason || '不支持的类型'}（${entry.fileName}）`;
             if (entry.analyzed && entry.analysis)
                 return entry.analysis;
-            return queueAnalyzeFile(channelKey, messageId, entry, context.userId || '');
+            return queueAnalyzeFile(channelKey, messageId, entry, context.userId || '', context.signal);
         }
         if (channelKey) {
             const recent = await getRecentFiles(channelKey, 15);
@@ -61,7 +64,7 @@ module.exports = {
                 const only = matched[0];
                 if (only.analyzed && only.analysis)
                     return only.analysis;
-                return queueAnalyzeFile(channelKey, only.messageId, only, context.userId || '');
+                return queueAnalyzeFile(channelKey, only.messageId, only, context.userId || '', context.signal);
             }
             const list = matched.map(f => {
                 const time = new Date(f.ts).toLocaleString('zh-CN', { hour12: false });

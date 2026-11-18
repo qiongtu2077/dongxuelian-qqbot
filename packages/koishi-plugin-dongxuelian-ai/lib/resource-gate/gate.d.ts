@@ -29,6 +29,7 @@ interface ResourceGateLockMeta {
     ticketId: string;
 }
 interface AcquireGateOptions extends ResourceGateTicketInput {
+    signal?: AbortSignal;
     staleMs?: number;
     waitTimeoutMs?: number;
     pollMs?: number;

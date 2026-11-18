@@ -7,6 +7,7 @@
  * 边界: 不调 AI API。读操作返回数据，写操作落盘。
  */
 const path = require('path');
+const chat_turn_budget_1 = require("./lifecycle/chat-turn-budget");
 const fsp = require('fs/promises');
 const { CONVERSATIONS_DIR, MEMORY_HISTORY_LIMIT, MAX_HISTORY_MESSAGES, CONVERSATION_EXPIRE_MS, CONVERSATION_SUMMARY_INTERVAL, MAX_REPEAT_CHECK_HISTORY, MAX_CHANNEL_SHARED_MESSAGES, MAX_REPLY_FINGERPRINT_HISTORY, MAX_CHANNEL_PROMPT_MESSAGES, MAX_THREAD_CONTEXT_MESSAGES, MAX_REPLY_CHAIN_DEPTH, SENSITIVE_CACHE_PREFIX, USER_PROFILE_DIR, TODAY_CACHE_PREFIX, SUMMARY_WHITELIST_FILE, DATA_DIR, } = require('./core/constants');
 const { readJsonFile, writeJsonFile, sanitizeUserName, safeChannelKey, todayCst, todayCstMinusDays, formatShanghaiTime24h, normalizeText, normalizeMessageText } = require('./core/utils');
@@ -342,8 +343,11 @@ function mergeConversationMessages(diskMessages = [], cachedMessages = []) {
 }
 // 保存本轮对话正文及原有分行，更新历史缓存和回复指纹。
 function saveConversationTurn(session, userText, replyText) {
+    const turn = (0, chat_turn_budget_1.currentChatTurn)();
+    turn?.assertActive();
     const key = getConversationKey(session);
     return enqueueWrite(key, () => {
+        turn?.assertActive();
         const diskData = readConversationDisk(key) || { summary: '', summaryTotal: 0, totalCount: 0, messages: [] };
         diskData.messages = mergeConversationMessages(diskData.messages, conversationCache.get(key));
         diskData.totalCount = Math.max(Number(diskData.totalCount || 0), diskData.messages.filter(item => item && item.role === 'user').length);

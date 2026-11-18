@@ -5,6 +5,7 @@
  * 状态: sendFailState 为进程内风控状态，重启后重建。
  */
 const { sendReply } = require('./reply') as typeof import('./reply')
+import { assertChatTurnActive, sendWithChatTurn } from '../lifecycle/chat-turn-budget'
 const { readRareVoiceAudioBuffer } = require('../behavior/rare-voice') as typeof import('../behavior/rare-voice')
 const { logRareVoiceEvent } = require('../diagnostics/rare-voice-diagnostics') as typeof import('../diagnostics/rare-voice-diagnostics')
 const {
@@ -328,6 +329,7 @@ async function safeSendRepeat(ctx: SafeSendContext, session: SafeSendSessionLike
 }
 
 async function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike, reply: string, isRandom: boolean = false, resolveBot: ResolveBot = null, sendOptions: SendOptions = {}, freshnessChecker: FreshnessChecker = null): Promise<void> {
+  assertChatTurnActive()
   if (typeof freshnessChecker === 'function' && !freshnessChecker(isRandom, sendOptions)) {
     logStaleRandomSkip(ctx, isRandom ? 'text' : 'stale-text', sendOptions)
     return
@@ -337,7 +339,7 @@ async function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike,
   if (isSafeSendRestricted(ctx, session, 'safeSendReply', now, allowRestrictedFallback)) return
   if (now < sendFailState.restrictedUntil && (allowRestrictedFallback || isDirectAtBot(asSafeSendBasicSession(session))) && !hasAdminPermission(asSafeSendBasicSession(session))) {
     try {
-      await session.send('我被盯上了，有内鬼终止交易')
+      await sendWithChatTurn(() => session.send('我被盯上了，有内鬼终止交易'))
       return
     } catch (error) {
       ctx.logger('dongxuelian-ai').error(`safeSendReply: restricted notice failed: ${getSafeSendErrorMessage(error)}`)
@@ -358,6 +360,7 @@ async function safeSendReply(ctx: SafeSendContext, session: SafeSendSessionLike,
 
   let currentReply = reply
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    assertChatTurnActive()
     try {
       const sentCount = await sendReply(ctx, asReplySession(session) as Parameters<typeof sendReply>[1], currentReply, isRandom, sendOptions)
       if (sentCount > 0) {
@@ -398,6 +401,7 @@ function getSafeSendChannelKey(session: SafeSendSessionLike): string {
 
 /** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
 async function safeSendRareVoice(ctx: SafeSendContext, session: SafeSendSessionLike, options: SafeSendRareVoiceOptions = {}): Promise<boolean> {
+  assertChatTurnActive()
   const startedAt = Date.now()
   logRareVoiceEvent(ctx, session, { stage: 'send_start', reason: 'selected' })
   try {
@@ -425,6 +429,7 @@ async function safeSendRareVoice(ctx: SafeSendContext, session: SafeSendSessionL
       return false
     }
     const audioBuf = gated.value
+    assertChatTurnActive()
     if (!audioBuf) {
       logRareVoiceEvent(ctx, session, { stage: 'send_result', reason: 'audio_unavailable', sent: false, elapsedMs: Date.now() - startedAt })
       try { ctx.logger('dongxuelian-ai').warn('safeSendRareVoice skipped: rare voice audio unavailable') } catch { /* non-critical: logging only */ }

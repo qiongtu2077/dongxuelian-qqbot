@@ -4,6 +4,7 @@
  * 边界: 不调 AI API，不改 conversation 持久层。检测结果通过 notifySensitiveHandlers 分发。
  */
 const path = require('path')
+import { currentChatTurn, sendWithChatTurn } from '../lifecycle/chat-turn-budget'
 const {
   POLITICAL_DETECT_FILE,
   POLITICAL_HANDLER_DIR,
@@ -120,6 +121,7 @@ function trimSensitiveRuntimeMaps(now: number = Date.now()): void {
   pruneRuntimeMap(pendingSensitiveAlert, entry => entry && typeof entry === 'object' ? entry.ts : 0, now)
 }
 
+// 通知已配置处理人；聊天触发的发送须保留当前轮次资格与真实退出所有权。
 async function notifySensitiveHandlers(session: SensitiveSession, channelKey: string, options: { throttle?: boolean; message?: string } = {}): Promise<boolean> {
   const key = String(channelKey)
   trimSensitiveRuntimeMaps()
@@ -133,7 +135,8 @@ async function notifySensitiveHandlers(session: SensitiveSession, channelKey: st
 
   const atAll = handlers.map(id => `<at id="${id}"/>`).join(' ')
   const message = options.message || `管理员快来，群里有傻福在剑阵。${atAll}`
-  session.send(message).catch((error) => warnSensitiveBackgroundFailure('handler notification', error))
+  const sending = sendWithChatTurn(() => session.send(message)).catch((error) => warnSensitiveBackgroundFailure('handler notification', error))
+  currentChatTurn()?.own(sending)
   if (throttle) lastSensitiveAlert.set(key, Date.now())
   return true
 }

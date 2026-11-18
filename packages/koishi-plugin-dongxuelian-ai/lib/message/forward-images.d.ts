@@ -6,7 +6,7 @@ interface ForwardImageMessage {
         data: Record<string, unknown>;
     }>;
 }
-declare function createForwardImageReader(getter: ForwardGetter): {
+declare function createForwardImageReader(getter: ForwardGetter, checkActive?: () => void): {
     getForwardMsg: (id: string) => Promise<unknown>;
     collectImages: (rootId: string) => Promise<ForwardImageMessage[]>;
 };

@@ -4,6 +4,7 @@
  */
 const { getFileEntry, getRecentFiles } = require('../../media/file/file-store') as typeof import('../../media/file/file-store')
 const { queueFileAnalysisRequest, formatFileQueuedReply } = require('../../media/backpressure/media-requests') as typeof import('../../media/backpressure/media-requests')
+import { assertChatTurnActive, outsideChatTurn } from '../../lifecycle/chat-turn-budget'
 
 interface AnalyzeFileParams {
   messageId?: unknown
@@ -11,6 +12,7 @@ interface AnalyzeFileParams {
 }
 
 interface AnalyzeFileContext {
+  signal?: AbortSignal
   channelKey?: string
   activeFileMessageId?: unknown
   userId?: string
@@ -28,8 +30,10 @@ interface FileEntryLike {
 }
 
 // 将未缓存的文件分析请求交给 S6/media-worker，不在 Agent 当前进程下载或解析。
-function queueAnalyzeFile(channelKey: string, messageId: string, entry: FileEntryLike, userId = ''): string {
-  const { admission } = queueFileAnalysisRequest({
+function queueAnalyzeFile(channelKey: string, messageId: string, entry: FileEntryLike, userId = '', signal?: AbortSignal): string {
+  assertChatTurnActive()
+  signal?.throwIfAborted()
+  const { admission } = outsideChatTurn(() => queueFileAnalysisRequest({
     channelKey,
     messageId,
     url: String(entry?.url || ''),
@@ -39,7 +43,7 @@ function queueAnalyzeFile(channelKey: string, messageId: string, entry: FileEntr
     ext: String(entry?.ext || ''),
     userId: userId || String(entry?.userId || ''),
     source: 'agent-tool-analyze-file',
-  })
+  }))
   return formatFileQueuedReply(admission)
 }
 
@@ -66,7 +70,7 @@ export = {
       if (entry.skipped) return `这个文件被跳过了：${entry.skipReason || '不支持的类型'}（${entry.fileName}）`
       if (entry.analyzed && entry.analysis) return entry.analysis
 
-      return queueAnalyzeFile(channelKey, messageId, entry, context.userId || '')
+      return queueAnalyzeFile(channelKey, messageId, entry, context.userId || '', context.signal)
     }
 
     if (channelKey) {
@@ -83,7 +87,7 @@ export = {
       if (matched.length === 1 && !matched[0].skipped) {
         const only = matched[0]
         if (only.analyzed && only.analysis) return only.analysis
-        return queueAnalyzeFile(channelKey, only.messageId, only, context.userId || '')
+        return queueAnalyzeFile(channelKey, only.messageId, only, context.userId || '', context.signal)
       }
 
       const list = matched.map(f => {

@@ -4,6 +4,7 @@
  * 边界: 不保存长期业务队列，长期任务状态归 S2。
  */
 const fs = require('fs') as typeof import('fs')
+import { setTimeout as waitForGatePoll } from 'node:timers/promises'
 const path = require('path') as typeof import('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { isProcessAlive, nowIso, sanitizeId } = require('../resource-common/files') as typeof import('../resource-common/files')
@@ -66,6 +67,7 @@ interface ResourceGateLockMeta {
 }
 
 interface AcquireGateOptions extends ResourceGateTicketInput {
+  signal?: AbortSignal
   staleMs?: number
   waitTimeoutMs?: number
   pollMs?: number
@@ -608,6 +610,7 @@ function updateLockMeta(ticketId: string, step?: string, memAvailableMb?: number
 
 // 尝试获取 S0 独占运行槽，普通竞争超时与存储故障使用不同错误类型。
 async function acquireResourceGate(input: AcquireGateOptions): Promise<ResourceGateHandle> {
+  input.signal?.throwIfAborted()
   const ticket = createTicket(input)
   const waitTimeoutMs = Number.isFinite(Number(input.waitTimeoutMs)) ? Number(input.waitTimeoutMs) : DEFAULT_WAIT_TIMEOUT_MS
   const pollMs = Math.max(200, Math.min(5000, Number(input.pollMs || DEFAULT_POLL_MS)))
@@ -621,6 +624,7 @@ async function acquireResourceGate(input: AcquireGateOptions): Promise<ResourceG
     reclaimDeadTickets(`ticket:${ticket.ticketId}`)
     // 零等待仍尝试一次即时领取；文件核验耗时不能令空闲锁永远没有领取机会。
     while ((waitTimeoutMs === 0 && firstAttempt) || Date.now() <= deadline) {
+      input.signal?.throwIfAborted()
       firstAttempt = false
       reclaimStaleLock(staleMs, `ticket:${ticket.ticketId}`)
       if (isTicketHead(ticket.ticketId)) {
@@ -649,7 +653,7 @@ async function acquireResourceGate(input: AcquireGateOptions): Promise<ResourceG
         }
       }
       if (waitTimeoutMs === 0) break
-      await new Promise(resolve => setTimeout(resolve, pollMs))
+      await waitForGatePoll(pollMs, undefined, { signal: input.signal })
     }
     throw new ResourceGateBusyTimeoutError(ticket.ticketId, waitTimeoutMs)
   } catch (error) {

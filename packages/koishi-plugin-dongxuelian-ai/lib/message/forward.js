@@ -9,6 +9,7 @@ const { summarizeForwardNodes } = require('./message-reader');
 const { getChannelKey, setLastForwardSummaryCache } = require('../conversation');
 const { logDebug } = require('../core/logging-config');
 const { createForwardImageReader } = require('./forward-images');
+const chat_turn_budget_1 = require("../lifecycle/chat-turn-budget");
 const FORWARD_ID_RE = /(?:\[CQ:forward,id=([^,\]]+)\])|<forward\s+id="([^"]+)"\/>/;
 const BLANK_NICK_CHARS_RE = /[\s\u200b-\u200f\u2028-\u202f\ufeff\u3164\uffa0\u115f\u1160-\u11ff]+/g;
 const DEFAULT_FORWARD_NICKNAME = '群友';
@@ -153,26 +154,53 @@ async function normalizeForwardNode(node, getForwardMsg, ctx, depth) {
 // 展开当前消息或其引用中的转发正文，供两个 OneBot 协议共用。
 async function resolveForwardSummary(session, content, ctx, options = {}) {
     delete session._forwardImageMessages;
-    const reader = createForwardImageReader(options.callGetForwardMsg || callGetForwardMsg);
-    const getForwardMsg = reader.getForwardMsg;
     // 适配器把 reply 移到 session.quote；当前消息没有转发时才读取该引用。
     const forwardId = extractForwardId(content) || extractForwardId(session.quote?.content);
     if (!forwardId)
         return '';
-    const forwardData = await getForwardMsg(forwardId);
-    logDebug(ctx, 'forward', 'fetch result=' + (forwardData ? 'ok' : 'null') + ' len=' + getForwardLength(forwardData));
-    const forwardMessages = normalizeForwardMessages(forwardData);
-    if (!forwardMessages || forwardMessages.length === 0)
+    const turn = options.turn || new chat_turn_budget_1.ChatTurnBudget({ channelKey: getChannelKey(session), messageId: session.messageId });
+    const stage = turn.openStage('forward', chat_turn_budget_1.CHAT_TURN_LIMITS.forward);
+    const getter = options.callGetForwardMsg || callGetForwardMsg;
+    const checkForwardStageActive = () => {
+        turn.assertActive();
+        if (stage.signal.aborted || Date.now() >= stage.deadline)
+            throw new Error('forward_deadline');
+    };
+    const reader = createForwardImageReader(async (id) => {
+        checkForwardStageActive();
+        const result = await getter(id, stage.signal, Math.max(0, stage.deadline - Date.now()));
+        checkForwardStageActive();
+        return result;
+    }, checkForwardStageActive);
+    const getForwardMsg = reader.getForwardMsg;
+    try {
+        const forwardData = await getForwardMsg(forwardId);
+        logDebug(ctx, 'forward', 'fetch result=' + (forwardData ? 'ok' : 'null') + ' len=' + getForwardLength(forwardData));
+        const forwardMessages = normalizeForwardMessages(forwardData);
+        if (!forwardMessages || forwardMessages.length === 0) {
+            turn.forwardUnavailable = true;
+            return '';
+        }
+        session._forwardImageMessages = await reader.collectImages(forwardId);
+        const nodes = await normalizeForwardNodes(forwardMessages, getForwardMsg, ctx);
+        if (nodes.length === 0)
+            return '';
+        const forwardSummaryText = summarizeNodes(nodes) + (session._forwardImageMessages.length >= 10 ? '\n[消息记录图片最多读取前10张，其余图片未读取，不得猜测。]' : '');
+        logDebug(ctx, 'forward', 'summary len=' + (forwardSummaryText ? forwardSummaryText.length : 0));
+        if (forwardSummaryText)
+            setLastForwardSummaryCache(getChannelKey(session), forwardSummaryText);
+        return forwardSummaryText;
+    }
+    catch (error) {
+        if (turn.signal.aborted)
+            throw error;
+        turn.event('forward_failed', { expired: stage.signal.aborted });
+        turn.forwardUnavailable = true;
         return '';
-    session._forwardImageMessages = await reader.collectImages(forwardId);
-    const nodes = await normalizeForwardNodes(forwardMessages, getForwardMsg, ctx);
-    if (nodes.length === 0)
-        return '';
-    const forwardSummaryText = summarizeNodes(nodes) + (session._forwardImageMessages.length >= 10 ? '\n[消息记录图片最多读取前10张，其余图片未读取，不得猜测。]' : '');
-    logDebug(ctx, 'forward', 'summary len=' + (forwardSummaryText ? forwardSummaryText.length : 0));
-    if (forwardSummaryText)
-        setLastForwardSummaryCache(getChannelKey(session), forwardSummaryText);
-    return forwardSummaryText;
+    }
+    finally {
+        stage.close();
+    }
 }
 module.exports = {
     resolveForwardSummary,

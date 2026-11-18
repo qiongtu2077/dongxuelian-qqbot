@@ -1,4 +1,5 @@
 import imageManifest = require('./image-manifest');
+import { ChatTurnBudget } from '../../lifecycle/chat-turn-budget';
 type Target = ReturnType<typeof imageManifest.collectImageManifest>[number];
 type ReadState = 'ready' | 'read' | 'reused' | 'too_large' | 'failed' | 'unsupported' | 'cancelled';
 interface TargetResult {
@@ -27,6 +28,7 @@ declare function collectExplicitImageTargets(session: Parameters<typeof imageMan
 declare function readExplicitImageEvidence(targets: Target[], question: string, options?: {
     canContinue?: () => boolean;
     signal?: AbortSignal;
+    turn?: ChatTurnBudget;
 }): Promise<{
     evidence: string;
     notice: string;

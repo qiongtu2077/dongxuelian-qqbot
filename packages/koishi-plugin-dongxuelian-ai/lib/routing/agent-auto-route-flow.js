@@ -7,6 +7,7 @@
  */
 const { heuristicRoute, buildExplicitSearchRunOptions } = require('../agent/router');
 const { getAgentConfig } = require('../agent/config');
+const chat_turn_budget_1 = require("../lifecycle/chat-turn-budget");
 const { hasAdminPermission, isJailbreakAttempt, sanitizeUserInput } = require('../core/utils');
 const { logDebug } = require('../core/logging-config');
 const { submitAgentWorkerTask } = require('../agent/worker-submission');
@@ -35,7 +36,8 @@ async function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserI
             isAdmin: hasAdminPermission(liveSession),
             ...searchRunOptions,
         };
-        const submission = submitAgentWorkerTask({
+        (0, chat_turn_budget_1.assertChatTurnActive)();
+        const submission = (0, chat_turn_budget_1.outsideChatTurn)(() => submitAgentWorkerTask({
             channel: 'qq',
             channelKey,
             userId: currentUserId,
@@ -44,7 +46,7 @@ async function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserI
             acceptedMessageMode: 'silent',
             blockedMessageMode: 'natural',
             payload: { entry: 'qq-auto-route', reason: route.reason || '', agentWorker: createAgentRunWorkerPayload('qq-auto-route', agentRunInput) },
-        });
+        }));
         return { handled: true, reply: submission.message };
     }
     catch (error) {

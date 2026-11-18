@@ -7,6 +7,7 @@
 const { admitTask } = require('../../resource-scheduler/admission');
 const { acquireResourceGate } = require('../../resource-gate/gate');
 const { sanitizeId } = require('../../resource-common/files');
+const chat_turn_budget_1 = require("../../lifecycle/chat-turn-budget");
 const VOICE_TTS_TASK_KIND = 'voice_tts_generation';
 // 为一次短交互 TTS 生成可追踪 taskId，便于 S0/S1 事件定位来源。
 function buildVoiceTtsTaskId(input) {
@@ -26,6 +27,8 @@ function buildRejectedTtsResult(decision) {
 }
 // 在 S1/S0 保护下运行一次短交互 TTS；资源不可用时不等待长期排队。
 async function runVoiceTtsWithResourceGate(options) {
+    const turn = (0, chat_turn_budget_1.currentChatTurn)();
+    turn?.assertActive();
     const taskId = sanitizeId(options.taskId || buildVoiceTtsTaskId(options));
     const source = String(options.source || 'voice-tts');
     const owner = String(options.owner || source);
@@ -62,9 +65,11 @@ async function runVoiceTtsWithResourceGate(options) {
             pollMs: 500,
             memAvailableMb: admission.memAvailableMb,
             step: 'tts_prepare',
+            signal: turn?.signal,
         });
     }
     catch (error) {
+        turn?.assertActive();
         const message = error instanceof Error ? error.message : String(error || 'unknown error');
         try {
             options.logger?.warn(`voice tts gate rejected: ${message}`);
@@ -79,8 +84,10 @@ async function runVoiceTtsWithResourceGate(options) {
         };
     }
     try {
+        turn?.assertActive();
         gateHandle.updateStep('tts_synthesizing', admission.memAvailableMb);
         const value = await options.run();
+        turn?.assertActive();
         return {
             ok: true,
             value,

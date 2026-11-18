@@ -23,10 +23,11 @@ function forwardImageNodes(value) {
 }
 // --- 本轮响应与图片来源 --- //
 // 缓存本轮已拉取的正文，图片和文字解析共享响应，避免重复下载转发资源。
-function createForwardImageReader(getter) {
+function createForwardImageReader(getter, checkActive = () => { }) {
     const responses = new Map();
     // 同一资源在文字和图片遍历中只请求一次。
     function getForwardMsg(id) {
+        checkActive();
         let result = responses.get(id);
         if (!result) {
             result = getter(id);
@@ -39,9 +40,11 @@ function createForwardImageReader(getter) {
         const images = [];
         // 限制嵌套深度并检查当前祖先链，防止循环转发阻塞整轮读取。
         async function visit(nodes, resourceId, prefix, depth, ancestors) {
+            checkActive();
             if (depth > MAX_FORWARD_DEPTH || images.length >= MAX_FORWARD_IMAGES)
                 return;
             for (const [index, value] of nodes.entries()) {
+                checkActive();
                 if (images.length >= MAX_FORWARD_IMAGES)
                     break;
                 const node = forwardImageRecord(value);

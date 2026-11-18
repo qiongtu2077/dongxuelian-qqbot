@@ -78,6 +78,9 @@ async function runModuleContract(context) {
     sessionCompat: path.join(LIB, 'lifecycle', 'session-compat'),
     botResolver: path.join(LIB, 'lifecycle', 'bot-resolver'),
     channelTaskQueue: path.join(LIB, 'lifecycle', 'channel-task-queue'),
+    chatTurnBudget: path.join(LIB, 'lifecycle', 'chat-turn-budget'),
+    chatTurnExecution: path.join(LIB, 'lifecycle', 'chat-turn-execution'),
+    modelRequestContext: path.join(LIB, 'core', 'model-request-context'),
     locateSnapshot: path.join(LIB, 'lifecycle', 'locate-snapshot'),
     eventDump: path.join(LIB, 'lifecycle', 'event-dump'),
     startupSchedulers: path.join(LIB, 'lifecycle', 'startup-schedulers'),
@@ -434,6 +437,9 @@ async function runModuleContract(context) {
     channelTaskQueue: [
       'enqueueForChannel', 'clearChannelQueues',
     ],
+    chatTurnBudget: ['ChatTurnBudget', 'runWithChatTurn', 'outsideChatTurn', 'currentChatTurn', 'assertChatTurnActive', 'sendWithChatTurn', 'delayWithSignal', 'waitWithSignal', 'cancelChatTurnStages'],
+    chatTurnExecution: ['createChatTurn', 'submitChatTurn'],
+    modelRequestContext: ['runWithModelRequestContext', 'outsideModelRequestContext', 'currentModelRequestContext'],
     eventDump: [
       'getArmedEventDump', 'armEventDump', 'clearArmedEventDump', 'dumpSessionEvent',
     ],
@@ -879,6 +885,7 @@ async function runModuleContract(context) {
     }
   }
   check('rareProvocation.RARE_PROVOCATION_PROMPT exported', typeof modules.rareProvocation.RARE_PROVOCATION_PROMPT === 'string')
+  check('chat turn limits are immutable and preserve ordinary budget', Object.isFrozen(modules.chatTurnBudget.CHAT_TURN_LIMITS) && modules.chatTurnBudget.CHAT_TURN_LIMITS.normal === 60000 && modules.chatTurnBudget.CHAT_TURN_LIMITS.record === 180000)
   check('onebotEndpoint.DEFAULT_ONEBOT_WS_URL exported', typeof modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL === 'string' && modules.onebotEndpoint.DEFAULT_ONEBOT_WS_URL.startsWith('ws://127.0.0.1:'))
   check('reportRecords.REPORT_INDEX_ROOT exported', typeof modules.reportRecords.REPORT_INDEX_ROOT === 'string' && modules.reportRecords.REPORT_INDEX_ROOT.endsWith('index'))
   check('reportAnalysis fixed failure replies exported', typeof modules.reportAnalysis.REPORT_FAILURE_TEXT === 'string' && typeof modules.reportAnalysis.REPORT_TIMEOUT_TEXT === 'string')

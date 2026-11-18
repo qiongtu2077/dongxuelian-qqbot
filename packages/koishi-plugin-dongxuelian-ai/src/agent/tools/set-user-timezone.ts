@@ -21,7 +21,8 @@ const TZ_RE: RegExp = /^[A-Za-z]+(?:[ _-][A-Za-z]+)*(?:\/[A-Za-z0-9_+.-]+)+$/
 const MAX_TZ_FILE_BYTES = 128 * 1024
 const MAX_TZ_ENTRIES = 2000
 
-async function readMap(): Promise<Record<string, string>> {
+// 读取有界的用户时区偏好映射，缺失或损坏时返回空记录。
+async function readUserTimezoneMap(): Promise<Record<string, string>> {
   try {
     const stat = await fs.stat(TZ_FILE) as FileStatLike
     if (!stat.isFile() || stat.size > MAX_TZ_FILE_BYTES) return {}
@@ -53,7 +54,7 @@ export = {
     if (!TZ_RE.test(timezone)) throw new Error('时区格式无效，请使用 IANA 时区名，例如 Asia/Shanghai')
     try { new Date().toLocaleString('zh-CN', { timeZone: timezone }) } catch { throw new Error(`未知时区：${timezone}`) }
     const userId = String(params.userId || 'dashboard').trim() || 'dashboard'
-    const data = await readMap()
+    const data = await readUserTimezoneMap()
     data[userId] = timezone
     const entries = Object.entries(data).slice(-MAX_TZ_ENTRIES)
     const next = Object.fromEntries(entries)

@@ -6,6 +6,7 @@
  * 状态: 无。
  */
 const { getRecentUserMessages } = require('../conversation');
+const chat_turn_budget_1 = require("../lifecycle/chat-turn-budget");
 const { externalToolsDenied } = require('../routing/external-tool-policy');
 const { isToolEnabled: isAgentToolEnabled, getAgentConfig } = require('../agent/config');
 const { buildExplicitSearchRunOptions, buildExplicitUrlFetchRunOptions, isExecutableSearchQuery, } = require('../agent/router');
@@ -140,7 +141,8 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
                 isAdmin,
                 ...searchRunOptions,
             };
-            const submission = submitAgentWorkerTask({
+            (0, chat_turn_budget_1.assertChatTurnActive)();
+            const submission = (0, chat_turn_budget_1.outsideChatTurn)(() => submitAgentWorkerTask({
                 channel: 'qq',
                 channelKey,
                 userId: currentUserId,
@@ -150,7 +152,7 @@ async function handleChatResult(chatResult, { ctx, session, channelKey, currentU
                 blockedMessageMode: 'natural',
                 notifyTarget: 'qq-group',
                 payload: { entry: 'chat-heavy-tool', agentWorker: createAgentRunWorkerPayload('chat-heavy-tool', agentRunInput) },
-            });
+            }));
             return submission.message;
         }
         catch (error) {

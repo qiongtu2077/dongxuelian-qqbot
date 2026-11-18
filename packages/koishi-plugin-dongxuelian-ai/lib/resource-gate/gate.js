@@ -5,6 +5,7 @@
  * 边界: 不保存长期业务队列，长期任务状态归 S2。
  */
 const fs = require('fs');
+const promises_1 = require("node:timers/promises");
 const path = require('path');
 const { DATA_DIR } = require('../core/constants');
 const { isProcessAlive, nowIso, sanitizeId } = require('../resource-common/files');
@@ -545,6 +546,7 @@ function updateLockMeta(ticketId, step, memAvailableMb) {
 // --- 获取、释放与只读状态 ---
 // 尝试获取 S0 独占运行槽，普通竞争超时与存储故障使用不同错误类型。
 async function acquireResourceGate(input) {
+    input.signal?.throwIfAborted();
     const ticket = createTicket(input);
     const waitTimeoutMs = Number.isFinite(Number(input.waitTimeoutMs)) ? Number(input.waitTimeoutMs) : DEFAULT_WAIT_TIMEOUT_MS;
     const pollMs = Math.max(200, Math.min(5000, Number(input.pollMs || DEFAULT_POLL_MS)));
@@ -557,6 +559,7 @@ async function acquireResourceGate(input) {
         reclaimDeadTickets(`ticket:${ticket.ticketId}`);
         // 零等待仍尝试一次即时领取；文件核验耗时不能令空闲锁永远没有领取机会。
         while ((waitTimeoutMs === 0 && firstAttempt) || Date.now() <= deadline) {
+            input.signal?.throwIfAborted();
             firstAttempt = false;
             reclaimStaleLock(staleMs, `ticket:${ticket.ticketId}`);
             if (isTicketHead(ticket.ticketId)) {
@@ -594,7 +597,7 @@ async function acquireResourceGate(input) {
             }
             if (waitTimeoutMs === 0)
                 break;
-            await new Promise(resolve => setTimeout(resolve, pollMs));
+            await (0, promises_1.setTimeout)(pollMs, undefined, { signal: input.signal });
         }
         throw new ResourceGateBusyTimeoutError(ticket.ticketId, waitTimeoutMs);
     }

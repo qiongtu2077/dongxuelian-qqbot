@@ -5,6 +5,7 @@ interface AnalyzeImageParams {
     force?: unknown;
 }
 interface AnalyzeImageContext {
+    signal?: AbortSignal;
     channelKey?: string;
     userId?: string;
     source?: 'history-tool' | 'explicit-image' | 'random-image';

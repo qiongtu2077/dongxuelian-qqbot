@@ -23,6 +23,13 @@ interface IndexContext {
     on(event: 'bot-connect', handler: (bot: import('./lifecycle/participation-guard').GuardBot) => void): void;
 }
 interface IndexSession {
+    _forwardImageMessages?: Array<{
+        messageId: string;
+        message: Array<{
+            type: string;
+            data: Record<string, unknown>;
+        }>;
+    }>;
     [key: string]: unknown;
     content?: string;
     selfId?: string;

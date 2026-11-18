@@ -12,6 +12,9 @@ const CHECK_DIRS = [
 ]
 
 const CHECK_FILES = [
+  'packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/chat-turn-budget.js',
+  'packages/koishi-plugin-dongxuelian-ai/lib/lifecycle/chat-turn-execution.js',
+  'packages/koishi-plugin-dongxuelian-ai/lib/core/model-request-context.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/message/forward-images.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/model-thinking.js',
   'packages/koishi-plugin-dongxuelian-ai/lib/core/participation-policy.js',

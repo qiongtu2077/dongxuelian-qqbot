@@ -10,7 +10,8 @@ const TZ_FILE = path.join(DATA_DIR, 'agent-user-timezones.json');
 const TZ_RE = /^[A-Za-z]+(?:[ _-][A-Za-z]+)*(?:\/[A-Za-z0-9_+.-]+)+$/;
 const MAX_TZ_FILE_BYTES = 128 * 1024;
 const MAX_TZ_ENTRIES = 2000;
-async function readMap() {
+// 读取有界的用户时区偏好映射，缺失或损坏时返回空记录。
+async function readUserTimezoneMap() {
     try {
         const stat = await fs.stat(TZ_FILE);
         if (!stat.isFile() || stat.size > MAX_TZ_FILE_BYTES)
@@ -50,7 +51,7 @@ module.exports = {
             throw new Error(`未知时区：${timezone}`);
         }
         const userId = String(params.userId || 'dashboard').trim() || 'dashboard';
-        const data = await readMap();
+        const data = await readUserTimezoneMap();
         data[userId] = timezone;
         const entries = Object.entries(data).slice(-MAX_TZ_ENTRIES);
         const next = Object.fromEntries(entries);

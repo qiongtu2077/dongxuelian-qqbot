@@ -6,6 +6,7 @@
  * 状态: sendFailState 为进程内风控状态，重启后重建。
  */
 const { sendReply } = require('./reply');
+const chat_turn_budget_1 = require("../lifecycle/chat-turn-budget");
 const { readRareVoiceAudioBuffer } = require('../behavior/rare-voice');
 const { logRareVoiceEvent } = require('../diagnostics/rare-voice-diagnostics');
 const { classifySendError, sanitizeForRateLimit, sleepForRateLimitRetry, getCachedPlatformMuteStatus, markPlatformMute, clearPlatformMute, checkPlatformMuteStatus, } = require('./send-guard');
@@ -201,6 +202,7 @@ async function safeSendRepeat(ctx, session, candidate) {
     }
 }
 async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot = null, sendOptions = {}, freshnessChecker = null) {
+    (0, chat_turn_budget_1.assertChatTurnActive)();
     if (typeof freshnessChecker === 'function' && !freshnessChecker(isRandom, sendOptions)) {
         logStaleRandomSkip(ctx, isRandom ? 'text' : 'stale-text', sendOptions);
         return;
@@ -211,7 +213,7 @@ async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot =
         return;
     if (now < sendFailState.restrictedUntil && (allowRestrictedFallback || isDirectAtBot(asSafeSendBasicSession(session))) && !hasAdminPermission(asSafeSendBasicSession(session))) {
         try {
-            await session.send('我被盯上了，有内鬼终止交易');
+            await (0, chat_turn_budget_1.sendWithChatTurn)(() => session.send('我被盯上了，有内鬼终止交易'));
             return;
         }
         catch (error) {
@@ -232,6 +234,7 @@ async function safeSendReply(ctx, session, reply, isRandom = false, resolveBot =
     }
     let currentReply = reply;
     for (let attempt = 0; attempt < 2; attempt += 1) {
+        (0, chat_turn_budget_1.assertChatTurnActive)();
         try {
             const sentCount = await sendReply(ctx, asReplySession(session), currentReply, isRandom, sendOptions);
             if (sentCount > 0) {
@@ -273,6 +276,7 @@ function getSafeSendChannelKey(session) {
 }
 /** 尝试发送罕见固定语音；失败时返回 false 交给文字回复回退。 */
 async function safeSendRareVoice(ctx, session, options = {}) {
+    (0, chat_turn_budget_1.assertChatTurnActive)();
     const startedAt = Date.now();
     logRareVoiceEvent(ctx, session, { stage: 'send_start', reason: 'selected' });
     try {
@@ -303,6 +307,7 @@ async function safeSendRareVoice(ctx, session, options = {}) {
             return false;
         }
         const audioBuf = gated.value;
+        (0, chat_turn_budget_1.assertChatTurnActive)();
         if (!audioBuf) {
             logRareVoiceEvent(ctx, session, { stage: 'send_result', reason: 'audio_unavailable', sent: false, elapsedMs: Date.now() - startedAt });
             try {

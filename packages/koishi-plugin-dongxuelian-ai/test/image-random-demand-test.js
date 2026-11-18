@@ -146,7 +146,7 @@ async function testStaleChatToolResult() {
     const originalMockFetch = mocked.fetch
     mocked.fetch = async (...args) => { state.bumpChannelMessageVersion('10001'); return originalMockFetch(...args) }
     await withFetch(mocked, async () => {
-      await require(path.join(LIB, 'chat')).chat(session, '[图片]', harness.ctx, { randomTriggered: true, isImageReplyFresh: () => state.getChannelMessageVersion('10001') === 0, randomImageExpiresAt: Date.now() + 55000 })
+      await assert.rejects(require(path.join(LIB, 'chat')).chat(session, '[图片]', harness.ctx, { randomTriggered: true, isImageReplyFresh: () => state.getChannelMessageVersion('10001') === 0, randomImageExpiresAt: Date.now() + 55000 }), /chat_turn_revoked/)
       check('真实聊天工具流在等待期间失效后不再登记识图', queue.listPendingMediaTasks('media_image_analysis', 10).length === 0 && mocked.calls.length === 1)
     })
   })
@@ -195,7 +195,7 @@ async function testFallbackCancellation() {
         } else {
           const session = makeSession({ messageId: 'target', content: '<img src="https://example.test/image.jpg"/>', event: { message: [{ type: 'image', data: { url: 'https://example.test/image.jpg' } }] } })
           require(path.join(LIB, 'media/image/vision')).prepareVisionRequest(session, { hasVisual: true }, { allowCurrentMessage: true })
-          await assert.rejects(require(path.join(LIB, 'chat')).chat(session, '[图片]', harness.ctx, { randomTriggered: true, isImageReplyFresh: () => state.getChannelMessageVersion('10001') === 0, randomImageExpiresAt: randomAuthorization.expiresAt }), /随机图片话题已过时/)
+          await assert.rejects(require(path.join(LIB, 'chat')).chat(session, '[图片]', harness.ctx, { randomTriggered: true, isImageReplyFresh: () => state.getChannelMessageVersion('10001') === 0, randomImageExpiresAt: randomAuthorization.expiresAt }), /chat_turn_revoked/)
         }
         check(`${entry}首节点等待期间失效不调用备用视觉模型`, mocked.calls.length === 1 && mocked.calls[0].requestBody.model === 'glm-4.6v-flash')
         check(`${entry}授权和回调不会发送给模型上游`, !Object.keys(mocked.calls[0].requestBody).some(key => key.startsWith('_') || key === 'randomAuthorization'))

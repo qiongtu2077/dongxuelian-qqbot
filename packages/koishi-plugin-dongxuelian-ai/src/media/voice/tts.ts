@@ -5,6 +5,7 @@
  * 状态: 频道冷却 Map（内存，5 分钟过期）。
  */
 const { TTS_TEMP_DIR } = require('../../core/constants') as typeof import('../../core/constants')
+import { currentChatTurn, sendWithChatTurn } from '../../lifecycle/chat-turn-budget'
 const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-config') as typeof import('../../core/ai-capability-config')
 const { notifyCapabilityStepFailure } = require('../../core/capability-failure-notifier') as typeof import('../../core/capability-failure-notifier')
 const { ModelRequestError, assertModelResponseOk, buildModelFailureNotice, getFailedModelUsage, createDiagnosticRequestId, recordModelDiagnostic } = require('../../core/request-diagnostics') as typeof import('../../core/request-diagnostics')
@@ -379,6 +380,8 @@ async function requestOpenAiTts(step: TtsRuntimeStep, text: string, voice: strin
 
 // 严格按 voice-tts 优先级合成语音，并对每个失败步骤通知管理员。
 async function synthesizeSpeech(text: unknown, options: TtsOptions = {}): Promise<AudioBufferWithMime | null> {
+  const turn = currentChatTurn()
+  turn?.assertActive()
   const voice = String(options.voice || DEFAULT_VOICE)
   const style = sanitizeTtsStyle(options.style, NEUTRAL_TTS_STYLE)
   const ttsText = String(text).slice(0, MAX_TTS_TEXT_LENGTH)
@@ -389,14 +392,19 @@ async function synthesizeSpeech(text: unknown, options: TtsOptions = {}): Promis
   let lastError: unknown = null
   const requestId = createDiagnosticRequestId()
   for (let index = 0; index < steps.length; index += 1) {
+    turn?.assertActive()
+    const remainingMs = turn ? turn.remaining() - turn.sendWindow() : Infinity
+    if (remainingMs <= 0) return recordTtsFailure(options, 'timeout', '语音合成剩余时间不足')
     const step = steps[index]
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), voice.startsWith('data:') ? 30000 : TTS_TIMEOUT_MS)
+    const timer = setTimeout(() => controller.abort(), Math.min(remainingMs, voice.startsWith('data:') ? 30000 : TTS_TIMEOUT_MS))
+    const signal = turn ? AbortSignal.any([controller.signal, turn.signal]) : controller.signal
     const startedAt = Date.now()
     try {
       const result = step.provider === 'openai'
-        ? await requestOpenAiTts(step, ttsText, voice, controller.signal)
-        : await requestMimoriumTts(step, ttsText, voice, style, controller.signal)
+        ? await requestOpenAiTts(step, ttsText, voice, signal)
+        : await requestMimoriumTts(step, ttsText, voice, style, signal)
+      turn?.assertActive()
       const usage = result.usage || {}
       const total = Number(usage.total_tokens || usage.totalTokens || 0)
         || Number(usage.input_tokens || usage.prompt_tokens || 0) + Number(usage.output_tokens || usage.completion_tokens || 0)
@@ -404,6 +412,7 @@ async function synthesizeSpeech(text: unknown, options: TtsOptions = {}): Promis
       recordModelDiagnostic({ requestId, capability: 'voice-tts', purpose: 'voice-tts', provider: step.provider, model: step.model, status: 'success', elapsedMs: Date.now() - startedAt, attempt: index + 1, fallback: index > 0, usageReadable: result.readable })
       return result.buffer
     } catch (error) {
+      turn?.assertActive()
       lastError = error
       console.warn(`[voice-tts] capability_step_failed provider=${step.provider} model=${step.model}`)
       // 音色与模型不匹配发生在本地，不能冒充模型故障或消耗失败用量。
@@ -431,6 +440,7 @@ async function synthesizeSpeech(text: unknown, options: TtsOptions = {}): Promis
     { ...(failure?.status ? { status: failure.status } : {}), model: steps[steps.length - 1]?.model || '' },
   )
 }
+// 校验并发送短语音；聊天取消后不得提交平台发送。
 async function sendVoiceMessage(session: TtsSessionLike, audioBuf: AudioBufferWithMime | Buffer | null | undefined, options: TtsOptions = {}): Promise<boolean> {
   if (!audioBuf || !audioBuf.length) {
     recordTtsFailure(options, 'send_empty_audio', 'audio buffer is empty')
@@ -453,7 +463,7 @@ async function sendVoiceMessage(session: TtsSessionLike, audioBuf: AudioBufferWi
     if (options.diagnostics && typeof options.diagnostics === 'object') {
       options.diagnostics.lastSend = { method: 'file', mimeType, bytes: audioBuf.length, file: path.basename(tempFile) }
     }
-    const receipt = await session.send(h.audio(src))
+    const receipt = await sendWithChatTurn(() => session.send(h.audio(src)))
     // 只保存平台返回的消息 ID，避免把音频段或媒体地址写入诊断。
     if (options.diagnostics?.lastSend) {
       options.diagnostics.lastSend.messageIds = Array.isArray(receipt) ? receipt.filter(id => typeof id === 'string') : []

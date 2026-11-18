@@ -14,6 +14,10 @@ function applyPlugin(plugin, harness) {
 
 function createScenario(options = {}) {
   const data = createTestDataDir(options.data || {})
+  // 普通业务夹具显式开启目标，复现生产适配器已放行的前提；参与策略用例自行管理缺省关闭。
+  if (options.participation !== false) data.writeJson('bot-participation.json', {
+    version: 1, privateEnabled: true, groups: Object.fromEntries((options.participationGroups || ['10001']).map(id => [id, true])),
+  })
   const restoreEnv = withDataEnv(data.dataDir)
   const originalSupervisorEnabled = process.env.RESOURCE_WORKER_SUPERVISOR_ENABLED
   if (options.enableResourceWorkerSupervisor === true) {

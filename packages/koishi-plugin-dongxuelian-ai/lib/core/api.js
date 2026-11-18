@@ -597,6 +597,15 @@ function getUsageTotal(usage) {
 }
 // 普通请求从首项开始；明确冻结的结构恢复可从该链的指定节点开始，实际身份仍为完整链。
 async function requestChatCompletions(messages, config, extraBody = {}, tools = null) {
+    const { currentModelRequestContext } = require('./model-request-context');
+    const request = executeChatCompletions(messages, config, extraBody, tools);
+    return currentModelRequestContext()?.own(request) || request;
+}
+// 执行一次有界主备用链；真实请求退出前保持轮次所有权。
+async function executeChatCompletions(messages, config, extraBody, tools) {
+    const { currentModelRequestContext, outsideModelRequestContext } = require('./model-request-context');
+    const turn = currentModelRequestContext();
+    turn?.assertActive();
     const managedCapability = isAiCapability(config.capability) ? config.capability : null;
     const frozen = extraBody._frozenRoute;
     if (frozen && (frozen.version !== 1 || (managedCapability && frozen.capability !== managedCapability)))
@@ -631,9 +640,13 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
     // 所有可能执行的节点在提交前核实；备用配置未知时不能先消耗一次请求再猜兼容。
     const structuredFields = extraBody._structuredOutput !== undefined
         ? attempts.map((attempt, index) => index < startIndex ? nodeFields[index] : prepareStructuredRequest(extraBody._structuredOutput, attempt, nodeFields[index], messages)) : null;
-    const externalSignal = extraBody.signal && typeof extraBody.signal === 'object' ? extraBody.signal : null;
+    const signals = [extraBody.signal, turn?.signal].filter((signal) => !!signal);
+    const externalSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0] || null;
     const requestedTimeout = Number(extraBody._timeoutMs);
     const purpose = extraBody._purpose || (capability === 'vision' ? 'vision' : 'chat');
+    // 只有明确进入聊天作用域的调用获得轮次预算；独立任务沿用自身配置。
+    const timeBudget = extraBody._timeBudget || (purpose === 'chat' && capability === 'text' ? turn?.modelBudget() : undefined);
+    const turnDeadline = Math.min(timeBudget?.deadline ?? Infinity, turn ? turn.deadline - turn.sendWindow() : Infinity);
     const imageRequest = readImageRequestDiagnostic(extraBody._imageRequest);
     const imageDiagnostic = imageRequest ? { imageSource: imageRequest.source, imageTarget: imageRequest.target, imageDemandId: imageRequest.demandId } : {};
     const budget = purpose === 'retaliation_score' ? RETALIATION_BUDGET
@@ -644,6 +657,11 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
     let lastFailure = null;
     const stepFailures = new Map();
     for (let index = startIndex; index < attempts.length; index += 1) {
+        turn?.assertActive();
+        if (externalSignal?.aborted)
+            throw externalSignal.reason;
+        if (Date.now() >= turnDeadline)
+            throw new Error('chat_request_deadline');
         const attempt = attempts[index];
         // 每个备用节点独立计时和分配输出预算；同节点截断恢复继续共享本节点预算。
         if (index !== budgetStepIndex) {
@@ -662,9 +680,18 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
         const attemptStartedAt = Date.now();
         attemptNumber += 1;
         const controller = new AbortController();
-        const timeout = Math.min(deadline - Date.now(), Number.isFinite(requestedTimeout) && requestedTimeout > 0
-            ? Math.max(1000, Math.min(REQUEST_TIMEOUT_CAP, requestedTimeout))
-            : index > 0 ? 10000 : REQUEST_TIMEOUT);
+        const remaining = turnDeadline - Date.now();
+        const reserve = timeBudget && index === 0 && index + 1 < attempts.length ? timeBudget.fallbackReserveMs : 0;
+        const allocation = timeBudget ? Math.min(index === 0 ? timeBudget.primaryMs : timeBudget.fallbackMs, remaining - reserve) : remaining;
+        // 备用真实存在才预留；剩余不足时直接切入备用，不用最小时限钳制越界。
+        if (allocation <= 0)
+            continue;
+        const configuredTimeout = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+            ? Math.min(REQUEST_TIMEOUT_CAP, timeBudget || turn ? requestedTimeout : Math.max(1000, requestedTimeout))
+            : timeBudget ? Infinity : index > 0 ? 10000 : REQUEST_TIMEOUT;
+        const timeout = Math.min(deadline - Date.now(), allocation, configuredTimeout);
+        turn?.event('model_attempt', { requestId, purpose, provider: attempt.provider, model: attempt.model,
+            fallback: index > 0, allocatedMs: timeout, deadline: turnDeadline });
         const timer = setTimeout(() => controller.abort(), timeout);
         let cleanupExternalSignal = null;
         if (externalSignal && typeof externalSignal.addEventListener === 'function') {
@@ -691,6 +718,10 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
             // 辅助判断恢复同样使用当前节点的独立参数；原生结构参数已提前逐节点核验。
             const requestFields = structuredFields?.[index] || nodeFields[index];
             const response = await requestProtocolAttempt(messages, attempt, budget ? { ...requestFields, max_tokens: maxTokens } : requestFields, tools, controller.signal);
+            // 非协作网络即使迟到成功也不能继续保存或发送；真实 await 保持队列所有权。
+            turn?.assertActive();
+            if (controller.signal.aborted || Date.now() >= turnDeadline)
+                throw new Error('chat_request_deadline');
             protocolCompleted = true;
             clearTimeout(timer);
             recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(response.usage), {
@@ -736,7 +767,10 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
                 contentLength: failure.details.contentLength, reasoningLength: failure.details.reasoningLength, maxTokens: diagnosticMaxTokens, usageReadable: readable,
                 ...(readable ? { inputTokens: failedUsage.input, outputTokens: failedUsage.output } : {}) });
             console.warn(`[ai-api] capability_step_failed capability=${capability} provider=${attempt.provider || 'unknown'} model=${attempt.model} code=${failure.code}`);
-            await notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model, capability, { requestId, purpose, reason, status: failure.status, code: failure.code, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId }).catch(() => false);
+            const notification = outsideModelRequestContext(() => notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model, capability, { requestId, purpose, reason, status: failure.status, code: failure.code, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId })).catch(() => false);
+            // 通知自身已有 1.5 秒有界等待；聊天阶段不把这段次生工作串进备用窗口。
+            if (!timeBudget && !turn)
+                await notification;
             if (externalSignal?.aborted)
                 throw externalSignal.reason;
             // 节点超时只跳过当前模型；主动取消仍终止整链，截断恢复不得重新扩大本节点期限。
@@ -762,33 +796,48 @@ async function requestChatCompletions(messages, config, extraBody = {}, tools = 
         throw resolveModelQueueFailure([...stepFailures.values()], attempts.length);
     throw new Error('该能力未配置模型');
 }
+// 联网搜索协议同样受聊天根取消约束，并登记真实请求直至退出。
 async function requestOpenAIResponsesWithSearch(messages, config) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
-    try {
-        const response = await fetch(config.baseURL + '/responses', {
-            method: 'POST', signal: controller.signal,
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
-            body: JSON.stringify({
-                model: config.model, temperature: 0.9, max_output_tokens: 160,
-                input: buildResponsesInput(messages),
-                tools: [{ type: 'web_search' }],
-            }),
-        });
-        await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages));
-        const data = await readUpstreamJson(response);
-        const usage = isRecord(data.usage) ? data.usage : undefined;
-        recordTokenUsage(config.provider || 'unknown', getUsageTotal(usage), {
-            capability: isAiCapability(config.capability) ? config.capability : 'text',
-            model: config.model,
-            usage,
-            readable: hasReadableTokenUsage(usage),
-        });
-        return extractResponsesText(data);
-    }
-    finally {
-        clearTimeout(timer);
-    }
+    const { currentModelRequestContext } = require('./model-request-context');
+    const turn = currentModelRequestContext();
+    turn?.assertActive();
+    const budget = turn?.modelBudget();
+    const timeout = Math.min(REQUEST_TIMEOUT, budget?.primaryMs ?? Infinity, (budget?.deadline ?? Infinity) - Date.now());
+    if (timeout <= 0)
+        throw new Error('chat_request_deadline');
+    const request = (async () => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeout);
+        const signal = turn ? AbortSignal.any([controller.signal, turn.signal]) : controller.signal;
+        try {
+            const response = await fetch(config.baseURL + '/responses', {
+                method: 'POST', signal,
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.apiKey}` },
+                body: JSON.stringify({
+                    model: config.model, temperature: 0.9, max_output_tokens: 160,
+                    input: buildResponsesInput(messages),
+                    tools: [{ type: 'web_search' }],
+                }),
+            });
+            await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages));
+            const data = await readUpstreamJson(response);
+            turn?.assertActive();
+            if (signal.aborted)
+                throw signal.reason;
+            const usage = isRecord(data.usage) ? data.usage : undefined;
+            recordTokenUsage(config.provider || 'unknown', getUsageTotal(usage), {
+                capability: isAiCapability(config.capability) ? config.capability : 'text',
+                model: config.model,
+                usage,
+                readable: hasReadableTokenUsage(usage),
+            });
+            return extractResponsesText(data);
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    })();
+    return turn?.own(request) || request;
 }
 // 对已经核实的实际节点计算配置身份；凭据只参与摘要，不暴露正文。
 function chatStepIdentity(step, includeCredential) {
@@ -850,10 +899,13 @@ function callOneBotWs(action, params, echo, timeoutMs, extractData, signal) {
                 clearTimeout(timer);
             signal?.removeEventListener('abort', cancelOneBotMediaRequest);
             try {
-                if (ws)
-                    ws.close();
+                if (ws) {
+                    ws.removeAllListeners();
+                    ws.on('error', () => { }); // connecting 阶段 terminate 的异步 error 也必须被消费。
+                    ws.terminate();
+                }
             }
-            catch { /* non-critical: OneBot websocket may already be closed */ }
+            catch { /* 已关闭连接无需再次终止。 */ }
             resolve(value || null);
         };
         const cancelOneBotMediaRequest = () => finish(null);
@@ -914,8 +966,9 @@ function callGetFile(fileId, signal) {
 function callGetRecord(fileName) {
     return callOneBotWs('get_record', { file: fileName, out_format: 'wav' }, 'gr', 8000, message => (isRecord(message.data) && message.data.file ? message.data : null));
 }
-function callGetForwardMsg(forwardId) {
-    return callOneBotWs('get_forward_msg', { id: forwardId }, 'gf', 10000, message => isRecord(message.data) ? (message.data.messages || message.data.message || null) : (Array.isArray(message.data) ? message.data : null));
+// 所有嵌套记录复用调用方给定的阶段剩余时间和取消信号。
+function callGetForwardMsg(forwardId, signal, timeoutMs = 10000) {
+    return callOneBotWs('get_forward_msg', { id: forwardId }, 'gf', timeoutMs, message => isRecord(message.data) ? (message.data.messages || message.data.message || null) : (Array.isArray(message.data) ? message.data : null), signal);
 }
 function sendForwardMsg(groupId, nodes, timeoutMs = 10000) {
     return callOneBotWs('send_group_forward_msg', { group_id: Number(groupId), messages: nodes }, 'sfm', timeoutMs, message => (isRecord(message.data) && message.data.message_id ? message.data : null));

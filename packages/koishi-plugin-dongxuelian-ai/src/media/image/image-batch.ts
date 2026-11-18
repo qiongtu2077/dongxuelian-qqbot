@@ -12,10 +12,9 @@ const { resolveCapabilityRuntimeSteps } = require('../../core/ai-capability-conf
 const { requestChatCompletions, freezeChatRoute } = require('../../core/api') as typeof import('../../core/api')
 const { ModelRequestError, resolveModelQueueFailure } = require('../../core/request-diagnostics') as typeof import('../../core/request-diagnostics')
 const { admitTask } = require('../../resource-scheduler/admission') as typeof import('../../resource-scheduler/admission')
-const { normalizeTaskBudget } = require('../../resource-scheduler/task-budget') as typeof import('../../resource-scheduler/task-budget')
+import { ChatTurnBudget, CHAT_TURN_LIMITS, currentChatTurn } from '../../lifecycle/chat-turn-budget'
 const { writeMediaEvent } = require('../backpressure/media-queue') as typeof import('../backpressure/media-queue')
 const { sanitizeImageAnalysis } = require('./image-analysis-sanitizer') as typeof import('./image-analysis-sanitizer')
-const { REQUEST_TIMEOUT } = require('../../core/constants') as typeof import('../../core/constants')
 
 type Target = ReturnType<typeof imageManifest.collectImageManifest>[number]
 type ReadState = 'ready' | 'read' | 'reused' | 'too_large' | 'failed' | 'unsupported' | 'cancelled'
@@ -75,16 +74,19 @@ async function collectExplicitImageTargets(session: Parameters<typeof imageManif
 }
 
 // 在首次回答前固定执行整组视觉读取，任何目标都有终态，失败目标不污染成功证据。
-async function readExplicitImageEvidence(targets: Target[], question: string, options: { canContinue?: () => boolean; signal?: AbortSignal } = {}): Promise<{ evidence: string; notice: string; results: TargetResult[]; batches: number; deadline: number }> {
+async function readExplicitImageEvidence(targets: Target[], question: string, options: { canContinue?: () => boolean; signal?: AbortSignal; turn?: ChatTurnBudget } = {}): Promise<{ evidence: string; notice: string; results: TargetResult[]; batches: number; deadline: number }> {
   const channelKey = targets[0].channelKey
-  const releaseTargets = await storeImageTargets(channelKey, targets, true)
-  const controller = new AbortController()
-  const timeoutMs = normalizeTaskBudget({ kind: 'normal_chat' }).runTimeoutMs
-  const deadline = Date.now() + timeoutMs
-  const timer = setTimeout(() => controller.abort(new Error('image_turn_deadline')), timeoutMs)
-  const cancelExplicitImageRead = (): void => controller.abort(options.signal?.reason)
-  options.signal?.addEventListener('abort', cancelExplicitImageRead, { once: true })
-  if (options.signal?.aborted) cancelExplicitImageRead()
+  const turn = options.turn || currentChatTurn() || new ChatTurnBudget({ channelKey })
+  const ownsTurn = !options.turn && !currentChatTurn()
+  if (ownsTurn) { turn.select(targets.some(target => target.aliases.some(alias => alias.group === 'forwarded'))); turn.enqueue(); turn.start() }
+  const textSteps = resolveCapabilityRuntimeSteps('text')
+  const answerReserve = turn.recordImages ? CHAT_TURN_LIMITS.textPrimary + (textSteps.length > 1 ? CHAT_TURN_LIMITS.recordFallbackReserve : 0)
+    : CHAT_TURN_LIMITS.normalFallbackReserve
+  const stage = turn.openStage('vision', CHAT_TURN_LIMITS.vision, answerReserve + turn.sendWindow())
+  const controller = { signal: options.signal ? AbortSignal.any([stage.signal, options.signal]) : stage.signal }
+  const deadline = turn.deadline
+  let releaseTargets: (() => Promise<void>) | undefined
+  turn.imagesTotal = targets.length
   const results: TargetResult[] = targets.map(target => ({ target, state: 'ready', reason: '' }))
   const evidence: string[] = []
   let batchCount = 0
@@ -92,11 +94,14 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
   let queueFailure: InstanceType<typeof ModelRequestError> | null = null
   // 每个下载和上游节点开始前复检取消、总截止与现有资源准入，不新增无界等待。
   const checkActive = (): void => {
-    if (controller.signal.aborted || options.canContinue?.() === false) throw new Error('image_turn_cancelled')
+    turn.assertActive()
+    if (controller.signal.aborted || Date.now() >= stage.deadline || options.canContinue?.() === false) throw new Error('image_turn_cancelled')
     const admission = admitTask({ kind: 'normal_chat', source: 'explicit-image', channelKey, exclusive: false })
     if (!['run_now', 'downgrade'].includes(admission.decision)) throw new Error('image_resource_paused')
   }
   try {
+    checkActive()
+    releaseTargets = await storeImageTargets(channelKey, targets, true)
     const contentOwners = new Map<string, TargetResult>()
     for (const item of results) {
       checkActive()
@@ -115,7 +120,9 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
       const sourceIdentity = createHash('sha256').update(JSON.stringify(results.map(item => [item.target.id, item.hash, item.state, item.target.aliases]))).digest('hex')
       request = await acquireImageRequest(channelKey, ready[0].target.id, {
         source: 'explicit-image', question, force: true, targetIds: ready.map(item => item.target.id), sourceIdentity,
+        signal: controller.signal, waitMs: Math.max(0, stage.deadline - Date.now()),
       })
+      checkActive()
       if (request.status === 'reused') {
         evidence.push(request.analysis)
         ready.forEach(item => { item.state = 'read' })
@@ -150,9 +157,10 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
             try {
               const response = await requestChatCompletions([{ role: 'user', content }], step, {
                 _frozenRoute: route, signal: controller.signal, _imageRequest: diagnostic,
-                _timeoutMs: Math.min(timeoutMs, step.priorityIndex > 0 ? 10000 : REQUEST_TIMEOUT), max_tokens: 3000,
+                _timeBudget: { deadline: stage.deadline, primaryMs: step.priorityIndex > 0 ? CHAT_TURN_LIMITS.visionFallback : CHAT_TURN_LIMITS.visionPrimary, fallbackMs: CHAT_TURN_LIMITS.visionFallback, fallbackReserveMs: 0 }, max_tokens: 3000,
                 _onRequestAttempt: checkActive,
               })
+              checkActive()
               if (response.type !== 'text' || !response.content.trim()) throw new Error('image_empty_response')
               evidence.push(`[视觉批次${batchCount}：${covered.map(item => imageTargetLabel(item.target)).join('、')}]\n${response.content}`)
               covered.forEach(item => { item.state = 'read'; item.reason = ''; item.batch = batchCount })
@@ -202,8 +210,9 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
               try {
                 const response = await requestChatCompletions([{ role: 'user', content }], step, {
                   _frozenRoute: freezeChatRoute(step, [step]), signal: controller.signal, _imageRequest: diagnostic,
-                  _timeoutMs: Math.min(timeoutMs, step.priorityIndex > 0 ? 10000 : REQUEST_TIMEOUT), max_tokens: 3000, _onRequestAttempt: checkActive,
+                  _timeBudget: { deadline: stage.deadline, primaryMs: step.priorityIndex > 0 ? CHAT_TURN_LIMITS.visionFallback : CHAT_TURN_LIMITS.visionPrimary, fallbackMs: CHAT_TURN_LIMITS.visionFallback, fallbackReserveMs: 0 }, max_tokens: 3000, _onRequestAttempt: checkActive,
                 })
+                checkActive()
                 if (response.type !== 'text' || !response.content.trim()) continue
                 evidence.push(`[补充原图对照：${pair.map(item => imageTargetLabel(item.target)).join('、')}]\n${response.content}`)
                 writeMediaEvent('explicit_image_batch', { targetIds: pair.map(item => item.target.id), provider: step.provider, model: step.model, batch: batchCount, status: 'success', comparison: true })
@@ -226,7 +235,7 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
       }
     }
   } catch (error) {
-    const reason = controller.signal.aborted ? Date.now() >= deadline ? 'image_turn_deadline' : 'image_turn_cancelled'
+    const reason = controller.signal.aborted ? Date.now() >= stage.deadline ? 'image_turn_deadline' : 'image_turn_cancelled'
       : error instanceof Error ? error.message : 'image_turn_cancelled'
     const cancelled = controller.signal.aborted || ['image_turn_cancelled', 'image_resource_paused'].includes(reason)
     for (const item of results) if (item.state === 'ready') { item.state = cancelled ? 'cancelled' : 'failed'; item.reason = reason }
@@ -243,9 +252,12 @@ async function readExplicitImageEvidence(targets: Target[], question: string, op
     } finally {
       try { if (request?.status === 'owned') await request.release() }
       finally {
-        clearTimeout(timer)
-        options.signal?.removeEventListener('abort', cancelExplicitImageRead)
-        await releaseTargets()
+        stage.close()
+        try { await releaseTargets?.() } finally {
+          turn.imagesRead = results.filter(item => ['read', 'reused'].includes(item.state)).length
+          turn.event('image_complete', { total: results.length, read: turn.imagesRead, unread: results.length - turn.imagesRead, batches: batchCount })
+          if (ownsTurn) turn.finish()
+        }
       }
     }
   }

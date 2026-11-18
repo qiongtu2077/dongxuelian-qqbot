@@ -8,7 +8,9 @@
 const { requestChatCompletions } = require('../core/api');
 const { getRecentUserMessages } = require('../conversation');
 const { loadConfig } = require('../core/runtime-config');
+const chat_turn_budget_1 = require("../lifecycle/chat-turn-budget");
 const topicSwitchLocks = new Map();
+const topicControllers = new Set();
 function getTopicSwitchErrorMessage(err) {
     return err instanceof Error ? err.message : String(err || 'unknown error');
 }
@@ -20,18 +22,26 @@ function getTopicSwitchReplyContent(result) {
     return '';
 }
 // 话题检测：轻量模型优先 → 主模型兜底 → 都失败则返回 null（由调用方决定降级策略）
-async function detectTopicSwitch(lastMsg, currentMsg) {
+async function detectTopicSwitch(lastMsg, currentMsg, stage) {
     if (!lastMsg || !currentMsg)
         return false;
+    const ownedStage = stage ? null : ((0, chat_turn_budget_1.currentChatTurn)() || new chat_turn_budget_1.ChatTurnBudget({ channelKey: 'topic' })).openStage('topic', chat_turn_budget_1.CHAT_TURN_LIMITS.topic);
+    const activeStage = stage || ownedStage;
     const prompt = [
         { role: 'system', content: '判断用户是否切换了话题。只回复 YES 或 NO。' },
         { role: 'user', content: `上一条消息：${lastMsg.slice(0, 200)}\n当前消息：${currentMsg.slice(0, 200)}` },
     ];
-    const config = await loadConfig();
-    if (!config.apiKey)
-        return null;
     try {
-        const result = await requestChatCompletions(prompt, config, { max_tokens: 256, _timeoutMs: 8000, _purpose: 'topic_switch' });
+        const config = await loadConfig();
+        if (!config.apiKey)
+            return null;
+        if (activeStage.signal.aborted || Date.now() >= activeStage.deadline)
+            return null;
+        const result = await requestChatCompletions(prompt, config, { max_tokens: 256, _timeoutMs: 8000, _purpose: 'topic_switch',
+            signal: activeStage.signal, _timeBudget: { deadline: activeStage.deadline, primaryMs: 8000, fallbackMs: 8000, fallbackReserveMs: 0 } });
+        (0, chat_turn_budget_1.currentChatTurn)()?.assertActive();
+        if (activeStage.signal.aborted || Date.now() >= activeStage.deadline)
+            return null;
         const reply = getTopicSwitchReplyContent(result);
         if (/^YES/i.test(reply))
             return true;
@@ -39,27 +49,52 @@ async function detectTopicSwitch(lastMsg, currentMsg) {
             return false;
     }
     catch (err) {
+        (0, chat_turn_budget_1.currentChatTurn)()?.assertActive();
         console.warn('[chat-topic-switch] detectTopicSwitch failed:', getTopicSwitchErrorMessage(err));
+    }
+    finally {
+        ownedStage?.close();
     }
     return null;
 }
+// 锁等待及所有节点共享八秒；已过期等候者不会在锁释放后补发请求。
 async function resolveTopicSwitch({ topicKey = '', session, currentText = '' } = {}) {
     const key = String(topicKey || '');
-    let topicSwitchResult = false;
+    const turn = (0, chat_turn_budget_1.currentChatTurn)();
+    const stage = (turn || new chat_turn_budget_1.ChatTurnBudget({ channelKey: key })).openStage('topic', chat_turn_budget_1.CHAT_TURN_LIMITS.topic);
+    const disposal = new AbortController();
+    topicControllers.add(disposal);
+    const signal = AbortSignal.any([stage.signal, disposal.signal]);
     const prevLock = topicSwitchLocks.get(key) || Promise.resolve(null);
-    const lockPromise = prevLock.then(async () => {
+    const work = (0, chat_turn_budget_1.waitWithSignal)(prevLock.catch(() => null), signal).then(async () => {
+        turn?.assertActive();
+        if (signal.aborted || Date.now() >= stage.deadline)
+            return null;
         const lastUserMsg = session ? getRecentUserMessages(session, 1).pop() : undefined;
-        if (lastUserMsg)
-            topicSwitchResult = await detectTopicSwitch(lastUserMsg, currentText);
-        return topicSwitchResult;
+        return lastUserMsg ? detectTopicSwitch(lastUserMsg, currentText, { ...stage, signal }) : false;
     });
+    // 取消等待不能提前释放仍被前任占有的锁；所有拒绝均在此消费。
+    const lockPromise = Promise.allSettled([prevLock, work]).then(() => null);
     topicSwitchLocks.set(key, lockPromise);
-    lockPromise.finally(() => { if (topicSwitchLocks.get(key) === lockPromise)
+    void lockPromise.then(() => { if (topicSwitchLocks.get(key) === lockPromise)
         topicSwitchLocks.delete(key); });
-    return lockPromise;
+    try {
+        return await work;
+    }
+    catch {
+        turn?.assertActive();
+        return null;
+    }
+    finally {
+        stage.close();
+        topicControllers.delete(disposal);
+    }
 }
+// 卸载撤销尚在等待及运行的判断；真实锁仍等待其请求退出。
 function clearTopicSwitchLocks() {
-    topicSwitchLocks.clear();
+    for (const controller of topicControllers)
+        controller.abort(new Error('topic_disposed'));
+    topicControllers.clear();
 }
 module.exports = {
     detectTopicSwitch,
