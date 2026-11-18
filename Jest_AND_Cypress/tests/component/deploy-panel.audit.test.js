@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { KeepAlive, defineComponent, h, nextTick, ref } from 'vue'
 import DeployPanel from '../../../packages/koishi-plugin-dashboard/frontend/src/components/DeployPanel.vue'
 import * as dashboardApi from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
 
@@ -201,6 +202,113 @@ describe('DeployPanel 持久化任务轮询闭环', () => {
     await flushPromises()
     expect(wrapper.find('.remote-preview').exists()).toBe(false)
     expect(wrapper.text()).toContain('部署目标已修改，请重新生成预览')
+    wrapper.unmount()
+  })
+})
+
+describe('DeployPanel 缓存切页与运行中的发布', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    jest.clearAllMocks()
+    arrangeDeployResponses()
+    jest.spyOn(window, 'alert').mockImplementation(() => {})
+  })
+
+  afterEach(() => jest.useRealTimers())
+
+  // 保留部署页实例，模拟 Dashboard 切换主栏目。
+  async function mountCachedDeploy() {
+    const visible = ref(true)
+    const Other = defineComponent({ render: () => h('p', '其他栏目') })
+    const Host = defineComponent({ render: () => h(KeepAlive, null, { default: () => visible.value ? h(DeployPanel) : h(Other) }) })
+    const wrapper = mount(Host, { global: { provide: { showAdminDialog: jest.fn() } } })
+    await flushPromises()
+    return { wrapper, visible }
+  }
+
+  test('本地慢采样切走后撤销，再激活及切换部署模式只启动一套', async () => {
+    dashboardApi.checkLocalEnv.mockResolvedValue({ ok: true, data: {
+      host: { platform: 'win32', arch: 'x64' },
+      localDeployTarget: { platform: 'win32', arch: 'x64', canRunWindowsLocalDeploy: true },
+    } })
+    let finishOld
+    dashboardApi.npmInstallStatus.mockResolvedValue({ ok: true, data: {} })
+    dashboardApi.npmInstallStatus.mockReturnValueOnce(new Promise(resolve => { finishOld = resolve }))
+    dashboardApi.napcatDeployStatus.mockResolvedValue({ ok: true, data: {} })
+    dashboardApi.koishiDeployStatus.mockResolvedValue({ ok: true, data: {} })
+    const { wrapper, visible } = await mountCachedDeploy()
+    expect(dashboardApi.npmInstallStatus).toHaveBeenCalledTimes(1)
+    const staleSignal = dashboardApi.npmInstallStatus.mock.calls[0][0]
+    await jest.advanceTimersByTimeAsync(7000)
+    expect(dashboardApi.npmInstallStatus).toHaveBeenCalledTimes(1)
+    visible.value = false
+    await nextTick()
+    expect(staleSignal.aborted).toBe(true)
+    await jest.advanceTimersByTimeAsync(21000)
+    expect(dashboardApi.npmInstallStatus).toHaveBeenCalledTimes(1)
+    visible.value = true
+    await flushPromises()
+    expect(dashboardApi.npmInstallStatus).toHaveBeenCalledTimes(2)
+    finishOld({ ok: true, data: { status: { logLines: ['过期安装状态'] } } })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('过期安装状态')
+    await jest.advanceTimersByTimeAsync(3500)
+    expect(dashboardApi.npmInstallStatus).toHaveBeenCalledTimes(3)
+    await wrapper.findAll('button').find(button => button.text() === '远程 Linux 部署').trigger('click')
+    await jest.advanceTimersByTimeAsync(10500)
+    expect(dashboardApi.npmInstallStatus).toHaveBeenCalledTimes(3)
+    wrapper.unmount()
+  })
+
+  test('离开缓存栏后仍跟踪同一远程任务和已启动的前端重建', async () => {
+    dashboardApi.getDeployProgress
+      .mockResolvedValueOnce({ ok: true, data: { state: 'running', stage: 'target_activation', lines: ['running'] } })
+      .mockResolvedValueOnce({ ok: true, data: { state: 'success', stage: 'complete', lines: ['done'] } })
+    dashboardApi.rebuildFrontend.mockResolvedValue({ ok: true, data: {} })
+    dashboardApi.rebuildFrontendStatus.mockResolvedValue({ ok: true, data: { state: 'success' } })
+    const { wrapper, visible } = await mountCachedDeploy()
+    const panel = wrapper.findComponent(DeployPanel)
+    await panel.findAll('button').find(button => button.text() === '远程 Linux 部署').trigger('click')
+    await startConfirmedPreview(panel)
+    await panel.vm.doRebuildFrontend()
+    visible.value = false
+    await nextTick()
+    await jest.advanceTimersByTimeAsync(2001)
+    expect(dashboardApi.getDeployProgress.mock.calls).toEqual([['task123'], ['task123']])
+    expect(dashboardApi.rebuildFrontendStatus).toHaveBeenCalledTimes(1)
+    expect(dashboardApi.runDeploy).toHaveBeenCalledTimes(1)
+    visible.value = true
+    await flushPromises()
+    expect(panel.text()).toContain('done')
+    expect(panel.text()).toContain('前端构建成功')
+    expect(panel.vm.deploying).toBe(false)
+    expect(panel.vm.rebuilding).toBe(false)
+    wrapper.unmount()
+  })
+
+  test('切走后用户主动的安装就绪检查继续完成', async () => {
+    dashboardApi.checkLocalEnv.mockResolvedValue({ ok: true, data: {
+      host: { platform: 'win32', arch: 'x64' },
+      localDeployTarget: { platform: 'win32', arch: 'x64', canRunWindowsLocalDeploy: true },
+    } })
+    dashboardApi.npmInstallStatus.mockResolvedValue({ ok: true, data: { status: { dependencies: { ready: true } } } })
+    dashboardApi.napcatDeployStatus.mockResolvedValue({ ok: true, data: {} })
+    dashboardApi.koishiDeployStatus.mockResolvedValue({ ok: true, data: {} })
+    const { wrapper, visible } = await mountCachedDeploy()
+    const panel = wrapper.findComponent(DeployPanel)
+    dashboardApi.npmInstallStatus.mockResolvedValueOnce({ ok: true, data: { status: { dependencies: { ready: false } } } })
+    const installation = panel.vm.confirmNpmDone()
+    await flushPromises()
+    expect(panel.vm.installingDeps).toBe(true)
+    visible.value = false
+    await nextTick()
+    await jest.advanceTimersByTimeAsync(1000)
+    await installation
+    expect(panel.vm.installingDeps).toBe(false)
+    expect(dashboardApi.npmInstallStatus.mock.calls.filter(args => args.length === 0)).toHaveLength(2)
+    const completedReadCount = dashboardApi.npmInstallStatus.mock.calls.length
+    await jest.advanceTimersByTimeAsync(10500)
+    expect(dashboardApi.npmInstallStatus).toHaveBeenCalledTimes(completedReadCount)
     wrapper.unmount()
   })
 })

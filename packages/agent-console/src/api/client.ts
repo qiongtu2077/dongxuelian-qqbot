@@ -58,6 +58,11 @@ function getAdminToken() {
   }
 }
 
+/** Identifies the effective session for in-flight reads without exposing credentials in the UI. */
+export function getAgentReadSessionKey() {
+  return JSON.stringify([localStorage.getItem(ACCESS_TOKEN_KEY), getAdminToken()])
+}
+
 function headers(admin = true) {
   const result: Record<string, string> = { 'Content-Type': 'application/json' }
   const token = localStorage.getItem(ACCESS_TOKEN_KEY)
@@ -118,18 +123,18 @@ export async function verifyAdmin(password: string) {
 const readAgentTask = (taskId: string, signal: AbortSignal) => request<AgentTaskResponse>('/agent/tasks/' + encodeURIComponent(taskId), { signal })
 
 export const api = {
-  getConfig: () => request<AgentConfigResponse>('/agent/config'),
+  getConfig: (signal?: AbortSignal) => request<AgentConfigResponse>('/agent/config', { signal }),
   saveConfig: (payload: SaveAgentConfigPayload) => request<SaveAgentConfigResponse>('/agent/config', { method: 'PUT', body: JSON.stringify(payload) }),
-  personas: () => request<AgentPersonasResponse>('/agent/personas'),
+  personas: (signal?: AbortSignal) => request<AgentPersonasResponse>('/agent/personas', { signal }),
   savePersona: (payload: AgentPersonaConfig) => request<SaveAgentPersonaResponse>('/agent/persona', { method: 'PUT', body: JSON.stringify(payload) }),
   chat: async (message: string, history: ChatHistoryItem[], enableThinking = false, agentMode = true, signal?: AbortSignal, images?: string[]) => followAgentTask(await request<AgentChatResponse>('/agent/chat', { method: 'POST', body: JSON.stringify({ message, history, enableThinking, agentMode, images }), signal }, 90000), readAgentTask, { signal }),
-  pending: () => request<PendingToolsResponse>('/tools/pending'),
+  pending: (signal?: AbortSignal) => request<PendingToolsResponse>('/tools/pending', { signal }),
   confirm: async (pendingId: string, signal?: AbortSignal) => followAgentTask(await request<AgentChatResponse>('/agent/confirm', { method: 'POST', body: JSON.stringify({ pendingId }), signal }, 90000), readAgentTask, { signal }),
   reject: (pendingId: string) => request<ApiEnvelope>('/agent/reject', { method: 'POST', body: JSON.stringify({ pendingId }) }),
-  sessions: () => request<AgentSessionsResponse>('/agent/sessions'),
+  sessions: (signal?: AbortSignal) => request<AgentSessionsResponse>('/agent/sessions', { signal }),
   session: (id: string) => request<ApiEnvelope>('/agent/sessions/' + encodeURIComponent(id)),
-  stats: () => request<AgentStatsResponse>('/agent/stats'),
-  queue: () => request<AgentQueueResponse>('/agent/queue'),
+  stats: (signal?: AbortSignal) => request<AgentStatsResponse>('/agent/stats', { signal }),
+  queue: (signal?: AbortSignal) => request<AgentQueueResponse>('/agent/queue', { signal }),
   files: (root = '', q = '') => request<AgentFilesResponse>('/agent/files?root=' + encodeURIComponent(root) + '&q=' + encodeURIComponent(q)),
   filePreview: (path: string) => request<AgentFilePreviewResponse>('/agent/file?path=' + encodeURIComponent(path)),
   fileDownload: async (filePath: string) => {
@@ -142,16 +147,16 @@ export const api = {
     return res.blob()
   },
   fileUpload: (payload: AgentFileUploadPayload) => request<AgentFileUploadResponse>('/agent/file/upload', { method: 'POST', body: JSON.stringify(payload) }, 90000),
-  env: () => request<AgentEnvResponse>('/agent/env'),
-  shellGuard: () => request<AgentShellGuardResponse>('/agent/shell-guard'),
-  plans: () => request<AgentPlansResponse>('/agent/plans'),
+  env: (signal?: AbortSignal) => request<AgentEnvResponse>('/agent/env', { signal }),
+  shellGuard: (signal?: AbortSignal) => request<AgentShellGuardResponse>('/agent/shell-guard', { signal }),
+  plans: (signal?: AbortSignal) => request<AgentPlansResponse>('/agent/plans', { signal }),
   plan: (id: string) => request<AgentPlanResponse>('/agent/plans/' + encodeURIComponent(id)),
   createPlan: (goal: string) => request<AgentPlanResponse>('/agent/plans', { method: 'POST', body: JSON.stringify({ goal }) }, 90000),
   resumePlan: (id: string) => request<AgentPlanResponse>('/agent/plans/' + encodeURIComponent(id) + '/resume', { method: 'POST', body: '{}' }, 90000),
   abandonPlan: (id: string, reason = 'Agent Console 放弃计划') => request<ApiEnvelope>('/agent/plans/' + encodeURIComponent(id) + '/abandon', { method: 'POST', body: JSON.stringify({ reason }) }),
-  crons: () => request<AgentCronsResponse>('/agent/crons'),
+  crons: (signal?: AbortSignal) => request<AgentCronsResponse>('/agent/crons', { signal }),
   createCron: (cron: AgentCronDraft) => request<ApiEnvelope>('/agent/crons', { method: 'POST', body: JSON.stringify(cron) }),
   runCron: (id: string) => request<ApiEnvelope>('/agent/crons/' + encodeURIComponent(id) + '/run', { method: 'POST', body: '{}' }, 90000),
   deleteCron: (id: string) => request<ApiEnvelope>('/agent/crons/' + encodeURIComponent(id), { method: 'DELETE' }),
-  pushLog: () => request<AgentPushLogResponse>('/agent/push-log'),
+  pushLog: (signal?: AbortSignal) => request<AgentPushLogResponse>('/agent/push-log', { signal }),
 }

@@ -1,7 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { api, getErrorMessage, setAccessToken, setAdminToken, verifyAdmin } from './api/client'
-import { buildChatHistory, readChatImages } from './chat-images'
+import { ChatPage } from './ChatPage'
+import { useAgentData, type AgentData, type TabId } from './use-agent-data'
 import type {
   AgentConfigResponse,
   AgentCronDraft,
@@ -23,29 +24,6 @@ import type {
   PendingToolListItem,
 } from './api/types'
 import './styles.css'
-
-type TabId = 'chat' | 'inbox' | 'personas' | 'files' | 'skills' | 'tools' | 'plans' | 'cron' | 'stats' | 'runtime' | 'model' | 'env' | 'security'
-
-type RoundRecord = {
-  reasoning: string | null
-  toolCalls: Array<{ name: string; args: Record<string, unknown> }>
-  toolResults?: Array<{ name: string; result: string; ok: boolean }>
-}
-
-type ChatMessage = {
-  role: 'user' | 'assistant' | 'system'
-  content: string
-  images?: string[]
-  imageCount?: number
-  pendingId?: string
-  id?: string
-  pending?: boolean
-  rounds?: RoundRecord[]
-}
-
-type AgentMode = 'plan' | 'build'
-
-type CompletionType = 'command' | 'file' | 'skill' | null
 
 type SelectOption = {
   value: string
@@ -106,76 +84,6 @@ const tabs: Array<{ id: TabId; label: string; group: string }> = [
   { id: 'security', label: '安全', group: '设置' },
 ]
 
-/** Loads Agent workspace data and distinguishes access login from administrator verification. */
-function useAgentData() {
-  const [loading, setLoading] = useState(false)
-  const [config, setConfig] = useState<AgentConfigResponse | null>(null)
-  const [pending, setPending] = useState<PendingToolListItem[]>([])
-  const [sessions, setSessions] = useState<AgentSessionSummary[]>([])
-  const [stats, setStats] = useState<AgentStats | null>(null)
-  const [queue, setQueue] = useState<AgentQueueStats | null>(null)
-  const [shellGuard, setShellGuard] = useState<AgentShellGuardResponse | null>(null)
-  const [plans, setPlans] = useState<AgentPlan[]>([])
-  const [crons, setCrons] = useState<AgentCronEntry[]>([])
-  const [cronHistory, setCronHistory] = useState<AgentCronHistoryEntry[]>([])
-  const [pushLog, setPushLog] = useState<AgentPushLogEntry[]>([])
-  const [env, setEnv] = useState<AgentEnvResponse | null>(null)
-  const [personas, setPersonas] = useState<AgentPersonaEntry[]>([])
-  const [persona, setPersona] = useState<AgentPersonaConfig | null>(null)
-  const [error, setError] = useState('')
-  const [adminRequired, setAdminRequired] = useState(false)
-  const [accessRequired, setAccessRequired] = useState(false)
-
-  /** Refreshes all Agent Console datasets in one parallel request batch. */
-  async function refresh() {
-    setLoading(true)
-    setError('')
-    setAdminRequired(false)
-    setAccessRequired(false)
-    const [cfg, pnd, ses, sta, que, guard, planRes, cronRes, pushRes, envRes, personaRes] = await Promise.all([
-      api.getConfig(),
-      api.pending(),
-      api.sessions(),
-      api.stats(),
-      api.queue(),
-      api.shellGuard(),
-      api.plans(),
-      api.crons(),
-      api.pushLog(),
-      api.env(),
-      api.personas(),
-    ])
-    if (cfg.ok) setConfig(cfg.data)
-    else if (cfg.code === 'AUTH_REQUIRED') setAccessRequired(true)
-    else if (cfg.code === 'ADMIN_REQUIRED') setAdminRequired(true)
-    else setError(cfg.message || cfg.data?.message || '加载 Agent 配置失败')
-    if (pnd.ok) setPending(pnd.data?.pending || [])
-    if (ses.ok) setSessions(ses.data?.sessions || [])
-    if (sta.ok) setStats(sta.data?.stats ?? null)
-    if (que.ok) setQueue(que.data?.queue ?? null)
-    if (guard.ok) setShellGuard(guard.data)
-    if (planRes.ok) setPlans(planRes.data?.plans || [])
-    if (cronRes.ok) {
-      setCrons(cronRes.data?.crons || [])
-      setCronHistory(cronRes.data?.history || [])
-    }
-    if (pushRes.ok) setPushLog(pushRes.data?.log || [])
-    if (envRes.ok) setEnv(envRes.data)
-    if (personaRes.ok) {
-      setPersonas(personaRes.data?.personas || [])
-      setPersona(personaRes.data?.persona || null)
-    } else if (cfg.ok) {
-      setPersonas(cfg.data?.personas || [])
-      setPersona(cfg.data?.config?.persona || null)
-    }
-    setLoading(false)
-  }
-
-  useEffect(() => { refresh() }, [])
-  return { loading, config, setConfig, pending, sessions, stats, queue, shellGuard, plans, crons, cronHistory, pushLog, env, personas, persona, setPersona, error, adminRequired, accessRequired, refresh }
-}
-
-type AgentData = ReturnType<typeof useAgentData>
 type AgentConfigSetter = AgentData['setConfig']
 
 /** Directs users with a missing or expired access token to Dashboard login. */
@@ -279,7 +187,7 @@ function Sidebar({ active, setActive, version }: { active: TabId; setActive: (id
   )
 }
 
-function Topbar({ onRefresh, loading }: { onRefresh: () => void; loading: boolean }) {
+function Topbar({ onRefresh, loading, canExport }: { onRefresh: () => void; loading: boolean; canExport: boolean }) {
   return (
     <header className="topbar">
       <div>
@@ -288,7 +196,7 @@ function Topbar({ onRefresh, loading }: { onRefresh: () => void; loading: boolea
       </div>
       <div className="top-actions">
         <a href="/dashboard/" title="返回 Dashboard">Dashboard</a>
-        <button className="secondary" onClick={async () => {
+        <button className="secondary" disabled={!canExport} onClick={async () => {
           const r = await api.getConfig()
           if (r.ok) {
             const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' })
@@ -301,324 +209,6 @@ function Topbar({ onRefresh, loading }: { onRefresh: () => void; loading: boolea
         <button onClick={onRefresh} disabled={loading}>{loading ? '刷新中' : '刷新'}</button>
       </div>
     </header>
-  )
-}
-
-function getPersonaHistoryKey(personaName = '') {
-  const key = personaName ? personaName.replace(/[^\p{L}\p{N}_-]+/gu, '_').slice(0, 80) : 'default'
-  return `agent_console_history:${key}`
-}
-
-const AGENT_CONSOLE_REMEMBER_HISTORY_KEY = 'agent_console_remember_history'
-
-function renderRounds(rounds: RoundRecord[]) {
-  if (!rounds || rounds.length === 0) return null
-  const toolRoundCount = rounds.filter(r => r.toolCalls && r.toolCalls.length > 0).length
-  const label = toolRoundCount > 0 ? `工具链（${toolRoundCount} 轮${rounds[rounds.length - 1]?.reasoning ? ' + 思考' : ''}）` : `思考（${rounds.length} 轮）`
-  return (
-    <details className="timeline">
-      <summary>{label}</summary>
-      {rounds.map((round, i) => (
-        <div key={i} className="timeline-round">
-          {round.reasoning && (
-            <details className="timeline-thinking">
-              <summary>思考过程</summary>
-              <pre>{round.reasoning}</pre>
-            </details>
-          )}
-          {round.toolCalls && round.toolCalls.map((tc, j) => (
-            <div key={j} className="timeline-tool">
-              <strong>{tc.name}</strong>
-              {round.toolResults && round.toolResults[j] && (
-                <pre className={round.toolResults[j].ok ? 'ok' : 'error'}>
-                  {round.toolResults[j].result.slice(0, 300)}
-                </pre>
-              )}
-            </div>
-          ))}
-        </div>
-      ))}
-    </details>
-  )
-}
-
-const COMMANDS = [
-  { label: '/plan', description: '创建计划', value: '/plan ' },
-  { label: '/approve', description: '确认工具', value: '/approve ' },
-  { label: '/reject', description: '拒绝工具', value: '/reject ' },
-  { label: '/status', description: '查看状态', value: '/status ' },
-]
-
-/** Owns the active persona's conversation and cancels result polling when the page is left. */
-function ChatPage({ refresh, persona }: { refresh: () => void; persona: AgentPersonaConfig | null }) {
-  const personaName = persona?.dashboardPersona || ''
-  const historyKey = getPersonaHistoryKey(personaName)
-  const [rememberHistory, setRememberHistory] = useState(() => localStorage.getItem(AGENT_CONSOLE_REMEMBER_HISTORY_KEY) === '1')
-  const [messages, setMessages] = useState<ChatMessage[]>(() => [])
-  const [loadedHistoryKey, setLoadedHistoryKey] = useState(historyKey)
-  const [input, setInput] = useState('')
-  const [images, setImages] = useState<string[]>([])
-  const [imageError, setImageError] = useState('')
-  const [readingImages, setReadingImages] = useState(false)
-  const imageReadRef = useRef(0)
-  const imageReadingRef = useRef(false)
-  const [sending, setSending] = useState(false)
-  const [mode, setMode] = useState<AgentMode>('build')
-  const [enableThinking, setEnableThinking] = useState(false)
-  const [agentMode, setAgentMode] = useState(true)
-  const chatRequestRef = useRef<AbortController | null>(null)
-  const [textareaRef, setTextareaRef] = useState<HTMLTextAreaElement | null>(null)
-  const messagesRef = useRef<HTMLDivElement>(null)
-  const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const [completion, setCompletion] = useState<{
-    type: CompletionType
-    query: string
-    items: Array<{ label: string; description: string; value: string }>
-    selectedIndex: number
-  } | null>(null)
-
-  useEffect(() => {
-    setSending(false)
-    setImages([])
-    setImageError('')
-    setReadingImages(false)
-    imageReadingRef.current = false
-    // Changing persona or leaving chat stops this page's polling, while the worker owns the task.
-    return () => { chatRequestRef.current?.abort(); chatRequestRef.current = null; imageReadRef.current += 1 }
-  }, [historyKey])
-  useEffect(() => {
-    if (!rememberHistory) {
-      setMessages([])
-      localStorage.removeItem(historyKey)
-      localStorage.removeItem('agent_console_history')
-      setLoadedHistoryKey(historyKey)
-      return
-    }
-    try { setMessages(JSON.parse(localStorage.getItem(historyKey) || '[]')) } catch { setMessages([]) }
-    setLoadedHistoryKey(historyKey)
-  }, [historyKey, rememberHistory])
-  useEffect(() => {
-    if (loadedHistoryKey !== historyKey) return
-    if (rememberHistory) {
-      // Image bytes stay in this chat's memory; storing base64 would exhaust Web Storage's quota.
-      const saved = JSON.stringify(messages.slice(-30).map(({ images: attached, ...item }) => ({ ...item, imageCount: attached?.length || item.imageCount })))
-      localStorage.setItem(historyKey, saved)
-      localStorage.setItem('agent_console_history', saved)
-    } else {
-      localStorage.removeItem(historyKey)
-      localStorage.removeItem('agent_console_history')
-    }
-  }, [historyKey, loadedHistoryKey, messages, rememberHistory])
-  useEffect(() => {
-    if (rememberHistory) localStorage.setItem(AGENT_CONSOLE_REMEMBER_HISTORY_KEY, '1')
-    else localStorage.removeItem(AGENT_CONSOLE_REMEMBER_HISTORY_KEY)
-  }, [rememberHistory])
-  useEffect(() => {
-    if (messagesRef.current) {
-      messagesRef.current.scrollTop = messagesRef.current.scrollHeight
-    }
-  }, [messages])
-  /** Submits chat and keeps its pending message until the background worker returns the final result. */
-  async function send() {
-    const text = input.trim() || (images.length ? '请查看图片。' : '')
-    if (!text || chatRequestRef.current || imageReadingRef.current) return
-    const attached = images
-    const history = buildChatHistory(messages, attached)
-    const pendingMessageId = `pending-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-    setMessages(prev => [...prev, { role: 'user', content: text, images: attached }, { role: 'system', content: '执行中...', id: pendingMessageId, pending: true }])
-    setInput('')
-    setImages([])
-    setImageError('')
-    setSending(true)
-    const controller = new AbortController()
-    chatRequestRef.current = controller
-    try {
-      const result = await api.chat(text, history, enableThinking, agentMode, controller.signal, attached.length ? attached : undefined)
-      if (controller.signal.aborted) return
-      setMessages(prev => {
-        const base = prev.filter(item => item.id !== pendingMessageId)
-        const reply = result.ok ? (result.data?.reply || result.data?.result || result.data?.message || '(Agent 未返回内容)') : (result.message || result.data?.message || '请求失败')
-        return [...base, { role: 'assistant', content: reply, pendingId: result.data?.pendingId, rounds: result.data?.rounds || [] }]
-      })
-      refresh()
-    } catch (error: unknown) {
-      if (controller.signal.aborted) return
-      setMessages(prev => {
-        const base = prev.filter(item => item.id !== pendingMessageId)
-        return [...base, { role: 'assistant', content: getErrorMessage(error) }]
-      })
-    } finally {
-      if (chatRequestRef.current === controller) {
-        chatRequestRef.current = null
-        setSending(false)
-      }
-    }
-  }
-  /** Reads pasted image files and preserves ordinary text paste, including mixed clipboard content. */
-  async function onComposerPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
-    const files = Array.from(event.clipboardData.files).filter(file => file.type.startsWith('image/'))
-    if (!files.length) return
-    event.preventDefault()
-    if (imageReadingRef.current) {
-      setImageError('图片正在读取，请稍候再粘贴')
-      return
-    }
-    const pastedText = event.clipboardData.getData('text/plain')
-    if (pastedText) {
-      const { selectionStart, selectionEnd } = event.currentTarget
-      setInput(prev => prev.slice(0, selectionStart) + pastedText + prev.slice(selectionEnd))
-    }
-    const version = ++imageReadRef.current
-    imageReadingRef.current = true
-    setReadingImages(true)
-    setImageError('')
-    try {
-      const added = await readChatImages(files, images)
-      if (version === imageReadRef.current) setImages(prev => [...prev, ...added])
-    } catch (error: unknown) {
-      if (version === imageReadRef.current) setImageError(getErrorMessage(error, '读取图片失败'))
-    } finally {
-      if (version === imageReadRef.current) {
-        imageReadingRef.current = false
-        setReadingImages(false)
-      }
-    }
-  }
-  /** Updates text and slash-command completion at the current cursor position. */
-  function onInputChange(text: string) {
-    setInput(text)
-    const cursorPos = textareaRef?.selectionStart || 0
-    const textBeforeCursor = text.slice(0, cursorPos)
-    const slashMatch = textBeforeCursor.match(/\/(\w*)$/)
-    const atMatch = textBeforeCursor.match(/@(\S*)$/)
-    const hashMatch = textBeforeCursor.match(/#(\w*)$/)
-    if (slashMatch) {
-      const query = slashMatch[1].toLowerCase()
-      const items = COMMANDS.filter(c => c.label.slice(1).startsWith(query))
-      setCompletion({ type: 'command', query, items, selectedIndex: 0 })
-    } else if (atMatch) {
-      setCompletion(null)
-    } else if (hashMatch) {
-      setCompletion(null)
-    } else {
-      setCompletion(null)
-    }
-  }
-  function selectCompletion(item: { value: string }) {
-    const cursorPos = textareaRef?.selectionStart || 0
-    const textBeforeCursor = input.slice(0, cursorPos)
-    const textAfterCursor = input.slice(cursorPos)
-    const match = textBeforeCursor.match(/\/\w*$/)
-    const newText = match ? textBeforeCursor.slice(0, match.index) + item.value + textAfterCursor : input + item.value
-    setInput(newText)
-    setCompletion(null)
-    setTimeout(() => textareaRef?.focus(), 0)
-  }
-  function onComposerKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (completion && completion.items.length > 0) {
-      if (event.key === 'ArrowDown') {
-        event.preventDefault()
-        setCompletion({ ...completion, selectedIndex: Math.min(completion.selectedIndex + 1, completion.items.length - 1) })
-      } else if (event.key === 'ArrowUp') {
-        event.preventDefault()
-        setCompletion({ ...completion, selectedIndex: Math.max(completion.selectedIndex - 1, 0) })
-      } else if (event.key === 'Enter' || event.key === 'Tab') {
-        event.preventDefault()
-        selectCompletion(completion.items[completion.selectedIndex])
-      } else if (event.key === 'Escape') {
-        setCompletion(null)
-      }
-      return
-    }
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) send()
-    if (event.key === 'Escape') setInput('')
-  }
-  function renderCompletion() {
-    if (!completion || completion.items.length === 0) return null
-    return (
-      <div className="completion-popup">
-        {completion.items.map((item, i) => (
-          <button
-            key={item.label}
-            className={`completion-item ${i === completion.selectedIndex ? 'selected' : ''}`}
-            onClick={() => selectCompletion(item)}
-          >
-            <span className="completion-label">{item.label}</span>
-            <span className="completion-desc">{item.description}</span>
-          </button>
-        ))}
-      </div>
-    )
-  }
-  return (
-    <section className="chat-layout">
-      <div className="chat-head">
-        <h2>新聊天</h2>
-        <div className="chat-meta">
-          <span>Console 人格：{personaName || '默认（东雪莲）'}</span>
-          <span>当前模型跟随 Dashboard</span>
-          <span>工具策略跟随 Agent 配置</span>
-        </div>
-      </div>
-      <div className="messages" ref={messagesRef} onScroll={e => {
-        const el = e.currentTarget
-        setShowScrollBtn(el.scrollHeight - el.scrollTop - el.clientHeight > 200)
-      }}>
-        {messages.length === 0 && <div className="empty">暂无对话</div>}
-        {messages.map((message, index) => (
-          <article key={index} className={'message ' + message.role}>
-            <div className="avatar">{message.role === 'user' ? '你' : message.role === 'assistant' ? '莲' : '…'}</div>
-            <div className="bubble">
-              {message.role === 'assistant' && renderRounds(message.rounds || [])}
-              {!!message.images?.length && <div className="message-images">{message.images.map((url, imageIndex) => <img key={imageIndex} src={url} alt={`图片 ${imageIndex + 1}`} />)}</div>}
-              {!message.images?.length && !!message.imageCount && <p className="muted">已发送 {message.imageCount} 张图片（原图未保存在本机历史中）</p>}
-              <pre>{message.content}</pre>
-              {message.pendingId && <span className="tag warn">等待确认 {message.pendingId}</span>}
-            </div>
-          </article>
-        ))}
-      </div>
-      {showScrollBtn && (
-        <button className="scroll-bottom-btn" onClick={() => {
-          messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight, behavior: 'smooth' })
-        }}>↓ 底部</button>
-      )}
-      <div className="composer">
-        <div className="composer-left">
-          <button className={`mode-toggle ${mode}`} onClick={() => setMode(mode === 'plan' ? 'build' : 'plan')}>
-            {mode === 'plan' ? 'Plan' : 'Build'}
-          </button>
-          <label className="thinking-toggle">
-            <input type="checkbox" checked={agentMode} onChange={e => setAgentMode(e.target.checked)} />
-            <span>Agent</span>
-          </label>
-          <label className="thinking-toggle">
-            <input type="checkbox" checked={enableThinking} onChange={e => setEnableThinking(e.target.checked)} />
-            <span>思考</span>
-          </label>
-          <label className="thinking-toggle">
-            <input type="checkbox" checked={rememberHistory} onChange={e => setRememberHistory(e.target.checked)} />
-            <span>记住本机历史</span>
-          </label>
-        </div>
-        {!!images.length && <div className="composer-images" aria-label="待发送图片">
-          {images.map((url, index) => <div className="composer-image" key={index}>
-            <img src={url} alt={`待发送图片 ${index + 1}`} />
-            <button type="button" aria-label={`移除图片 ${index + 1}`} disabled={readingImages} onClick={() => { setImages(prev => prev.filter((_, i) => i !== index)); setImageError('') }}>×</button>
-          </div>)}
-        </div>}
-        {readingImages && <p className="muted" role="status">正在读取图片…</p>}
-        {imageError && <p className="form-error" role="alert">{imageError}</p>}
-        <div className="composer-input-wrapper">
-          <textarea ref={setTextareaRef} value={input} onChange={e => onInputChange(e.target.value)} onKeyDown={onComposerKeyDown} onPaste={onComposerPaste} placeholder="/plan、/approve、@文件、#技能；支持粘贴图片" />
-          {renderCompletion()}
-        </div>
-        <div className="composer-actions">
-          <span>{input.length} 字{images.length ? ` · ${images.length} 张图片` : ''}</span>
-          <button onClick={send} disabled={sending || readingImages || (!input.trim() && !images.length)}>{sending ? '发送中' : '发送'}</button>
-        </div>
-      </div>
-    </section>
   )
 }
 
@@ -765,7 +355,7 @@ function SkillsPage({ data, setConfig, refresh }: { data: AgentData; setConfig: 
   )
 }
 
-function PersonasPage({ personas, persona, setPersona, refresh }: { personas: AgentPersonaEntry[]; persona: AgentPersonaConfig | null; setPersona: React.Dispatch<React.SetStateAction<AgentPersonaConfig | null>>; refresh: () => void }) {
+function PersonasPage({ personas, persona, setPersona, refresh }: { personas: AgentPersonaEntry[]; persona: AgentPersonaConfig | null; setPersona: (value: AgentPersonaConfig) => void; refresh: () => void }) {
   const current = persona?.dashboardPersona || ''
   const inherit = persona?.qqInheritChatPersona !== false
   const [message, setMessage] = useState('')
@@ -778,6 +368,7 @@ function PersonasPage({ personas, persona, setPersona, refresh }: { personas: Ag
       refresh()
     } else {
       setMessage(result.message || result.data?.message || '人格更新失败')
+      if (result.code === 'AUTH_REQUIRED' || result.code === 'ADMIN_REQUIRED') refresh()
     }
   }
   return (
@@ -1135,36 +726,36 @@ function SecurityPage({ shellGuard, config }: { shellGuard: AgentShellGuardRespo
 
 /** Renders the authenticated Agent workspace and its access/admin gates. */
 function App() {
-  const [verified, setVerified] = useState(() => !!localStorage.getItem('dashboard_server_token') || !!localStorage.getItem('dashboard_admin_token'))
   const [active, setActive] = useState<TabId>('chat')
-  const [showAdminDialog, setShowAdminDialog] = useState(false)
-  const data = useAgentData()
-  useEffect(() => {
-    if (data.adminRequired) setShowAdminDialog(true)
-  }, [data.adminRequired])
-  if (data.accessRequired) return <AccessGate />
-  if (!verified) return <AdminGate onVerified={() => { setVerified(true); data.refresh() }} />
+  const data = useAgentData(active)
+  if (data.auth === 'access') return <AccessGate />
+  const hadAdminToken = !!(localStorage.getItem('dashboard_server_token') || localStorage.getItem('dashboard_admin_token'))
+  if (data.auth === 'admin' && !hadAdminToken) return <AdminGate onVerified={data.reconnect} />
   const version = data.config?.config?.version || '1.1.5'
+  /** Reloads shared runtime config after a configuration write. */
+  function refreshConfig() { data.refreshAfterWrite(['config']) }
   return (
     <div className="shell">
-      {showAdminDialog && <AdminDialog onVerified={() => { setShowAdminDialog(false); data.refresh() }} />}
+      {data.auth === 'admin' && <AdminDialog onVerified={data.reconnect} />}
       <Sidebar active={active} setActive={setActive} version={String(version)} />
       <main className="workspace">
-        <Topbar onRefresh={data.refresh} loading={data.loading} />
+        <Topbar onRefresh={data.refresh} loading={data.loading} canExport={data.auth === 'ready'} />
         {data.error && <div className="error-banner">{data.error}</div>}
-        {active === 'chat' && <ChatPage refresh={data.refresh} persona={data.persona} />}
-        {active === 'inbox' && <InboxPage pending={data.pending} pushLog={data.pushLog} refresh={data.refresh} />}
-        {active === 'personas' && <PersonasPage personas={data.personas} persona={data.persona} setPersona={data.setPersona} refresh={data.refresh} />}
+        {data.auth === 'ready' && <>
+        {active === 'chat' && <ChatPage onSettled={data.chatSettled} persona={data.persona} />}
+        {active === 'inbox' && <InboxPage pending={data.pending} pushLog={data.pushLog} refresh={() => data.refreshAfterWrite(['pending', 'pushLog', 'queue'])} />}
+        {active === 'personas' && <PersonasPage personas={data.personas} persona={data.persona} setPersona={data.setPersona} refresh={() => data.refreshAfterWrite(['personas'])} />}
         {active === 'files' && <FilesPage roots={data.config?.effectiveReadRoots || []} />}
-        {active === 'skills' && <SkillsPage data={data} setConfig={data.setConfig} refresh={data.refresh} />}
-        {active === 'tools' && <ToolsPage data={data} setConfig={data.setConfig} refresh={data.refresh} />}
-        {active === 'plans' && <PlansPage plans={data.plans} refresh={data.refresh} />}
-        {active === 'cron' && <CronPage crons={data.crons} history={data.cronHistory} refresh={data.refresh} />}
+        {active === 'skills' && <SkillsPage data={data} setConfig={data.setConfig} refresh={refreshConfig} />}
+        {active === 'tools' && <ToolsPage data={data} setConfig={data.setConfig} refresh={refreshConfig} />}
+        {active === 'plans' && <PlansPage plans={data.plans} refresh={() => data.refreshAfterWrite(['plans'])} />}
+        {active === 'cron' && <CronPage crons={data.crons} history={data.cronHistory} refresh={() => data.refreshAfterWrite(['crons'])} />}
         {active === 'stats' && <StatsPage stats={data.stats} queue={data.queue} sessions={data.sessions} />}
-        {active === 'runtime' && <RuntimePage data={data} refresh={data.refresh} />}
+        {active === 'runtime' && <RuntimePage data={data} refresh={refreshConfig} />}
         {active === 'model' && <ModelPage config={data.config} />}
         {active === 'env' && <EnvPage env={data.env} />}
         {active === 'security' && <SecurityPage shellGuard={data.shellGuard} config={data.config} />}
+        </>}
       </main>
     </div>
   )

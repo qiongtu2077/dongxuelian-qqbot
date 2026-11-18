@@ -1,4 +1,5 @@
 const fs = require('fs')
+const assert = require('node:assert/strict')
 const path = require('path')
 const { spawn } = require('child_process')
 const puppeteer = require('puppeteer-core')
@@ -98,16 +99,18 @@ async function installApiMock(page, state) {
     if (!url.pathname.startsWith('/dashboard/api')) return request.continue()
     const pathname = url.pathname.replace('/dashboard/api', '') || '/'
     const method = request.method()
+    state.requests.push(`${method} ${pathname}`)
     let response
     if (method === 'GET' && pathname === '/agent/config') {
       state.configRequests += 1
       response = state.accessRequired
         ? jsonResponse({ ok: false, code: 'AUTH_REQUIRED', message: 'login required' }, 401)
-        : state.configRequests === 1
+        : state.configRequests === 1 || state.adminExpired
         ? jsonResponse({ ok: false, code: 'ADMIN_REQUIRED', message: '需要管理员密码' }, 403)
         : mockAgentConfig()
     } else if (method === 'POST' && pathname === '/admin/verify') {
       state.adminVerifyRequests += 1
+      state.adminExpired = false
       response = request.headers().authorization === 'Bearer smoke-access-token'
         ? ok({ token: 'smoke-admin-token' })
         : jsonResponse({ ok: false, code: 'AUTH_REQUIRED', message: 'login required' }, 401)
@@ -119,23 +122,42 @@ async function installApiMock(page, state) {
       const done = !state.taskNeverCompletes && state.taskPollRequests >= 2
       response = ok({ task: { id: 'smoke-task', status: done ? 'done' : 'running', result: { ok: true, reply: done ? '703' : '', pendingId: null, toolCalls: done ? 1 : 0, warnings: [] } } })
     } else if (method === 'GET' && pathname === '/tools/pending') {
-      response = ok({ pending: [] })
+      response = ok({ pending: state.approvalPending ? [{ id: 'approval-smoke', toolName: 'calculator', argsSummary: '隔离审批', channel: 'dashboard', channelKey: 'dashboard', userId: 'smoke' }] : [] })
+    } else if (method === 'POST' && pathname === '/agent/confirm') {
+      state.approvalPending = false
+      response = ok({ reply: '隔离审批已执行' })
     } else if (method === 'GET' && pathname === '/agent/sessions') {
       response = ok({ sessions: [] })
     } else if (method === 'GET' && pathname === '/agent/stats') {
-      response = ok({ stats: { total: 0, byToolDetail: {}, successRate: 100, avgDurationMs: 0, totalTokens: 0 } })
+      response = state.adminExpired ? jsonResponse({ ok: false, code: 'ADMIN_REQUIRED' }, 403)
+        : ok({ stats: { total: 0, byToolDetail: {}, successRate: 100, avgDurationMs: 0, totalTokens: 0 } })
+      if (state.holdStats) {
+        state.holdStats = false
+        state.releaseStats = () => request.respond(response)
+        return
+      }
     } else if (method === 'GET' && pathname === '/agent/queue') {
       response = ok({ queue: { activeCount: 0, waitingCount: 0, timeoutCount: 0 } })
     } else if (method === 'GET' && pathname === '/agent/shell-guard') {
       response = ok({ ruleCount: 0, categories: [] })
     } else if (method === 'GET' && pathname === '/agent/plans') {
       response = ok({ plans: [] })
+    } else if (method === 'POST' && pathname === '/agent/plans') {
+      response = ok({ plan: { id: 'smoke-plan' } })
+    } else if (method === 'POST' && pathname === '/agent/plans/smoke-plan/resume') {
+      response = ok({ reply: '隔离计划已启动' })
     } else if (method === 'GET' && pathname === '/agent/crons') {
       response = ok({ crons: [], history: [] })
     } else if (method === 'GET' && pathname === '/agent/push-log') {
       response = ok({ log: [] })
     } else if (method === 'GET' && pathname === '/agent/env') {
-      response = ok({ runtime: { provider: 'mock', model: 'mock-model', apiKeyConfigured: true, searchEnabled: false }, env: [] })
+      response = ok({ runtime: { provider: 'mock', model: state.envModel, apiKeyConfigured: true, searchEnabled: false }, env: [] })
+      if (state.holdEnv) {
+        state.holdEnv = false
+        // Keep the mocked response pending without blocking Puppeteer's request listeners.
+        state.releaseEnv = () => request.respond(response).catch(() => { /* The old fetch was cancelled on session change. */ })
+        return
+      }
     } else if (method === 'GET' && pathname === '/agent/personas') {
       response = ok({ personas: [{ name: '测试人格', description: 'smoke persona' }], persona: { dashboardPersona: '测试人格', qqInheritChatPersona: true } })
     } else {
@@ -147,6 +169,82 @@ async function installApiMock(page, state) {
 
 async function waitForText(page, text, timeout = 8000) {
   await page.waitForFunction(value => document.body && document.body.innerText.includes(value), { timeout }, text)
+}
+
+/** Navigates the visible workspace without bypassing a page's effects. */
+async function selectTab(page, label) {
+  await page.evaluate(value => [...document.querySelectorAll('nav button')].find(button => button.textContent.trim() === value).click(), label)
+}
+
+/** Bounds the request set of a user interaction once the local fixture is idle. */
+async function assertPageRequests(page, state, expected, operate) {
+  const start = state.requests.length
+  await operate()
+  await page.waitForNetworkIdle({ idleTime: 120 })
+  assert.deepEqual(state.requests.slice(start).sort(), expected.slice().sort())
+}
+
+/** Checks page entry, manual refresh and write-specific request fan-out. */
+async function testScopedWorkspaceReads(page, state) {
+  const statistics = ['GET /agent/sessions', 'GET /agent/stats', 'GET /agent/queue']
+  await assertPageRequests(page, state, statistics, () => selectTab(page, '智能体统计'))
+  await assertPageRequests(page, state, ['GET /agent/config', ...statistics], () => page.click('.top-actions button:last-child'))
+  await selectTab(page, '安全')
+  await page.waitForNetworkIdle({ idleTime: 120 })
+  const initialStats = state.requests.filter(entry => entry === 'GET /agent/stats').length
+  state.holdStats = true
+  const slowStats = page.waitForRequest(request => new URL(request.url()).pathname === '/dashboard/api/agent/stats')
+  await selectTab(page, '智能体统计')
+  await slowStats
+  await selectTab(page, '安全')
+  await selectTab(page, '智能体统计')
+  await page.waitForFunction(() => document.querySelector('.workspace h2')?.textContent === '智能体统计')
+  assert.equal(state.requests.filter(entry => entry === 'GET /agent/stats').length, initialStats + 1)
+  await state.releaseStats()
+  await page.waitForNetworkIdle({ idleTime: 120 })
+  await assertPageRequests(page, state, ['GET /agent/plans'], () => selectTab(page, '计划'))
+  await page.type('input[placeholder="多步骤目标"]', '隔离计划')
+  await assertPageRequests(page, state, ['POST /agent/plans', 'POST /agent/plans/smoke-plan/resume', 'GET /agent/plans'], async () => {
+    await page.click('.inline-form button')
+    await waitForText(page, '隔离计划已启动')
+  })
+  state.approvalPending = true
+  await assertPageRequests(page, state, ['GET /tools/pending', 'GET /agent/push-log'], () => selectTab(page, '收件箱'))
+  await assertPageRequests(page, state, ['POST /agent/confirm', 'GET /tools/pending', 'GET /agent/push-log', 'GET /agent/queue'], async () => {
+    await page.click('.approval-card button')
+    await waitForText(page, '隔离审批已执行')
+  })
+  state.adminExpired = true
+  const before = state.configRequests
+  await selectTab(page, '智能体统计')
+  await waitForText(page, '管理员密码已过期')
+  assert.equal(state.configRequests, before + 1)
+  await page.type('input[placeholder="管理员密码"]', 'smoke-admin-password')
+  await page.click('.admin-dialog-card button[type="submit"]')
+  await page.waitForSelector('.metric-grid')
+  await page.waitForNetworkIdle({ idleTime: 120 })
+  assert.equal(state.adminExpired, false)
+}
+
+/** Delivers a delayed old-account response after an authenticated session switch. */
+async function testStaleWorkspaceResponse(page, state) {
+  state.envModel = 'stale-model'
+  state.holdEnv = true
+  const oldRequest = page.waitForRequest(request => new URL(request.url()).pathname === '/dashboard/api/agent/env')
+  await selectTab(page, '环境变量')
+  await oldRequest
+  assert.equal(typeof state.releaseEnv, 'function')
+  state.envModel = 'current-model'
+  await page.evaluate(() => {
+    localStorage.setItem('dashboard_server_token', JSON.stringify({ token: 'next-smoke-admin', expires: Date.now() + 3600000 }))
+    window.dispatchEvent(new StorageEvent('storage', { key: 'dashboard_server_token' }))
+  })
+  await waitForText(page, 'current-model')
+  await state.releaseEnv()
+  await page.waitForNetworkIdle({ idleTime: 120 })
+  assert.equal(await page.evaluate(() => document.body.innerText.includes('stale-model')), false)
+  await selectTab(page, '聊天')
+  await page.waitForSelector('textarea')
 }
 
 // --- Clipboard images ---
@@ -233,7 +331,8 @@ async function main() {
   let browser = null
   const consoleErrors = []
   const responseErrors = []
-  const state = { configRequests: 0, adminVerifyRequests: 0, accessRequired: false, taskPollRequests: 0, taskNeverCompletes: false, chatPayloads: [] }
+  const state = { configRequests: 0, adminVerifyRequests: 0, accessRequired: false, taskPollRequests: 0, taskNeverCompletes: false,
+    chatPayloads: [], requests: [], envModel: 'mock-model' }
   try {
     await waitForServer(vite)
     browser = await puppeteer.launch({
@@ -248,7 +347,7 @@ async function main() {
       const status = response.status()
       if (status < 400) return
       const pathname = new URL(response.url()).pathname
-      if ([401, 403].includes(status) && pathname === '/dashboard/api/agent/config') return
+      if ([401, 403].includes(status) && ['/dashboard/api/agent/config', '/dashboard/api/agent/stats'].includes(pathname)) return
       if (status === 404 && pathname.endsWith('/favicon.ico')) return
       responseErrors.push(`${status} ${response.url()}`)
     })
@@ -266,6 +365,7 @@ async function main() {
     await page.goto(BASE_URL, { waitUntil: 'networkidle0' })
     await waitForText(page, '管理员密码已过期')
     await waitForText(page, '请重新输入管理员密码以继续操作。')
+    assert.deepEqual(state.requests, ['GET /agent/config'])
     await page.type('input[placeholder="管理员密码"]', 'smoke-admin-password')
     await Promise.all([
       page.waitForFunction(() => !document.querySelector('.admin-dialog-card'), { timeout: 8000 }),
@@ -273,12 +373,20 @@ async function main() {
     ])
     await waitForText(page, '莲莲 Agent')
     await waitForText(page, '聊天')
+    await page.waitForSelector('textarea')
+    await page.waitForNetworkIdle({ idleTime: 120 })
+    assert.deepEqual(state.requests, ['GET /agent/config', 'POST /admin/verify', 'GET /agent/config', 'GET /agent/personas'])
     await page.waitForFunction(() => !document.querySelector('.admin-dialog-card'), { timeout: 8000 })
     if (state.configRequests < 2) throw new Error(`expected config refresh after admin verify, got ${state.configRequests}`)
     if (state.adminVerifyRequests !== 1) throw new Error(`expected one admin verify request, got ${state.adminVerifyRequests}`)
-    await page.type('textarea', '37*19')
-    await page.click('.composer-actions button')
-    await waitForText(page, '703')
+    await testScopedWorkspaceReads(page, state)
+    await testStaleWorkspaceResponse(page, state)
+    await page.waitForNetworkIdle({ idleTime: 120 })
+    await assertPageRequests(page, state, ['POST /agent/chat', 'GET /agent/tasks/smoke-task', 'GET /agent/tasks/smoke-task'], async () => {
+      await page.type('textarea', '37*19')
+      await page.click('.composer-actions button')
+      await waitForText(page, '703')
+    })
     if (state.taskPollRequests !== 2) throw new Error(`expected task completion polling, got ${state.taskPollRequests}`)
     await testImageClipboard(page, state)
     state.taskNeverCompletes = true
@@ -300,6 +408,7 @@ async function main() {
     if (consoleErrors.length) throw new Error('Browser console errors:\n' + consoleErrors.join('\n'))
     console.log('agent console admin smoke passed')
   } catch (error) {
+    console.error('Recent mocked Agent requests:', state.requests.slice(-24).join(', '))
     if (browser) {
       const pages = await browser.pages()
       const page = pages[pages.length - 1]

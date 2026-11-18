@@ -12,6 +12,7 @@
     </div>
 
     <div v-if="message.text" class="msg" :class="message.type">{{ message.text }}</div>
+    <div v-if="statusReadError" class="msg err" role="alert">{{ statusReadError }}</div>
 
     <div class="resource-grid">
       <section class="card resource-summary">
@@ -363,7 +364,8 @@
             <pre v-if="event.reason || event.error">{{ event.error || event.reason }}</pre>
           </details>
         </div>
-        <div v-if="!events.length" class="resource-empty">暂无事件</div>
+        <div v-if="eventReadError" class="resource-empty" role="alert">{{ eventReadError }}</div>
+        <div v-else-if="!events.length" class="resource-empty">暂无事件</div>
       </div>
     </section>
     <div v-if="cancelFailure" class="admin-modal-backdrop" @keydown.esc="cancelFailure = null">
@@ -383,7 +385,7 @@
 </template>
 
 <script lang="ts">
-import { computed, inject, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import {
   cancelResourceTask,
   fetchResourceEvents,
@@ -400,6 +402,9 @@ import { activityLeaseDisplay, botModeDisplay, canCancel, coverageKey, dateTimeD
 import ResourceDiagnosticsPanel from './ResourceDiagnosticsPanel.vue'
 import ReportAnalysisDetail from './ReportAnalysisDetail.vue'
 import { useGroupNames } from '../services/group-names'
+
+type ResourceRead = 'status' | 'tasks' | 'events' | 'memory' | 'analysis' | 'groups'
+type ActiveRead = { key: string; controller: AbortController; promise: Promise<void> }
 
 export default {
   name: 'ResourcePanel',
@@ -423,11 +428,12 @@ export default {
     const reportAnalysis = ref<JsonRecord | null>(null)
     const reportAnalysisError = ref('')
     const loadingReportAnalysis = ref(false)
-    let reportAnalysisRequest = 0
     const cancellingTaskId = ref('')
     const cancelFailure = ref<{ taskId: string; taskName: string; reason: string; rawError: string } | null>(null)
     const cancelFailureClose = ref<HTMLButtonElement | null>(null)
     const events = ref<JsonRecord[]>([])
+    const statusReadError = ref('')
+    const eventReadError = ref('')
     const memoryHistory = ref<JsonRecord[]>([])
     const memoryRange = ref('5m')
     const memoryMeta = ref<JsonRecord>({})
@@ -441,9 +447,10 @@ export default {
     const loadingEvents = ref(false)
     const loadingMemory = ref(false)
     const memoryChartTransitioning = ref(false)
-    let timer: ReturnType<typeof setInterval> | null = null
-    let secondaryTimer: ReturnType<typeof setInterval> | null = null
-    let memoryTimer: ReturnType<typeof setInterval> | null = null
+    const reads = new Map<ResourceRead, ActiveRead>()
+    const timers = new Map<ResourceRead, ReturnType<typeof setTimeout>>()
+    let active = false
+    let activation = 0
     let memoryTransitionTimer: ReturnType<typeof setTimeout> | null = null
     let lastMemoryAdminPromptAt = 0
 
@@ -595,33 +602,73 @@ export default {
       })
     })
 
-    // 读取资源总览。
-    async function loadStatus(): Promise<void> {
-      const res = await fetchResourceStatus()
-      if (res.ok && res.data) {
-        status.value = asRecord(res.data)
-        lastRefresh.value = Date.now()
-        return
-      }
-      throw new Error(errorMessage(res.data, '资源状态读取失败'))
+    // --- 可见期读取 ---
+
+    // 撤销当前读取及已预约的下一轮，先摘除所有权再发送取消。
+    function cancelRead(endpoint: ResourceRead): void {
+      const timer = timers.get(endpoint)
+      if (timer !== undefined) clearTimeout(timer)
+      timers.delete(endpoint)
+      const previous = reads.get(endpoint)
+      reads.delete(endpoint)
+      previous?.controller.abort()
+    }
+
+    // 同端点同筛选共用请求，重新筛选和离开页面后忽略旧响应。
+    function readResource(endpoint: ResourceRead, key: string, work: (signal: AbortSignal, current: () => boolean) => Promise<void>,
+      interval?: { delay: number; reload: () => Promise<void> }): Promise<void> {
+      if (!active) return Promise.resolve()
+      const previous = reads.get(endpoint)
+      if (previous?.key === key) return previous.promise
+      cancelRead(endpoint)
+      const controller = new AbortController()
+      const current = () => active && reads.get(endpoint)?.controller === controller
+      const promise = Promise.resolve().then(async () => {
+        if (current()) await work(controller.signal, current)
+      }).finally(() => {
+        if (!current()) return
+        reads.delete(endpoint)
+        if (interval) timers.set(endpoint, setTimeout(() => { void interval.reload() }, interval.delay))
+      })
+      reads.set(endpoint, { key, controller, promise })
+      return promise
+    }
+
+    // 总览读取独立报告失败，完成后再预约下一轮。
+    function loadStatus(): Promise<void> {
+      return readResource('status', '', async (signal, current) => {
+        try {
+          const res = await fetchResourceStatus(signal)
+          if (!current()) return
+          if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '资源状态读取失败'))
+          status.value = asRecord(res.data)
+          statusReadError.value = ''
+          lastRefresh.value = Date.now()
+        } catch (error) {
+          if (current()) statusReadError.value = errorMessage(error, '资源状态读取失败')
+        }
+      }, { delay: 5000, reload: loadStatus })
     }
 
     // 按选中的状态查询任务，历史列表不会挤占进行中或失败记录的查询额度。
-    async function loadTasks(): Promise<void> {
-      if (loadingTasks.value) return
-      loadingTasks.value = true
-      try {
-        const res = await fetchResourceTasks(taskFilter.value)
-        if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '任务记录读取失败'))
-        tasks.value = asArray<JsonRecord>(asRecord(res.data).tasks)
-        taskReadError.value = ''
-        const expanded = tasks.value.find(task => task.id === expandedTaskId.value)
-        if (expanded?.kind === 'daily_report') await loadReportAnalysis(String(expanded.id))
-      } catch (error) {
-        taskReadError.value = errorMessage(error, '任务记录读取失败')
-      } finally {
-        loadingTasks.value = false
-      }
+    function loadTasks(): Promise<void> {
+      const filter = taskFilter.value
+      return readResource('tasks', filter, async (signal, current) => {
+        loadingTasks.value = true
+        try {
+          const res = await fetchResourceTasks(filter, signal)
+          if (!current()) return
+          if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '任务记录读取失败'))
+          tasks.value = asArray<JsonRecord>(asRecord(res.data).tasks)
+          taskReadError.value = ''
+          const expanded = tasks.value.find(task => task.id === expandedTaskId.value)
+          if (expanded?.kind === 'daily_report') void loadReportAnalysis(String(expanded.id))
+        } catch (error) {
+          if (current()) taskReadError.value = errorMessage(error, '任务记录读取失败')
+        } finally {
+          if (current()) loadingTasks.value = false
+        }
+      }, { delay: 15000, reload: loadTasks })
     }
 
     // 切换状态后清空旧列表和展开详情，避免将旧筛选结果显示在新分类下。
@@ -630,6 +677,8 @@ export default {
       taskFilter.value = status
       tasks.value = []
       expandedTaskId.value = ''
+      cancelRead('analysis')
+      loadingReportAnalysis.value = false
       taskCopyMessage.value = ''
       await loadTasks()
     }
@@ -639,7 +688,7 @@ export default {
       const taskId = String(task.id || '')
       expandedTaskId.value = expandedTaskId.value === taskId ? '' : taskId
       taskCopyMessage.value = ''
-      reportAnalysisRequest++
+      cancelRead('analysis')
       reportAnalysis.value = null
       reportAnalysisError.value = ''
       loadingReportAnalysis.value = false
@@ -647,24 +696,28 @@ export default {
     }
 
     // 按需读取当前日报，异步旧响应不能覆盖另一个任务；自动刷新不重复弹出验证框。
-    async function loadReportAnalysis(taskId: string, promptAdmin = false): Promise<void> {
-      if (expandedTaskId.value !== taskId) return
-      const request = ++reportAnalysisRequest
-      loadingReportAnalysis.value = true
-      try {
-        const res = await fetchReportAnalysis(taskId)
-        if (request !== reportAnalysisRequest || expandedTaskId.value !== taskId) return
-        if (isAdminRequired(res)) {
-          reportAnalysisError.value = '查看日报分析详情需要管理员验证'
-          if (promptAdmin && showAdminDialog) showAdminDialog('查看日报分析详情需要管理员密码', () => loadReportAnalysis(taskId))
-          return
-        }
-        if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '日报分析详情读取失败'))
-        reportAnalysis.value = asRecord(res.data)
-        reportAnalysisError.value = ''
-      } catch (error) {
-        if (request === reportAnalysisRequest) reportAnalysisError.value = errorMessage(error, '日报分析详情读取失败')
-      } finally { if (request === reportAnalysisRequest) loadingReportAnalysis.value = false }
+    function loadReportAnalysis(taskId: string, promptAdmin = false): Promise<void> {
+      if (expandedTaskId.value !== taskId) return Promise.resolve()
+      const page = activation
+      return readResource('analysis', taskId, async (signal, current) => {
+        loadingReportAnalysis.value = true
+        try {
+          const res = await fetchReportAnalysis(taskId, signal)
+          if (!current()) return
+          if (isAdminRequired(res)) {
+            reportAnalysisError.value = '查看日报分析详情需要管理员验证'
+            if (promptAdmin && showAdminDialog) showAdminDialog('查看日报分析详情需要管理员密码', async () => {
+              if (page === activation) await loadReportAnalysis(taskId)
+            })
+            return
+          }
+          if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '日报分析详情读取失败'))
+          reportAnalysis.value = asRecord(res.data)
+          reportAnalysisError.value = ''
+        } catch (error) {
+          if (current()) reportAnalysisError.value = errorMessage(error, '日报分析详情读取失败')
+        } finally { if (current()) loadingReportAnalysis.value = false }
+      })
     }
 
     // 复制完整任务 ID，浏览器未提供剪贴板时提示用户手动选中复制。
@@ -678,70 +731,78 @@ export default {
     }
 
     // 读取最近事件。
-    async function loadEvents(): Promise<void> {
-      if (loadingEvents.value) return
-      loadingEvents.value = true
-      try {
-        const res = await fetchResourceEvents()
-        if (res.ok && res.data) events.value = asArray<JsonRecord>(asRecord(res.data).events)
-      } finally {
-        loadingEvents.value = false
-      }
+    function loadEvents(): Promise<void> {
+      return readResource('events', '', async (signal, current) => {
+        loadingEvents.value = true
+        try {
+          const res = await fetchResourceEvents(signal)
+          if (!current()) return
+          if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '资源事件读取失败'))
+          events.value = asArray<JsonRecord>(asRecord(res.data).events)
+          eventReadError.value = ''
+        } catch (error) {
+          if (current()) eventReadError.value = errorMessage(error, '资源事件读取失败')
+        } finally { if (current()) loadingEvents.value = false }
+      }, { delay: 15000, reload: loadEvents })
     }
 
     // 读取内存历史折线图。
-    async function loadMemoryHistory(options: { animate?: boolean } = {}): Promise<void> {
-      if (loadingMemory.value) return
-      if (options.animate) {
+    function loadMemoryHistory(options: { animate?: boolean } = {}): Promise<void> {
+      const range = memoryRange.value, page = activation
+      return readResource('memory', range, async (signal, current) => {
         if (memoryTransitionTimer) clearTimeout(memoryTransitionTimer)
-        memoryChartTransitioning.value = true
-      }
-      loadingMemory.value = true
-      try {
-        const res = await fetchResourceMemoryHistory(memoryRange.value)
-        if (res.ok && res.data) {
-          const data = asRecord(res.data)
-          memoryMeta.value = data
-          memoryHistory.value = asArray<JsonRecord>(data.points)
-          memoryError.value = ''
-          return
-        }
-        if (isAdminRequired(res)) {
-          memoryError.value = '查看内存走势需要管理员密码'
-          const now = Date.now()
-          if (showAdminDialog && now - lastMemoryAdminPromptAt > 30000) {
-            lastMemoryAdminPromptAt = now
-            showAdminDialog('查看内存走势需要管理员密码', loadMemoryHistory)
+        memoryTransitionTimer = null
+        memoryChartTransitioning.value = !!options.animate
+        loadingMemory.value = true
+        try {
+          const res = await fetchResourceMemoryHistory(range, signal)
+          if (!current() || memoryRange.value !== range) return
+          if (res.ok && res.data) {
+            const data = asRecord(res.data)
+            memoryMeta.value = data
+            memoryHistory.value = asArray<JsonRecord>(data.points)
+            memoryError.value = ''
+          } else if (isAdminRequired(res)) {
+            memoryError.value = '查看内存走势需要管理员密码'
+            const now = Date.now()
+            if (showAdminDialog && now - lastMemoryAdminPromptAt > 30000) {
+              lastMemoryAdminPromptAt = now
+              showAdminDialog('查看内存走势需要管理员密码', async () => {
+                if (page === activation && memoryRange.value === range) await loadMemoryHistory()
+              })
+            }
+          } else {
+            memoryError.value = errorMessage(res.data, '内存走势读取失败')
           }
-          return
+        } catch (error) {
+          if (current()) memoryError.value = errorMessage(error, '内存走势读取失败')
+        } finally {
+          if (current()) {
+            loadingMemory.value = false
+            if (options.animate) memoryTransitionTimer = setTimeout(() => {
+              memoryChartTransitioning.value = false
+              memoryTransitionTimer = null
+            }, 220)
+          }
         }
-        memoryError.value = errorMessage(res.data, '内存走势读取失败')
-      } finally {
-        loadingMemory.value = false
-        if (options.animate) {
-          memoryTransitionTimer = setTimeout(() => {
-            memoryChartTransitioning.value = false
-            memoryTransitionTimer = null
-          }, 220)
-        }
-      }
+      }, { delay: 10000, reload: loadMemoryHistory })
     }
 
     // 刷新资源中心所有数据。
     async function refreshAllInternal(options: { preserveMessage?: boolean } = {}): Promise<void> {
-      if (loading.value) return
+      if (!active || loading.value) return
+      const page = activation
       loading.value = true
       if (!options.preserveMessage) {
         message.value = { type: 'info', text: '' }
       }
       try {
-        await loadStatus()
-        void refreshGroupNames()
-        await Promise.all([loadTasks(), loadEvents(), loadMemoryHistory()])
-      } catch (error) {
-        message.value = { type: 'err', text: errorMessage(error, '刷新失败') }
+        void readResource('groups', '', async signal => {
+          try { await refreshGroupNames(false, signal) } catch { /* 群目录读取失败时保留原名称或群号。 */ }
+        })
+        await Promise.all([loadStatus(), loadTasks(), loadEvents(), loadMemoryHistory()])
       } finally {
-        loading.value = false
+        if (page === activation) loading.value = false
       }
     }
 
@@ -840,22 +901,35 @@ export default {
       }
     }
 
-    onMounted(() => {
-      refreshAll()
-      timer = setInterval(loadStatus, 5000)
-      secondaryTimer = setInterval(() => { loadTasks(); loadEvents() }, 15000)
-      memoryTimer = setInterval(loadMemoryHistory, 10000)
-    })
+    // 首次挂载与缓存激活共用入口，只建立一套读取节奏。
+    function startReads(): void {
+      if (active) return
+      active = true
+      activation++
+      void refreshAllInternal({ preserveMessage: true })
+    }
 
-    onUnmounted(() => {
-      if (timer) clearInterval(timer)
-      if (secondaryTimer) clearInterval(secondaryTimer)
-      if (memoryTimer) clearInterval(memoryTimer)
+    // 页面停用不干预写操作，只撤销当前一代的只读请求及动画。
+    function stopReads(): void {
+      if (!active) return
+      active = false
+      activation++
+      reads.forEach((_, endpoint) => cancelRead(endpoint))
+      timers.forEach((_, endpoint) => cancelRead(endpoint))
       if (memoryTransitionTimer) clearTimeout(memoryTransitionTimer)
-    })
+      memoryTransitionTimer = null
+      memoryChartTransitioning.value = false
+      loading.value = loadingTasks.value = loadingEvents.value = loadingMemory.value = loadingReportAnalysis.value = false
+    }
+    onMounted(startReads)
+    onActivated(startReads)
+    onDeactivated(stopReads)
+    onUnmounted(stopReads)
 
     return {
       status,
+      statusReadError,
+      eventReadError,
       tasks,
       taskFilters,
       taskFilter,

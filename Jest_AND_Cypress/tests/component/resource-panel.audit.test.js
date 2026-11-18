@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { KeepAlive, defineComponent, h, nextTick, ref } from 'vue'
 import ResourcePanel from '../../../packages/koishi-plugin-dashboard/frontend/src/components/ResourcePanel.vue'
 import * as dashboardApi from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
 
@@ -299,11 +300,11 @@ describe('ResourcePanel 管理员操作与确认闭环', () => {
     const writeText = jest.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     const wrapper = await mountResource()
-    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('pending,claiming,running,deferred')
+    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('pending,claiming,running,deferred', expect.any(AbortSignal))
     expect(wrapper.find('.resource-task-card').text()).toContain('当前没有进行中的任务')
     await findButton(wrapper, '已完成').trigger('click')
     await flushPromises()
-    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('done')
+    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('done', expect.any(AbortSignal))
     expect(wrapper.find('.resource-task-row').text()).toContain('下载 B 站视频 · BV1xx411c7mD')
     expect(wrapper.find('.resource-task-row').text()).toContain('来源：群 1072587329')
     expect(wrapper.find('.resource-task-row').text()).toContain('10-05 19:44:36')
@@ -319,7 +320,7 @@ describe('ResourcePanel 管理员操作与确认闭环', () => {
     expect(wrapper.text()).toContain('任务 ID 已复制')
     await findButton(wrapper, '失败').trigger('click')
     await flushPromises()
-    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('failed')
+    expect(dashboardApi.fetchResourceTasks).toHaveBeenLastCalledWith('failed', expect.any(AbortSignal))
     expect(wrapper.find('.resource-task-detail').exists()).toBe(false)
     expect(wrapper.find('.resource-task-card').text()).toContain('暂无失败记录')
     wrapper.unmount()
@@ -404,7 +405,7 @@ describe('ResourcePanel 日报分析详情', () => {
     expect(dashboardApi.fetchReportAnalysis).not.toHaveBeenCalled()
     await findButton(wrapper, '查看详情').trigger('click')
     await flushPromises()
-    expect(dashboardApi.fetchReportAnalysis).toHaveBeenCalledWith('daily-1')
+    expect(dashboardApi.fetchReportAnalysis).toHaveBeenCalledWith('daily-1', expect.any(AbortSignal))
     const detail = wrapper.find('.report-analysis-detail')
     expect(detail.text()).toContain('旧版本未记录正文完整性')
     expect(detail.text()).toContain('旧任务按创建时间补齐报告窗口')
@@ -486,6 +487,141 @@ describe('ResourcePanel 日报分析详情', () => {
     await flushPromises()
     expect(wrapper.find('.report-analysis-detail').text()).toContain('第二份日报详情')
     expect(wrapper.find('.report-analysis-detail').text()).not.toContain('4500')
+    wrapper.unmount()
+  })
+})
+
+describe('ResourcePanel 缓存切页与读取时序', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    jest.clearAllMocks()
+    arrangeResourceReads()
+  })
+
+  afterEach(() => jest.useRealTimers())
+
+  test('KeepAlive 切走撤销慢总览，重新激活只恢复一套读取', async () => {
+    const visible = ref(true)
+    const Other = defineComponent({ render: () => h('p', '其他栏目') })
+    const Host = defineComponent({ render: () => h(KeepAlive, null, { default: () => visible.value ? h(ResourcePanel) : h(Other) }) })
+    let resolveSlow
+    dashboardApi.fetchResourceStatus.mockReturnValueOnce(new Promise(resolve => { resolveSlow = resolve }))
+    const wrapper = mount(Host, { global: { provide: { showAdminDialog: jest.fn() } } })
+    await flushPromises()
+    expect(dashboardApi.fetchResourceStatus).toHaveBeenCalledTimes(1)
+    const oldSignal = dashboardApi.fetchResourceStatus.mock.calls[0][0]
+    expect(dashboardApi.fetchResourceTasks).toHaveBeenCalledTimes(1)
+    visible.value = false
+    await nextTick()
+    expect(oldSignal.aborted).toBe(true)
+    await jest.advanceTimersByTimeAsync(60000)
+    for (const read of [dashboardApi.fetchResourceStatus, dashboardApi.fetchResourceTasks, dashboardApi.fetchResourceEvents, dashboardApi.fetchResourceMemoryHistory]) {
+      expect(read).toHaveBeenCalledTimes(1)
+    }
+    visible.value = true
+    await flushPromises()
+    expect(dashboardApi.fetchResourceStatus).toHaveBeenCalledTimes(2)
+    resolveSlow({ ok: true, data: resourceStatus({ maintenance: true }) })
+    await flushPromises()
+    expect(wrapper.findComponent(ResourcePanel).vm.status.maintenance).toBe(false)
+    await jest.advanceTimersByTimeAsync(4999)
+    expect(dashboardApi.fetchResourceStatus).toHaveBeenCalledTimes(2)
+    await jest.advanceTimersByTimeAsync(1)
+    expect(dashboardApi.fetchResourceStatus).toHaveBeenCalledTimes(3)
+    wrapper.unmount()
+  })
+
+  test('慢总览与手动刷新共用读取，完成后才预约下一轮', async () => {
+    const wrapper = await mountResource()
+    let resolveSlow
+    dashboardApi.fetchResourceStatus.mockReturnValueOnce(new Promise(resolve => { resolveSlow = resolve }))
+    await jest.advanceTimersByTimeAsync(5000)
+    await findButton(wrapper, '立即刷新').trigger('click')
+    await jest.advanceTimersByTimeAsync(15000)
+    expect(dashboardApi.fetchResourceStatus).toHaveBeenCalledTimes(2)
+    expect(dashboardApi.fetchResourceEvents.mock.calls.length).toBeGreaterThan(1)
+    resolveSlow({ ok: true, data: resourceStatus() })
+    await flushPromises()
+    await jest.advanceTimersByTimeAsync(4999)
+    expect(dashboardApi.fetchResourceStatus).toHaveBeenCalledTimes(2)
+    await jest.advanceTimersByTimeAsync(1)
+    expect(dashboardApi.fetchResourceStatus).toHaveBeenCalledTimes(3)
+    wrapper.unmount()
+  })
+
+  test('缓存停用撤销日报详情，回到栏目重读原编号并忽略迟到结果', async () => {
+    const visible = ref(true)
+    const Other = defineComponent({ render: () => h('p', '其他栏目') })
+    const Host = defineComponent({ render: () => h(KeepAlive, null, { default: () => visible.value ? h(ResourcePanel) : h(Other) }) })
+    const showAdminDialog = jest.fn()
+    let finishOld
+    dashboardApi.fetchResourceTasks.mockResolvedValue({ ok: true, data: { tasks: [{ ...TASK, kind: 'daily_report' }] } })
+    dashboardApi.fetchReportAnalysis.mockReturnValueOnce(new Promise(resolve => { finishOld = resolve }))
+      .mockResolvedValueOnce({ ok: true, data: { state: 'legacy_unknown', message: '重新激活的日报详情' } })
+    const wrapper = mount(Host, { global: { provide: { showAdminDialog } } })
+    await flushPromises()
+    await findButton(wrapper, '查看详情').trigger('click')
+    await flushPromises()
+    const oldRequest = dashboardApi.fetchReportAnalysis.mock.calls[0]
+    visible.value = false
+    await nextTick()
+    expect(oldRequest[1].aborted).toBe(true)
+    visible.value = true
+    await flushPromises()
+    finishOld(ADMIN_REQUIRED)
+    await flushPromises()
+    expect(dashboardApi.fetchReportAnalysis.mock.calls.map(([id]) => id)).toEqual([TASK.id, TASK.id])
+    expect(wrapper.find('.report-analysis-detail').text()).toContain('重新激活的日报详情')
+    expect(showAdminDialog).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  test('诊断首屏和群目录也随栏目取消，已离开的报错不会回填', async () => {
+    const visible = ref(true)
+    const Other = defineComponent({ render: () => h('p', '其他栏目') })
+    const Host = defineComponent({ render: () => h(KeepAlive, null, { default: () => visible.value ? h(ResourcePanel) : h(Other) }) })
+    let resolveGroups, resolveDiagnostics
+    dashboardApi.fetchGroupNames.mockReturnValueOnce(new Promise(resolve => { resolveGroups = resolve }))
+    dashboardApi.fetchResourceDiagnostics.mockReturnValueOnce(new Promise(resolve => { resolveDiagnostics = resolve }))
+    const wrapper = mount(Host, { global: { provide: { showAdminDialog: jest.fn() } } })
+    await flushPromises()
+    await findButton(wrapper, '打开诊断记录').trigger('click')
+    await flushPromises()
+    visible.value = false
+    await nextTick()
+    expect(dashboardApi.fetchGroupNames.mock.calls[0][0].aborted).toBe(true)
+    expect(dashboardApi.fetchResourceDiagnostics.mock.calls[0][1].aborted).toBe(true)
+    visible.value = true
+    await flushPromises()
+    expect(dashboardApi.fetchResourceDiagnostics).toHaveBeenCalledTimes(2)
+    expect(dashboardApi.fetchGroupNames).toHaveBeenCalledTimes(2)
+    resolveGroups({ ok: false, data: { message: '迟到的群目录错误' } })
+    resolveDiagnostics({ ok: false, data: { message: '迟到的诊断错误' } })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('迟到的')
+    wrapper.unmount()
+  })
+
+  test('三个内存区间逆序返回时只应用最新区间，旧鉴权错误也不弹窗', async () => {
+    const pending = []
+    dashboardApi.fetchResourceMemoryHistory.mockImplementation((range, signal) => new Promise(resolve => pending.push({ range, signal, resolve })))
+    const showAdminDialog = jest.fn()
+    const wrapper = await mountResource(showAdminDialog)
+    await wrapper.find('.memory-range-select').setValue('10m')
+    await wrapper.find('.memory-range-select').setValue('30m')
+    await flushPromises()
+    expect(pending.map(entry => entry.range)).toEqual(['5m', '10m', '30m'])
+    expect(pending.map(entry => entry.signal.aborted)).toEqual([true, true, false])
+    pending[2].resolve({ ok: true, data: { points: [{ label: 'latest-point' }] } })
+    pending[1].resolve(ADMIN_REQUIRED)
+    pending[0].resolve({ ok: false, data: { message: '旧区间错误' } })
+    await flushPromises()
+    expect(wrapper.vm.memoryHistory).toEqual([{ label: 'latest-point' }])
+    expect(wrapper.vm.memoryError).toBe('')
+    expect(showAdminDialog).not.toHaveBeenCalled()
+    expect(wrapper.vm.memoryChartTransitioning).toBe(true)
+    await jest.advanceTimersByTimeAsync(220)
+    expect(wrapper.vm.memoryChartTransitioning).toBe(false)
     wrapper.unmount()
   })
 })

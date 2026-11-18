@@ -79,7 +79,7 @@
 </template>
 
 <script lang="ts">
-import { inject, ref } from 'vue'
+import { inject, onActivated, onDeactivated, onUnmounted, ref } from 'vue'
 import { fetchResourceDiagnosticDetail, fetchResourceDiagnostics, isAdminRequired } from '../api'
 import { asArray, asRecord, errorMessage, type JsonRecord, type ShowAdminDialog } from '../types'
 import { dateTimeDisplay, display, mediaFinishReasonDisplay, numberValue, taskKindDisplay } from '../services/resource-model'
@@ -102,18 +102,47 @@ export default {
     const expandedIds = ref<Set<string>>(new Set())
     const details = ref<Record<string, JsonRecord>>({})
     const detailLoading = ref<Record<string, boolean>>({})
+    let viewReads = new AbortController()
+    let reloadFirstPage = false
+
+    // 取消缓存停用前的列表、分页和详情读取，保留已经完成的诊断内容。
+    function stopReads(): void {
+      if (viewReads.signal.aborted) return
+      reloadFirstPage = opened.value && loading.value
+      viewReads.abort()
+      loading.value = loadingMore.value = false
+      const completed = new Set(expandedIds.value)
+      Object.keys(detailLoading.value).forEach(id => { if (detailLoading.value[id]) completed.delete(id) })
+      expandedIds.value = completed
+      detailLoading.value = {}
+    }
+
+    // 只恢复被中断的首屏，已打开的诊断区维持原分页状态。
+    function resumeReads(): void {
+      if (!viewReads.signal.aborted) return
+      viewReads = new AbortController()
+      if (reloadFirstPage) void loadFirstPage()
+      reloadFirstPage = false
+    }
+    onActivated(resumeReads)
+    onDeactivated(stopReads)
+    onUnmounted(stopReads)
 
     // --- 列表与分页 --- //
 
     // Reads the newest fixed-size page and clears state from the previous filter.
     async function loadFirstPage(retried = false): Promise<void> {
-      if (loading.value) return
+      const signal = viewReads.signal
+      if (signal.aborted || loading.value) return
       loading.value = true
       error.value = ''
       try {
-        const res = await fetchResourceDiagnostics({ group: group.value, reason: group.value === 'media' ? reason.value : '' })
+        const res = await fetchResourceDiagnostics({ group: group.value, reason: group.value === 'media' ? reason.value : '' }, signal)
+        if (signal.aborted) return
         if (isAdminRequired(res)) {
-          if (!retried && showAdminDialog) showAdminDialog('查看任务诊断记录需要管理员密码', () => loadFirstPage(true))
+          if (!retried && showAdminDialog) showAdminDialog('查看任务诊断记录需要管理员密码', async () => {
+            if (!signal.aborted) await loadFirstPage(true)
+          })
           else error.value = '管理员验证后诊断记录仍无法读取'
           return
         }
@@ -128,9 +157,9 @@ export default {
         details.value = {}
         detailLoading.value = {}
       } catch (failure) {
-        error.value = errorMessage(failure, '任务诊断记录读取失败')
+        if (!signal.aborted) error.value = errorMessage(failure, '任务诊断记录读取失败')
       } finally {
-        loading.value = false
+        if (!signal.aborted) loading.value = false
       }
     }
 
@@ -158,7 +187,8 @@ export default {
 
     // Loads the next stable 120-record page using the backend cursor.
     async function loadMore(): Promise<void> {
-      if (loadingMore.value || !hasMore.value || !nextCursor.value) return
+      const signal = viewReads.signal
+      if (signal.aborted || loadingMore.value || !hasMore.value || !nextCursor.value) return
       loadingMore.value = true
       error.value = ''
       try {
@@ -166,7 +196,8 @@ export default {
           group: group.value,
           reason: group.value === 'media' ? reason.value : '',
           cursor: nextCursor.value,
-        })
+        }, signal)
+        if (signal.aborted) return
         if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '更多诊断记录读取失败'))
         const data = asRecord(res.data)
         const known = new Set(items.value.map(item => String(item.recordId || '')))
@@ -176,9 +207,9 @@ export default {
         nextCursor.value = String(data.nextCursor || '')
         hasMore.value = data.hasMore === true
       } catch (failure) {
-        error.value = errorMessage(failure, '更多诊断记录读取失败')
+        if (!signal.aborted) error.value = errorMessage(failure, '更多诊断记录读取失败')
       } finally {
-        loadingMore.value = false
+        if (!signal.aborted) loadingMore.value = false
       }
     }
 
@@ -196,8 +227,9 @@ export default {
 
     // Opens or closes one record and lazily reads its saved error exactly once.
     async function toggleDetail(item: JsonRecord, retried = false): Promise<void> {
+      const signal = viewReads.signal
       const recordId = String(item.recordId || '')
-      if (!recordId) return
+      if (signal.aborted || !recordId) return
       if (expandedIds.value.has(recordId) && !retried) {
         const next = new Set(expandedIds.value)
         next.delete(recordId)
@@ -208,18 +240,21 @@ export default {
       if (details.value[recordId] || detailLoading.value[recordId]) return
       detailLoading.value = { ...detailLoading.value, [recordId]: true }
       try {
-        const res = await fetchResourceDiagnosticDetail(recordId)
+        const res = await fetchResourceDiagnosticDetail(recordId, signal)
+        if (signal.aborted) return
         if (isAdminRequired(res)) {
-          if (!retried && showAdminDialog) showAdminDialog('查看任务具体报错需要管理员密码', () => toggleDetail(item, true))
+          if (!retried && showAdminDialog) showAdminDialog('查看任务具体报错需要管理员密码', async () => {
+            if (!signal.aborted) await toggleDetail(item, true)
+          })
           else details.value = { ...details.value, [recordId]: { error: '', loadError: '管理员验证后具体报错仍无法读取' } }
           return
         }
         if (!res.ok || !res.data) throw new Error(errorMessage(res.data, '具体报错读取失败'))
         details.value = { ...details.value, [recordId]: asRecord(res.data) }
       } catch (failure) {
-        details.value = { ...details.value, [recordId]: { error: '', loadError: errorMessage(failure, '具体报错读取失败') } }
+        if (!signal.aborted) details.value = { ...details.value, [recordId]: { error: '', loadError: errorMessage(failure, '具体报错读取失败') } }
       } finally {
-        detailLoading.value = { ...detailLoading.value, [recordId]: false }
+        if (!signal.aborted) detailLoading.value = { ...detailLoading.value, [recordId]: false }
       }
     }
 

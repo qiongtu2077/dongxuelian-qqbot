@@ -1,4 +1,4 @@
-import { addManagedGroup, deleteManagedGroup, detectAiModelCapabilities, fetchAiModelApiConfig, fetchGroupSettings, saveGroupSettings, updateSelfId, verifyAdmin } from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
+import { addManagedGroup, deleteManagedGroup, detectAiModelCapabilities, fetchAiModelApiConfig, fetchGroupSettings, fetchResourceStatus, saveGroupSettings, updateSelfId, verifyAdmin } from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
 
 // 创建足以模拟浏览器 fetch Response 的响应对象。
 function response(status, data) {
@@ -72,6 +72,20 @@ describe('主控制台 API 请求封装', () => {
     expect(localStorage.getItem('dashboard_token')).toBeNull()
     expect(listener).toHaveBeenCalledTimes(1)
     window.removeEventListener('auth-expired', listener)
+  })
+
+  test('离开资源页取消传输，迟到的 401 不清除当前登录', async () => {
+    localStorage.setItem('dashboard_token', 'current-token')
+    let resolveResponse
+    global.fetch.mockReturnValueOnce(new Promise(resolve => { resolveResponse = resolve }))
+    const controller = new AbortController()
+    const pending = fetchResourceStatus(controller.signal)
+    const fetchSignal = global.fetch.mock.calls[0][1].signal
+    controller.abort()
+    expect(fetchSignal.aborted).toBe(true)
+    resolveResponse(response(401, { message: 'stale response' }))
+    expect(await pending).toEqual({ ok: false, data: null })
+    expect(localStorage.getItem('dashboard_token')).toBe('current-token')
   })
 
   test('管理员密码输错返回 403 时保留普通登录状态', async () => {

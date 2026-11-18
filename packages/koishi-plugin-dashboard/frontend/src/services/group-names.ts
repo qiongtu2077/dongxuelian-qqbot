@@ -5,22 +5,25 @@ import { fetchGroupNames } from '../api'
 export function useGroupNames() {
   const groupNames = ref<Record<string, string>>({})
   let loadedAt = 0
-  let pending: Promise<void> | null = null
+  let pending: { signal?: AbortSignal; promise: Promise<void> } | null = null
 
   // 每分钟最多刷新一次，手动刷新可以立即读取最新群名。
-  async function refreshGroupNames(force = false): Promise<void> {
-    if (pending) return pending
+  async function refreshGroupNames(force = false, signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return
+    if (pending && !pending.signal?.aborted) return pending.promise
     if (!force && loadedAt && Date.now() - loadedAt < 60000) return
-    pending = (async () => {
+    const promise = Promise.resolve().then(async () => {
       try {
-        const response = await fetchGroupNames()
-        if (response.ok && response.data?.groups) {
+        if (signal?.aborted) return
+        const response = await (signal ? fetchGroupNames(signal) : fetchGroupNames())
+        if (!signal?.aborted && response.ok && response.data?.groups) {
           groupNames.value = response.data.groups
           loadedAt = Date.now()
         }
-      } finally { pending = null }
-    })()
-    return pending
+      } finally { if (pending?.promise === promise) pending = null }
+    })
+    pending = { signal, promise }
+    return promise
   }
 
   // 群号始终放在前面；没有真实名称时仅显示群号。

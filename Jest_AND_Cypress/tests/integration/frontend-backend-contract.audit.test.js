@@ -1,3 +1,6 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import AiModelApiConfigPanel from '../../../packages/koishi-plugin-dashboard/frontend/src/components/AiModelApiConfigPanel.vue'
+
 const fs = require('node:fs')
 const path = require('node:path')
 
@@ -16,14 +19,187 @@ function sourceBetween(source, start, end) {
   return source.slice(startIndex, endIndex)
 }
 
-describe('主控制台前后端契约审查', () => {
-  test('Fallback 前后端统一使用 defaults 字段', () => {
-    const backend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/settings.ts')
-    const frontend = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ConfigPanel.vue')
+// --- 统一模型配置行为 ---
 
-    expect(backend).toMatch(/defaults:\s*DEFAULT_FALLBACK_CHAINS/)
-    expect(frontend).toMatch(/fRes\.data\.defaults\s*\|\|\s*\{\}/)
-    expect(frontend).not.toMatch(/fRes\.data\.default\s*\|\|\s*\{\}/)
+const abilities = { text: '文字', vision: '识图', 'voice-asr': '语音识别', 'voice-tts': '语音合成' }
+const configEndpoint = '/dashboard/api/ai-model-api/config'
+const priorityEndpoint = '/dashboard/api/ai-model-api/priority'
+const discoverEndpoint = '/dashboard/api/ai-model-api/discover'
+const detectEndpoint = '/dashboard/api/ai-model-api/detect'
+const fixtureKey = 'fixture-api-key'
+const provider = { id: 'openai', name: '示例供应商', discoveryAvailable: true, supportedCapabilities: Object.keys(abilities) }
+const importedProvider = { ...provider, id: 'custom-fixture', name: '测试连接', custom: true }
+
+// 构造当前接口的脱敏响应，每项能力使用独立的已保存模型。
+function modelConfig() {
+  const capabilities = Object.keys(abilities)
+  const models = capabilities.map(capability => ({ id: `${capability}-main`, name: `${capability}-main`, capabilities: [capability] }))
+  models.push({ id: 'text-backup', name: 'text-backup', capabilities: ['text'] })
+  return {
+    version: 1, capabilities,
+    providers: { openai: { key: { configured: true, prefix: '****' }, models } },
+    priorities: Object.fromEntries(capabilities.map(capability => [capability, [{ provider: 'openai', model: `${capability}-main` }]])),
+  }
+}
+
+// 提供浏览器传输边界，API 包装与两层模型配置组件均执行真实实现。
+function response(status, data) {
+  return { status, ok: status >= 200 && status < 300, json: async () => data }
+}
+
+// 通过可见能力切换按钮获取相应优先级列表。
+async function selectCapability(wrapper, capability) {
+  const tab = wrapper.get('nav[aria-label="模型优先级能力"]').findAll('button').find(button => button.text() === abilities[capability])
+  await tab.trigger('click')
+  return wrapper.findAll('.priority-list li strong').map(model => model.text())
+}
+
+// 打开真实导入表单并填写只在本机夹具中使用的值。
+async function fillImportDialog(wrapper) {
+  await wrapper.get('.connections .section-head button').trigger('click')
+  const dialog = wrapper.get('dialog[aria-labelledby="import-key-title"]')
+  await dialog.get('input[placeholder="例如：MistEO"]').setValue(importedProvider.name)
+  await dialog.get('input[type="url"]').setValue('https://example.test/v1')
+  await dialog.get('input[type="password"]').setValue(fixtureKey)
+  return dialog
+}
+
+describe('统一 AI 模型与 API 配置契约', () => {
+  let wrapper, previousFetch, config
+
+  // jsdom 补齐原生 dialog 的打开和关闭，保留表单与事件处理。
+  beforeAll(() => {
+    Object.defineProperty(HTMLDialogElement.prototype, 'showModal', { configurable: true, value: function showModal() { this.setAttribute('open', '') } })
+    Object.defineProperty(HTMLDialogElement.prototype, 'close', { configurable: true, value: function close() { this.removeAttribute('open') } })
+  })
+  afterAll(() => { delete HTMLDialogElement.prototype.showModal; delete HTMLDialogElement.prototype.close })
+
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem('dashboard_token', 'fixture-login')
+    localStorage.setItem('dashboard_server_token', JSON.stringify({ token: 'fixture-admin', expires: Date.now() + 60000 }))
+    config = modelConfig()
+    previousFetch = global.fetch
+    global.fetch = jest.fn().mockResolvedValueOnce(response(200, { ok: true, config, catalog: [provider] }))
+  })
+  afterEach(() => {
+    wrapper?.unmount()
+    wrapper = undefined
+    global.fetch = previousFetch
+    localStorage.clear()
+  })
+
+  // 挂载完整配置页，隔离与这四条契约无关的统计周期查询。
+  async function mountConfig(showAdminDialog = jest.fn()) {
+    wrapper = mount(AiModelApiConfigPanel, { global: { provide: { showAdminDialog }, stubs: { AiUsagePanel: true } } })
+    await flushPromises()
+    return wrapper
+  }
+
+  test('从统一配置读取四条已保存优先级，切换能力只切换当前展示', async () => {
+    const panel = await mountConfig()
+    for (const capability of Object.keys(abilities)) expect(await selectCapability(panel, capability)).toEqual([`${capability}-main`])
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([configEndpoint])
+    expect(global.fetch.mock.calls[0][1].headers).toMatchObject({ Authorization: 'Bearer fixture-login', 'X-Admin-Token': 'fixture-admin' })
+  })
+
+  test('旧主模型兜底的本地标记不生成额外模型或保存字段', async () => {
+    localStorage.setItem('cfg_lightweight_main', 'true')
+    config.priorities.text = []
+    const panel = await mountConfig()
+    expect(panel.get('.empty-priority').text()).toBe('该能力未配置模型')
+    global.fetch.mockResolvedValueOnce(response(200, { ok: true, config }))
+    await panel.get('button.primary-btn').trigger('click')
+    await flushPromises()
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([configEndpoint, priorityEndpoint])
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({ capability: 'text', steps: [] })
+  })
+
+  test('自定义供应商提交一次导入并采用事务回包，后续检测只发送供应商和模型编号', async () => {
+    const panel = await mountConfig()
+    const dialog = await fillImportDialog(panel)
+    const next = { ...config, providers: { ...config.providers, [importedProvider.id]: {
+      key: { configured: true, prefix: 'fixture****' }, models: [{ id: 'fixture-model', name: '测试模型', capabilities: ['text'] }],
+    } } }
+    global.fetch.mockResolvedValueOnce(response(200, { ok: true, config: next, providerId: importedProvider.id, catalog: [provider, importedProvider] }))
+      .mockResolvedValueOnce(response(200, { ok: true, config: next }))
+    await dialog.get('form').trigger('submit')
+    await flushPromises()
+    expect(global.fetch.mock.calls.map(([url, options]) => [url, options.method || 'GET'])).toEqual([
+      [configEndpoint, 'GET'], [discoverEndpoint, 'POST'], [detectEndpoint, 'POST'],
+    ])
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({ providerId: 'custom-new', apiKey: fixtureKey,
+      detectCapabilities: true, name: importedProvider.name, baseURL: 'https://example.test/v1', note: '' })
+    expect(JSON.parse(global.fetch.mock.calls[2][1].body)).toEqual({ providerId: importedProvider.id, modelId: 'fixture-model' })
+    expect(panel.get('.connections tbody').text()).toContain(importedProvider.name)
+    expect(panel.get('.connections tbody').text()).toContain('fixture****')
+    expect(dialog.attributes('open')).toBeUndefined()
+    expect(dialog.get('input[type="password"]').element.value).toBe('')
+    for (const capability of Object.keys(abilities)) expect(await selectCapability(panel, capability)).toEqual([`${capability}-main`])
+  })
+
+  test('导入被拒绝时保留表单输入并显示错误，成功前只访问导入接口', async () => {
+    const panel = await mountConfig()
+    const dialog = await fillImportDialog(panel)
+    global.fetch.mockResolvedValueOnce(response(422, { ok: false, message: '该密钥未返回可导入模型', code: 'DISCOVERY_EMPTY' }))
+    await dialog.get('form').trigger('submit')
+    await flushPromises()
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([configEndpoint, discoverEndpoint])
+    expect(dialog.attributes('open')).toBeDefined()
+    expect(dialog.get('[role="alert"]').text()).toContain('该密钥未返回可导入模型')
+    expect(dialog.get('input[type="password"]').element.value).toBe(fixtureKey)
+  })
+
+  test('管理员验证后重新提交同一导入草稿', async () => {
+    const showAdminDialog = jest.fn()
+    const panel = await mountConfig(showAdminDialog)
+    const dialog = await fillImportDialog(panel)
+    global.fetch.mockResolvedValueOnce(response(403, { ok: false, code: 'ADMIN_REQUIRED' }))
+    await dialog.get('form').trigger('submit')
+    await flushPromises()
+    expect(showAdminDialog).toHaveBeenCalledTimes(1)
+    expect(dialog.attributes('open')).toBeDefined()
+    expect(dialog.get('input[type="password"]').element.value).toBe(fixtureKey)
+
+    localStorage.setItem('dashboard_server_token', JSON.stringify({ token: 'renewed-admin', expires: Date.now() + 60000 }))
+    global.fetch.mockResolvedValueOnce(response(422, { ok: false, code: 'DISCOVERY_EMPTY', message: '该密钥未返回可导入模型' }))
+    await showAdminDialog.mock.calls[0][1]()
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([configEndpoint, discoverEndpoint, discoverEndpoint])
+    expect(global.fetch.mock.calls[2][1].body).toBe(global.fetch.mock.calls[1][1].body)
+    expect(global.fetch.mock.calls[2][1].headers['X-Admin-Token']).toBe('renewed-admin')
+    expect(showAdminDialog).toHaveBeenCalledTimes(1)
+    expect(dialog.get('[role="alert"]').text()).toContain('该密钥未返回可导入模型')
+  })
+
+  test('优先级只有一个保存入口，仅提交当前能力且保留另一能力草稿', async () => {
+    const panel = await mountConfig()
+    const saveButtons = panel.findAll('button').filter(button => button.text() === '保存优先级')
+    expect(saveButtons).toHaveLength(1)
+    await selectCapability(panel, 'vision')
+    await panel.get('.priority-list button.danger').trigger('click')
+    await selectCapability(panel, 'text')
+    await panel.get('select[aria-label="选择要加入优先级的模型"]').setValue('openai\u0000text-backup')
+    await panel.get('.add-model-row button').trigger('click')
+    await panel.get('button[aria-label="上移 text-backup"]').trigger('click')
+    const steps = [{ provider: 'openai', model: 'text-backup' }, { provider: 'openai', model: 'text-main' }]
+    const saved = { ...config, priorities: { ...config.priorities, text: steps } }
+    global.fetch.mockResolvedValueOnce(response(200, { ok: true, config: saved, message: '模型优先级已保存' }))
+    await saveButtons[0].trigger('click')
+    await flushPromises()
+    expect(global.fetch.mock.calls.map(([url]) => url)).toEqual([configEndpoint, priorityEndpoint])
+    expect(global.fetch.mock.calls[1][1].method).toBe('PUT')
+    expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toEqual({ capability: 'text', steps })
+    expect(await selectCapability(panel, 'text')).toEqual(['text-backup', 'text-main'])
+    expect(await selectCapability(panel, 'vision')).toEqual([])
+  })
+})
+
+describe('主控制台前后端契约审查', () => {
+  test('仍注册的旧 Fallback 接口保留 defaults 响应字段', () => {
+    const backend = readSource('packages/koishi-plugin-dashboard/src/lib/routes/settings.ts')
+    const handler = sourceBetween(backend, 'function handleGetFallback', 'function handlePutFallback')
+    expect(backend).toContain("'GET /dashboard/api/fallback': handleGetFallback")
+    expect(handler).toMatch(/defaults:\s*DEFAULT_FALLBACK_CHAINS/)
   })
 
   test('诊断启动入口已删除，只保留正常启动调用', () => {
@@ -33,16 +209,6 @@ describe('主控制台前后端契约审查', () => {
     expect(api).toMatch(/startBot\(\).*post\('\/bot\/start'/)
     expect(control).toMatch(/async function doStart\(\)[\s\S]*?await startBot\(\)/)
     expect(control).not.toMatch(/testStartBot|测试 startBot API/)
-  })
-
-  test('无效主模型兜底浏览器状态已删除', () => {
-    const frontend = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ConfigPanel.vue')
-    const settings = readSource('packages/koishi-plugin-dashboard/src/lib/routes/settings.ts')
-
-    expect(frontend).not.toContain('cfg_lightweight_main')
-    expect(frontend).not.toContain('useMainFallback')
-    expect(settings).not.toContain('cfg_lightweight_main')
-    expect(settings).not.toContain('useMainFallback')
   })
 
   test('人格、世界观和黑白名单删除都先确认准确对象', () => {
@@ -55,24 +221,6 @@ describe('主控制台前后端契约审查', () => {
     expect(personaDeleteBody).toMatch(/window\.confirm/)
     expect(loreDeleteBody).toMatch(/window\.confirm/)
     expect(whitelistDeleteBody).toMatch(/window\.confirm/)
-  })
-
-  test('新增 API 配置只调用一次完整事务接口并在成功后回读', () => {
-    const keyManager = readSource('packages/koishi-plugin-dashboard/frontend/src/components/KeyManager.vue')
-    const saveProviderBody = sourceBetween(keyManager, 'async function saveProvider(', 'async function loadUsage')
-
-    expect(saveProviderBody).toMatch(/await saveApiConfigTransaction\(/)
-    expect(saveProviderBody).toMatch(/await reloadSavedApiConfig\(/)
-    expect(saveProviderBody).not.toMatch(/await saveCustomProviders\(|await updateKey\(|await saveFallbackChains\(/)
-  })
-
-  test('备用链编辑只存在于模型配置页的单一保存入口', () => {
-    const keyManager = readSource('packages/koishi-plugin-dashboard/frontend/src/components/KeyManager.vue')
-    const configPanel = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ConfigPanel.vue')
-
-    expect(keyManager).not.toMatch(/v-for="card in fallbackCards"|async function saveFallback\(/)
-    expect((configPanel.match(/保存全部备用链/g) || [])).toHaveLength(1)
-    expect(configPanel).toMatch(/saveFallbackChains\(chains\)/)
   })
 
   test('部署进度携带管理员令牌并使用有界、非重叠轮询', () => {
@@ -123,7 +271,7 @@ describe('主控制台前后端契约审查', () => {
     const resource = readSource('packages/koishi-plugin-dashboard/frontend/src/components/ResourcePanel.vue')
     const maintenanceBody = sourceBetween(resource, 'async function toggleMaintenance', 'async function setMode')
     const modeBody = sourceBetween(resource, 'async function setMode', 'async function cancelTask')
-    const cancelBody = sourceBetween(resource, 'async function cancelTask', 'onMounted(() =>')
+    const cancelBody = sourceBetween(resource, 'async function cancelTask', 'function startReads')
 
     expect(maintenanceBody).toMatch(/setResourceMaintenance\(/)
     expect(modeBody).toMatch(/setResourceMode\(/)

@@ -85,7 +85,7 @@
           <div class="station-detail-body">
             <p>{{ activeStationHint }}</p>
             <div class="deploy-actions">
-              <button v-if="activeLocalStep === 'env'" class="btn btn-sm" type="button" @click="checkEnv" :disabled="checking">{{ checking ? '检测中...' : '检测环境' }}</button>
+              <button v-if="activeLocalStep === 'env'" class="btn btn-sm" type="button" @click="checkEnv()" :disabled="checking">{{ checking ? '检测中...' : '检测环境' }}</button>
               <button v-if="activeLocalStep === 'install'" class="btn btn-sm" type="button" @click="doDownloadWindowsNapcat" :disabled="installingNapcat || !isWindows">{{ installingNapcat ? '安装中...' : '一键安装 NapCat（Windows，官方包）' }}</button>
               <a v-if="activeLocalStep === 'install'" class="btn btn-sm btn-ghost" href="https://github.com/NapNeko/NapCatQQ/releases/latest" target="_blank">打开 NapCat 发布页</a>
               <button v-if="activeLocalStep === 'config'" class="btn btn-sm" type="button" @click="writeLocalConfig" :disabled="localDeploying">{{ localDeploying ? '写入中...' : '生成 Koishi 本地配置' }}</button>
@@ -333,7 +333,7 @@
 </template>
 
 <script lang="ts">
-import { computed, inject, nextTick, onActivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { getDongxuelianDeployerBridge, isElectronDeployerEnv } from '../electron-deployer'
 import { checkLocalEnv, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewDeploy, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
 import type { ApiResult, MessageState, SelectOption, ShowAdminDialog } from '../types'
@@ -593,9 +593,11 @@ export default {
     let progressTimer: ReturnType<typeof setTimeout> | null = null
     let progressNetworkFailures = 0
     let progressAdminRetries = 0
-    let localStatusTimer: ReturnType<typeof setInterval> | null = null
-    let localStatusLoading = false
-    let localStatusPending = false
+    let localStatusTimer: ReturnType<typeof setTimeout> | null = null
+    let localStatusRead: { passive: boolean; includeReady: boolean; controller: AbortController; promise: Promise<void> } | null = null
+    let panelActive = false
+    let localPolling = false
+    let pollingGeneration = 0
     let rebuildTimer: ReturnType<typeof setInterval> | null = null
     let rebuildTimeout: ReturnType<typeof setTimeout> | null = null
     let previewExpiryTimer: ReturnType<typeof setTimeout> | null = null
@@ -854,13 +856,18 @@ export default {
       if (readyCheck.value) setStepStatus('health', readyCheck.value.basicReady ? 'success' : 'failed')
     }
 
-    async function refreshLocalTaskStatuses(includeReady = false) {
-      if (localStatusLoading) {
-        localStatusPending = true
-        return
+    // 主动检查优先于空闲采样，后台部署监听仍从各自的任务入口读取。
+    function refreshLocalTaskStatuses(includeReady = false, passive = false): Promise<void> {
+      if (passive && !localPolling) return Promise.resolve()
+      if (localStatusRead && (!localStatusRead.passive || passive)) {
+        localStatusRead.includeReady ||= includeReady
+        return localStatusRead.promise
       }
-      localStatusLoading = true
-      try {
+      localStatusRead?.controller.abort()
+      const controller = new AbortController()
+      const current = () => localStatusRead?.controller === controller && !controller.signal.aborted
+      const promise = Promise.resolve().then(async () => {
+        if (!current()) return
         if (!canRunWindowsLocalDeploy.value) {
           npmTaskStatus.value = null
           napcatTaskStatus.value = null
@@ -869,23 +876,58 @@ export default {
           resetWizardSteps()
           return
         }
-        const [npmRes, napcatRes, koishiRes] = await Promise.all([npmInstallStatus(), napcatDeployStatus(), koishiDeployStatus()])
+        const signal = controller.signal
+        const [npmRes, napcatRes, koishiRes] = await Promise.all([npmInstallStatus(signal), napcatDeployStatus(signal), koishiDeployStatus(signal)])
+        if (!current()) return
         if (npmRes.ok) npmTaskStatus.value = dataRecord<{ status?: DeployTaskStatus }>(npmRes.data).status || null
         if (napcatRes.ok) napcatTaskStatus.value = dataRecord<{ status?: DeployTaskStatus }>(napcatRes.data).status || null
         if (koishiRes.ok) koishiTaskStatus.value = dataRecord<{ status?: DeployTaskStatus }>(koishiRes.data).status || null
-        if (includeReady) {
+        if (localStatusRead?.includeReady) {
           const readyRes = await localReadyCheck()
+          if (!current()) return
           if (readyRes.ok) readyCheck.value = dataRecord<ReadyCheck>(readyRes.data)
         }
         updateWizardFromSignals()
         scrollLocalLogToBottom()
-      } finally {
-        localStatusLoading = false
-        if (localStatusPending) {
-          localStatusPending = false
-          refreshLocalTaskStatuses(includeReady)
-        }
+      }).finally(() => { if (current()) localStatusRead = null })
+      localStatusRead = { passive, includeReady, controller, promise }
+      return promise
+    }
+
+    // 只在本地栏可见时采样，慢请求完成后才开始计下一轮。
+    async function pollLocalStatus(generation: number): Promise<void> {
+      try { await refreshLocalTaskStatuses(false, true) } catch { /* 临时读取失败由下一次可见采样重试。 */ }
+      if (generation === pollingGeneration && localPolling) {
+        localStatusTimer = setTimeout(() => { void pollLocalStatus(generation) }, 3500)
       }
+    }
+
+    // 远程模式、环境不可用及缓存停用共用空闲采样的启停判断。
+    function syncLocalPolling(): void {
+      const enabled = panelActive && mode.value === 'local' && canRunWindowsLocalDeploy.value
+      if (localPolling === enabled) return
+      localPolling = enabled
+      pollingGeneration++
+      if (enabled) { void pollLocalStatus(pollingGeneration); return }
+      if (localStatusTimer !== null) clearTimeout(localStatusTimer)
+      localStatusTimer = null
+      if (localStatusRead?.passive) {
+        localStatusRead.controller.abort()
+        localStatusRead = null
+      }
+    }
+
+    // 激活时恢复空闲采样，保留现有远程日志滚动。
+    function activatePanel(): void {
+      panelActive = true
+      syncLocalPolling()
+      scrollDeployLogToBottom()
+    }
+
+    // 停用页面时只暂停空闲读取，运行中的安装和发布继续跟踪。
+    function deactivatePanel(): void {
+      panelActive = false
+      syncLocalPolling()
     }
 
     function taskFailureText(step: LocalStepId, status: DeployTaskStatus | null, fallback?: string): string {
@@ -949,13 +991,14 @@ export default {
       return false
     }
 
-    async function checkEnv() {
+    // 启动时由可见采样读取运行状态，用户主动环境检查仍立即同步状态。
+    async function checkEnv(options?: { refreshStatuses?: boolean }) {
       checking.value = true
       localMsg.value = null
       await loadElectronAppInfo()
       setStepStatus('env', 'running')
       const res = await checkLocalEnv()
-      if (withAdminRetry(res, '环境检测需要管理员密码', checkEnv)) {
+      if (withAdminRetry(res, '环境检测需要管理员密码', () => checkEnv(options))) {
         checking.value = false
         return
       }
@@ -975,7 +1018,7 @@ export default {
         }
         localMsg.value = { type: 'ok', text: '环境检测完成' }
         updateWizardFromSignals()
-        await refreshLocalTaskStatuses(false)
+        if (options?.refreshStatuses !== false) await refreshLocalTaskStatuses(false)
       } else {
         setStepStatus('env', 'failed')
         localMsg.value = { type: 'err', text: messageFromData(res.data, '环境检测失败') }
@@ -1630,25 +1673,25 @@ export default {
       deployConfirmed.value = false
       remoteMsg.value = { type: 'warn', text: '部署目标已修改，请重新生成预览' }
     })
-    watch(mode, value => {
+    watch([mode, canRunWindowsLocalDeploy], ([value]) => {
       if (value === 'remote') scrollDeployLogToBottom()
-      if (value === 'local' && canRunWindowsLocalDeploy.value) refreshLocalTaskStatuses(false)
+      syncLocalPolling()
     })
 
     onMounted(() => {
       loadElectronAppInfo().catch(() => { /* non-critical: deployer path info is optional */ })
-      checkEnv().catch(() => { /* non-critical: panel still renders manual actions when env probe fails */ })
+      checkEnv({ refreshStatuses: false }).catch(() => { /* non-critical: panel still renders manual actions when env probe fails */ })
       loadRemoteConfig().catch(() => { /* non-critical: user can fill remote config manually */ })
-      localStatusTimer = setInterval(() => {
-        if (mode.value === 'local' && canRunWindowsLocalDeploy.value) refreshLocalTaskStatuses(false)
-      }, 3500)
-      scrollDeployLogToBottom()
+      activatePanel()
     })
-    onActivated(scrollDeployLogToBottom)
+    onActivated(activatePanel)
+    onDeactivated(deactivatePanel)
     onUnmounted(() => {
+      deactivatePanel()
+      localStatusRead?.controller.abort()
+      localStatusRead = null
       clearProgressPolling()
       clearPreviewExpiryTimer()
-      if (localStatusTimer) clearInterval(localStatusTimer)
       clearRebuildPolling()
     })
 

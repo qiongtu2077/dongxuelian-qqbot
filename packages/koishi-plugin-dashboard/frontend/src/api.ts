@@ -78,25 +78,31 @@ export function isAdminRequired(res: { code?: string, data?: unknown } | null | 
   return !!data && typeof data === 'object' && !Array.isArray(data) && (data as { code?: unknown }).code === 'ADMIN_REQUIRED'
 }
 
-function withTimeout(ms = 10000) {
+// 将调用方取消转发给超时控制器，完成时释放计时器及监听。
+function withTimeout(ms = 10000, callerSignal?: AbortSignal) {
   const ctrl = new AbortController()
+  const cancel = () => ctrl.abort()
+  if (callerSignal?.aborted) cancel()
+  else callerSignal?.addEventListener('abort', cancel, { once: true })
   const timer = setTimeout(() => ctrl.abort(), ms)
-  return { signal: ctrl.signal, clear: () => clearTimeout(timer) }
+  return { signal: ctrl.signal, stopTimer: () => clearTimeout(timer), clear: () => { clearTimeout(timer); callerSignal?.removeEventListener('abort', cancel) } }
 }
 
-async function get<T = unknown>(path: string, admin = false, timeoutMs = 10000): Promise<ApiResult<T | null>> {
-  const { signal, clear } = withTimeout(timeoutMs)
+// 读取请求同时接受页面取消和接口超时，过期响应不能清除当前登录状态。
+async function get<T = unknown>(path: string, admin = false, timeoutMs = 10000, callerSignal?: AbortSignal): Promise<ApiResult<T | null>> {
+  const { signal, clear, stopTimer } = withTimeout(timeoutMs, callerSignal)
   try {
     const res = await fetch(BASE + path, { headers: headers(admin), signal })
-    clear()
+    stopTimer()
+    if (callerSignal?.aborted) return { ok: false, data: null }
     if (res.status === 403) { const j = await res.json(); return { ok: false, data: j, code: j.code } }
     if (handle401(res)) return { ok: false, data: null }
     return { ok: res.ok, data: await res.json() }
   } catch (e) {
-    clear()
+    if (callerSignal?.aborted) return { ok: false, data: null }
     if (e instanceof DOMException && e.name === 'AbortError') return { ok: false, data: { message: '请求超时' } as T }
     return { ok: false, data: { message: errorMessage(e) } as T }
-  }
+  } finally { clear() }
 }
 
 async function put<T = unknown>(path: string, data: unknown, admin = false): Promise<ApiResult<T | null>> {
@@ -165,7 +171,7 @@ export async function fetchPersonaDiagnostics() { return get('/persona-diagnosti
 export async function fetchModes() { return get('/modes') }
 export async function fetchWhitelist(): Promise<ApiResult<WhitelistMap | null>> { return get<WhitelistMap>('/whitelist', true) }
 // 读取当前机器人所在群的名称，沿用控制台的管理员鉴权。
-export async function fetchGroupNames(): Promise<ApiResult<GroupNamesResponse | null>> { return get<GroupNamesResponse>('/groups', true) }
+export async function fetchGroupNames(signal?: AbortSignal): Promise<ApiResult<GroupNamesResponse | null>> { return get<GroupNamesResponse>('/groups', true, 10000, signal) }
 
 // 首次加入群时读取名称，此后只使用服务端保存的备注。
 export async function importGroupNames(groupIds: string[]): Promise<ApiResult<GroupNamesResponse | null>> { return post<GroupNamesResponse>('/groups/import', { groupIds }, true) }
@@ -205,9 +211,9 @@ export async function downloadNapcatWindows(installDir: string) { return post('/
 export async function installPortableNode() { return post('/deploy/node-windows-install', {}, true, 240000) }
 export async function startNpmInstall() { return post('/deploy/npm-install', {}, true, 60000) }
 export async function repairNpmProxyAndInstall() { return post('/deploy/npm-repair-and-install', {}, true, 60000) }
-export async function npmInstallStatus() { return get('/deploy/npm-install-status') }
+export async function npmInstallStatus(signal?: AbortSignal) { return get('/deploy/npm-install-status', false, 10000, signal) }
 export async function startNapcat() { return post('/deploy/napcat-start', {}, true, 10000) }
-export async function napcatDeployStatus() { return get('/deploy/napcat-status') }
+export async function napcatDeployStatus(signal?: AbortSignal) { return get('/deploy/napcat-status', false, 10000, signal) }
 // 等待 NapCat 与原本运行的机器人恢复连接，避免取消仍在进行的恢复。
 export async function restartNapcat() { return post('/napcat/restart', {}, true, 120000) }
 
@@ -231,7 +237,7 @@ export async function fetchGroupSettings(groupId: string): Promise<ApiResult<Gro
 // 以单次事务保存群详情，避免多项配置只保存一部分。
 export async function saveGroupSettings(settings: GroupSettings): Promise<ApiResult<GroupSettingsResponse | null>> { return put<GroupSettingsResponse>('/groups/detail', settings, true) }
 export async function startKoishiLocal() { return post('/deploy/koishi-start', {}, true, 10000) }
-export async function koishiDeployStatus() { return get('/deploy/koishi-status') }
+export async function koishiDeployStatus(signal?: AbortSignal) { return get('/deploy/koishi-status', false, 10000, signal) }
 export async function localReadyCheck() { return get('/deploy/local-ready-check') }
 export async function previewLocalConfigDelete() { return get('/deploy/local-config-preview', true) }
 export async function deleteLocalConfig() { return post('/deploy/local-config-delete', {}, true) }
@@ -268,28 +274,28 @@ export async function rejectAgentTool(pendingId = '') { return post('/agent/reje
 export async function fetchPendingAgentTools() { return get('/tools/pending', true) }
 export async function fetchAgentSessions() { return get('/agent/sessions', true) }
 export async function fetchAgentSession(id: string) { return get('/agent/sessions/' + encodeURIComponent(id), true) }
-export async function fetchResourceStatus() { return get('/resource/status') }
+export async function fetchResourceStatus(signal?: AbortSignal) { return get('/resource/status', false, 10000, signal) }
 export async function fetchResourceMode() { return get('/resource/mode') }
 export async function setResourceMode(serverMode: string) { return post('/resource/mode', { serverMode }, true) }
-export async function fetchResourceMemoryHistory(range = '5m') { return get('/resource/memory-history?range=' + encodeURIComponent(range), false, 20000) }
+export async function fetchResourceMemoryHistory(range = '5m', signal?: AbortSignal) { return get('/resource/memory-history?range=' + encodeURIComponent(range), false, 20000, signal) }
 // 按选中的状态查询任务，避免历史记录占满进行中或失败列表。
-export async function fetchResourceTasks(status = '') { return get('/resource/tasks' + (status ? '?status=' + encodeURIComponent(status) : '')) }
+export async function fetchResourceTasks(status = '', signal?: AbortSignal) { return get('/resource/tasks' + (status ? '?status=' + encodeURIComponent(status) : ''), false, 10000, signal) }
 // 单日报诊断仅在展开详情时读取，使用既有管理员验证头。
-export async function fetchReportAnalysis(taskId: string) { return get('/resource/report-analysis?taskId=' + encodeURIComponent(taskId), true) }
+export async function fetchReportAnalysis(taskId: string, signal?: AbortSignal) { return get('/resource/report-analysis?taskId=' + encodeURIComponent(taskId), true, 10000, signal) }
 // Reads one stable page of resource diagnostic summaries.
-export async function fetchResourceDiagnostics(options: { group?: string; reason?: string; cursor?: string } = {}) {
+export async function fetchResourceDiagnostics(options: { group?: string; reason?: string; cursor?: string } = {}, signal?: AbortSignal) {
   const params = new URLSearchParams()
   if (options.group) params.set('group', options.group)
   if (options.reason) params.set('reason', options.reason)
   if (options.cursor) params.set('cursor', options.cursor)
   const query = params.toString()
-  return get('/resource/diagnostics' + (query ? `?${query}` : ''))
+  return get('/resource/diagnostics' + (query ? `?${query}` : ''), false, 10000, signal)
 }
 // Reads one diagnostic detail only after the administrator expands its record.
-export async function fetchResourceDiagnosticDetail(recordId: string) {
-  return get('/resource/diagnostics/detail?id=' + encodeURIComponent(recordId))
+export async function fetchResourceDiagnosticDetail(recordId: string, signal?: AbortSignal) {
+  return get('/resource/diagnostics/detail?id=' + encodeURIComponent(recordId), false, 10000, signal)
 }
-export async function fetchResourceEvents() { return get('/resource/events') }
+export async function fetchResourceEvents(signal?: AbortSignal) { return get('/resource/events', false, 10000, signal) }
 export async function fetchResourceWorkers() { return get('/resource/workers') }
 export async function fetchResourceMedia() { return get('/resource/media') }
 export async function fetchResourcePrecompute() { return get('/resource/precompute') }
