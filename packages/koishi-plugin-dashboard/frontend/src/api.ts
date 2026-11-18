@@ -135,19 +135,21 @@ async function del<T = unknown>(path: string, data: unknown, admin = false): Pro
   }
 }
 
-async function post<T = unknown>(path: string, data: unknown, admin = false, timeoutMs = 10000): Promise<ApiResult<T | null>> {
-  const { signal, clear } = withTimeout(timeoutMs)
+// 允许页面结束自己的等待，并忽略已经取消的启动请求的鉴权结果。
+async function post<T = unknown>(path: string, data: unknown, admin = false, timeoutMs = 10000, callerSignal?: AbortSignal): Promise<ApiResult<T | null>> {
+  const { signal, clear, stopTimer } = withTimeout(timeoutMs, callerSignal)
   try {
     const res = await fetch(BASE + path, { method: 'POST', headers: headers(admin), body: JSON.stringify(data), signal })
-    clear()
+    stopTimer()
+    if (callerSignal?.aborted) return { ok: false, data: null }
     if (res.status === 403) { const j = await res.json(); return { ok: false, data: j, code: j.code } }
     if (handle401(res)) return { ok: false, data: null }
     return { ok: res.ok, data: await res.json() }
   } catch (e) {
-    clear()
+    if (callerSignal?.aborted) return { ok: false, data: null }
     if (e instanceof DOMException && e.name === 'AbortError') return { ok: false, data: { message: '请求超时' } as T }
     return { ok: false, data: { message: errorMessage(e) } as T }
-  }
+  } finally { clear() }
 }
 
 async function postPlain<T = unknown>(path: string, data: unknown): Promise<ApiResult<T>> {
@@ -245,8 +247,11 @@ export async function previewLocalUninstall() { return get('/deploy/local-uninst
 export async function confirmLocalUninstall(options?: JsonObject) { return post('/deploy/local-uninstall', { ...(options || {}), confirm: true }, true, 180000) }
 export async function localBotStatus() { return get('/bot/local-status') }
 export async function localBotStop() { return post('/bot/local-stop', {}, true) }
-export async function rebuildFrontend() { return post('/frontend/rebuild', {}, true) }
-export async function rebuildFrontendStatus() { return get('/frontend/rebuild-status') }
+// 启动请求的取消只终止客户端等待，服务端构建自行结算。
+export async function rebuildFrontend(signal?: AbortSignal) { return post('/frontend/rebuild', {}, true, 10000, signal) }
+
+// 读取状态时沿用接口超时，轮次结束可取消在途读取。
+export async function rebuildFrontendStatus(signal?: AbortSignal) { return get('/frontend/rebuild-status', false, 10000, signal) }
 export async function fetchAdminIds() { return get('/admin-ids', true) }
 export async function updateAdminIds(ids: string[]) { return put('/admin-ids', { ids }, true) }
 export async function fetchThrottle() { return get('/throttle') }

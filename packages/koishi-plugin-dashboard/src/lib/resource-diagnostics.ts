@@ -8,10 +8,25 @@ type DiagnosticRecord = Record<string, unknown>
 type DiagnosticGroup = 'all' | 'unknown' | 'media'
 type MediaFinishReason = 'queue_limit' | 'processing_failed' | 'restart_interrupted' | 'legacy_unknown'
 
+interface DiagnosticTask {
+  id?: unknown
+  kind?: unknown
+  status?: unknown
+  createdAt?: unknown
+  updatedAt?: unknown
+  finishedAt?: unknown
+  finishReason?: unknown
+  hasError?: boolean
+  error?: unknown
+  claimedBy?: unknown
+  step?: unknown
+  source?: unknown
+  timeoutMs?: unknown
+}
+
 interface DiagnosticSource {
-  resourceTasks: DiagnosticRecord[]
-  mediaTasks: DiagnosticRecord[]
-  redactText(value: string): string
+  resourceTasks: readonly DiagnosticTask[]
+  mediaTasks: readonly DiagnosticTask[]
 }
 
 interface DiagnosticQuery {
@@ -80,7 +95,7 @@ function normalizeReason(value: unknown): MediaFinishReason | '' {
 }
 
 // 把一个未知资源任务转换为不含输入数据的诊断摘要。
-function buildUnknownTaskItem(task: DiagnosticRecord): DiagnosticItem {
+function buildUnknownTaskItem(task: DiagnosticTask): DiagnosticItem {
   const taskId = String(task.id || '')
   const createdAt = normalizeTime(task.createdAt)
   const updatedAt = normalizeTime(task.updatedAt)
@@ -95,12 +110,12 @@ function buildUnknownTaskItem(task: DiagnosticRecord): DiagnosticItem {
     finishedAt: normalizeTime(task.finishedAt),
     relatedAt: updatedAt || createdAt,
     finishReason: '',
-    hasError: !!String(task.error || ''),
+    hasError: !!(task.hasError ?? String(task.error || '')),
   }
 }
 
 // 把一个未完成媒体任务转换为不含输入数据的诊断摘要。
-function buildMediaTaskItem(task: DiagnosticRecord): DiagnosticItem {
+function buildMediaTaskItem(task: DiagnosticTask): DiagnosticItem {
   const taskId = String(task.id || '')
   const createdAt = normalizeTime(task.createdAt)
   const updatedAt = normalizeTime(task.updatedAt)
@@ -117,7 +132,7 @@ function buildMediaTaskItem(task: DiagnosticRecord): DiagnosticItem {
     finishedAt,
     relatedAt: finishedAt,
     finishReason,
-    hasError: !!String(task.error || ''),
+    hasError: !!(task.hasError ?? String(task.error || '')),
   }
 }
 
@@ -133,16 +148,41 @@ function dedupeNewest(items: DiagnosticItem[]): DiagnosticItem[] {
   return Array.from(result.values())
 }
 
-// 收集全部诊断摘要并按相关时间、内部标识稳定倒序排列。
-function collectDiagnosticItems(source: DiagnosticSource): DiagnosticItem[] {
-  const unknown = source.resourceTasks
+// 为排序与游标使用同一倒序规则，补足语言比较认为等价的编号。
+function compareDiagnosticItems(a: DiagnosticCursor, b: DiagnosticCursor): number {
+  return b.relatedAt.localeCompare(a.relatedAt) || b.recordId.localeCompare(a.recordId)
+    || (b.recordId > a.recordId ? 1 : b.recordId < a.recordId ? -1 : 0)
+}
+
+interface DiagnosticIndex {
+  all: DiagnosticItem[]
+  unknown: DiagnosticItem[]
+  media: DiagnosticItem[]
+  reasons: Map<string, DiagnosticItem[]>
+}
+
+let cachedIndex: { resourceTasks: DiagnosticSource['resourceTasks']; mediaTasks: DiagnosticSource['mediaTasks']; index: DiagnosticIndex } | undefined
+
+// 两个来源的摘要发生变化时，才重建去重结果及筛选顺序。
+function indexDiagnosticItems(source: DiagnosticSource): DiagnosticIndex {
+  if (cachedIndex?.resourceTasks === source.resourceTasks && cachedIndex.mediaTasks === source.mediaTasks) return cachedIndex.index
+  const items = source.resourceTasks
     .filter(task => !KNOWN_RESOURCE_TASK_KINDS.has(String(task.kind || '')))
     .map(buildUnknownTaskItem)
-  const media = source.mediaTasks.map(buildMediaTaskItem)
-  return dedupeNewest([...unknown, ...media]).sort((a, b) => {
-    const timeOrder = b.relatedAt.localeCompare(a.relatedAt)
-    return timeOrder || b.recordId.localeCompare(a.recordId)
-  })
+  for (const task of source.mediaTasks) items.push(buildMediaTaskItem(task))
+  const index: DiagnosticIndex = { all: dedupeNewest(items).sort(compareDiagnosticItems), unknown: [], media: [], reasons: new Map() }
+  for (const item of index.all) {
+    if (item.recordType === 'unknown_task') {
+      index.unknown.push(item)
+      continue
+    }
+    index.media.push(item)
+    const matching = index.reasons.get(item.finishReason)
+    if (matching) matching.push(item)
+    else index.reasons.set(item.finishReason, [item])
+  }
+  cachedIndex = { resourceTasks: source.resourceTasks, mediaTasks: source.mediaTasks, index }
+  return index
 }
 
 // 将稳定游标编码为 URL 安全文本。
@@ -164,42 +204,38 @@ function decodeCursor(value: unknown): DiagnosticCursor | null {
   }
 }
 
-// 判断一条倒序记录是否位于游标之后。
-function isAfterCursor(item: DiagnosticItem, cursor: DiagnosticCursor | null): boolean {
-  if (!cursor) return true
-  if (item.relatedAt < cursor.relatedAt) return true
-  return item.relatedAt === cursor.relatedAt && item.recordId < cursor.recordId
-}
-
-// 按分组和结束原因筛选诊断摘要。
-function filterDiagnosticItems(items: DiagnosticItem[], group: DiagnosticGroup, reason: MediaFinishReason | ''): DiagnosticItem[] {
-  return items.filter(item => {
-    if (group === 'unknown' && item.recordType !== 'unknown_task') return false
-    if (group === 'media' && item.recordType !== 'unfinished_media') return false
-    if (reason && (item.recordType !== 'unfinished_media' || item.finishReason !== reason)) return false
-    return true
-  })
+// 从有序结果二分定位游标后的第一条记录，游标所在记录即使删除也可继续翻页。
+function findPageStart(items: readonly DiagnosticItem[], cursor: DiagnosticCursor | null): number {
+  if (!cursor) return 0
+  let start = 0
+  let end = items.length
+  while (start < end) {
+    const middle = Math.floor((start + end) / 2)
+    if (compareDiagnosticItems(items[middle], cursor) <= 0) start = middle + 1
+    else end = middle
+  }
+  return start
 }
 
 // --- 接口响应 --- //
 
 // 构建诊断列表的固定 120 条稳定游标分页响应。
 export function buildResourceDiagnosticsPage(source: DiagnosticSource, query: DiagnosticQuery = {}): DiagnosticRecord {
-  const all = collectDiagnosticItems(source)
+  const index = indexDiagnosticItems(source)
   const group = normalizeGroup(query.group)
   const reason = normalizeReason(query.reason)
-  const filtered = filterDiagnosticItems(all, group, reason)
-  const remaining = filtered.filter(item => isAfterCursor(item, decodeCursor(query.cursor)))
-  const items = remaining.slice(0, RESOURCE_DIAGNOSTIC_PAGE_SIZE)
-  const hasMore = remaining.length > items.length
+  const filtered = reason ? (group === 'unknown' ? [] : index.reasons.get(reason) ?? []) : index[group]
+  const start = findPageStart(filtered, decodeCursor(query.cursor))
+  const items = filtered.slice(start, start + RESOURCE_DIAGNOSTIC_PAGE_SIZE)
+  const hasMore = start + items.length < filtered.length
   return {
     ok: true,
     items,
     total: filtered.length,
     counts: {
-      all: all.length,
-      unknown: all.filter(item => item.recordType === 'unknown_task').length,
-      media: all.filter(item => item.recordType === 'unfinished_media').length,
+      all: index.all.length,
+      unknown: index.unknown.length,
+      media: index.media.length,
     },
     nextCursor: hasMore && items.length ? encodeCursor(items[items.length - 1]) : '',
     hasMore,
@@ -207,15 +243,30 @@ export function buildResourceDiagnosticsPage(source: DiagnosticSource, query: Di
   }
 }
 
+// 仅识别接口生成的两类记录标识，允许媒体历史文件使用较长编号。
+export function parseResourceDiagnosticId(value: unknown): { source: 'unknown' | 'media'; taskId: string } | null {
+  const text = String(value || '')
+  const match = /^(unknown|media):([^/\\\x00-\x1f\x7f]+)$/.exec(text)
+  if (!match || match[0] !== text || match[2] === '.' || match[2] === '..') return null
+  return { source: match[1] === 'unknown' ? 'unknown' : 'media', taskId: match[2] }
+}
+
 // 构建一条诊断记录的按需详情，只返回已保存且再次脱敏的错误和诊断字段。
-export function buildResourceDiagnosticDetail(source: DiagnosticSource, recordIdValue: unknown): DiagnosticRecord | null {
-  const recordId = String(recordIdValue || '')
-  const item = collectDiagnosticItems(source).find(candidate => candidate.recordId === recordId)
-  if (!item) return null
-  const sourceTask = item.recordType === 'unfinished_media'
-    ? source.mediaTasks.find(task => String(task.id || '') === item.taskId)
-    : source.resourceTasks.find(task => String(task.id || '') === item.taskId)
-  if (!sourceTask) return null
+export function buildResourceDiagnosticDetail(source: DiagnosticSource & { redactText(value: string): string }, recordIdValue: unknown): DiagnosticRecord | null {
+  const id = parseResourceDiagnosticId(recordIdValue)
+  if (!id) return null
+  const tasks = id.source === 'media' ? source.mediaTasks : source.resourceTasks
+  let sourceTask: DiagnosticTask | undefined
+  let item: DiagnosticItem | undefined
+  for (const task of tasks) {
+    if (task.id !== id.taskId) continue
+    // 旧详情从已排序来源取首条报错，摘要则选最新的可见诊断副本。
+    sourceTask ??= task
+    if (id.source === 'unknown' && KNOWN_RESOURCE_TASK_KINDS.has(String(task.kind || ''))) continue
+    const candidate = id.source === 'media' ? buildMediaTaskItem(task) : buildUnknownTaskItem(task)
+    if (!item || candidate.relatedAt > item.relatedAt) item = candidate
+  }
+  if (!item || !sourceTask) return null
   return {
     ok: true,
     item,

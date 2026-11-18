@@ -104,10 +104,10 @@ export class ChatTurnBudget {
   }
 
   // 在模型、工具、保存和发送前复检；计时器尚未被调度时也不能越过截止边界。
-  assertActive(): void {
+  assertActive(validity: (() => boolean) | undefined = this.validity): void {
     if (!this.reason && this.remaining() <= 0) this.cancel('run_timeout')
-    if (!this.reason && this.validity) {
-      try { if (!this.validity()) this.cancel('revoked') }
+    if (!this.reason && validity) {
+      try { if (!validity()) this.cancel('revoked') }
       catch { this.cancel('revoked') }
     }
     if (this.signal.aborted) throw this.signal.reason

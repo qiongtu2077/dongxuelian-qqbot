@@ -206,6 +206,108 @@ describe('DeployPanel 持久化任务轮询闭环', () => {
   })
 })
 
+describe('DeployPanel 前端重建轮询', () => {
+  beforeEach(() => {
+    jest.useFakeTimers()
+    jest.clearAllMocks()
+    arrangeDeployResponses()
+    dashboardApi.rebuildFrontend.mockReset().mockResolvedValue({ ok: true, data: {} })
+    dashboardApi.rebuildFrontendStatus.mockReset()
+  })
+
+  afterEach(() => jest.useRealTimers())
+
+  test('慢请求在途期间只读取一次，完成后再等两秒', async () => {
+    let finishRead
+    dashboardApi.rebuildFrontendStatus
+      .mockReturnValueOnce(new Promise(resolve => { finishRead = resolve }))
+      .mockResolvedValueOnce({ ok: false, data: null })
+      .mockResolvedValueOnce({ ok: true, data: { state: 'failed', message: '构建失败', detail: 'fixture error' } })
+    const wrapper = await mountRemote()
+    await wrapper.findAll('button').find(button => button.text() === '重建前端').trigger('click')
+    await jest.advanceTimersByTimeAsync(10000)
+    expect(dashboardApi.rebuildFrontendStatus).toHaveBeenCalledTimes(1)
+    finishRead({ ok: true, data: { state: 'building' } })
+    await flushPromises()
+    await jest.advanceTimersByTimeAsync(1999)
+    expect(dashboardApi.rebuildFrontendStatus).toHaveBeenCalledTimes(1)
+    await jest.advanceTimersByTimeAsync(2001)
+    expect(dashboardApi.rebuildFrontendStatus).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).toContain('构建失败：fixture error')
+    expect(wrapper.vm.rebuilding).toBe(false)
+    wrapper.unmount()
+  })
+
+  test('超时取消旧读取，迟到成功无法结束新轮次', async () => {
+    let finishStale
+    dashboardApi.rebuildFrontendStatus
+      .mockReturnValueOnce(new Promise(resolve => { finishStale = resolve }))
+      .mockResolvedValueOnce({ ok: true, data: { state: 'building' } })
+      .mockResolvedValueOnce({ ok: true, data: { state: 'success' } })
+    const wrapper = await mountRemote()
+    await wrapper.vm.doRebuildFrontend()
+    await jest.advanceTimersByTimeAsync(150000)
+    expect(wrapper.text()).toContain('构建超时')
+    const staleSignal = dashboardApi.rebuildFrontendStatus.mock.calls[0][0]
+    expect(staleSignal.aborted).toBe(true)
+    expect(dashboardApi.rebuildFrontendStatus).toHaveBeenCalledTimes(1)
+
+    await wrapper.vm.doRebuildFrontend()
+    finishStale({ ok: true, data: { state: 'success' } })
+    await flushPromises()
+    expect(wrapper.vm.rebuilding).toBe(true)
+    expect(wrapper.text()).toContain('前端构建中')
+    await jest.advanceTimersByTimeAsync(4000)
+    expect(dashboardApi.rebuildFrontendStatus).toHaveBeenCalledTimes(3)
+    expect(wrapper.text()).toContain('前端构建成功，请刷新页面')
+    expect(wrapper.vm.rebuilding).toBe(false)
+    wrapper.unmount()
+  })
+
+  test('管理员确认只重试当前轮次并拒绝重复或卸载后的回调', async () => {
+    const showAdminDialog = jest.fn()
+    dashboardApi.rebuildFrontend.mockResolvedValueOnce({ ok: false, code: 'ADMIN_REQUIRED', data: {} })
+    const wrapper = await mountRemote(showAdminDialog)
+    await wrapper.vm.doRebuildFrontend()
+    const retry = showAdminDialog.mock.calls[0][1]
+    await Promise.all([retry(), retry()])
+    expect(dashboardApi.rebuildFrontend).toHaveBeenCalledTimes(2)
+    expect(dashboardApi.rebuildFrontend.mock.calls[0][0].aborted).toBe(true)
+    wrapper.unmount()
+    await retry()
+    expect(dashboardApi.rebuildFrontend).toHaveBeenCalledTimes(2)
+  })
+
+  test('卸载撤销在途启动且迟到鉴权结果不会打开密码框', async () => {
+    let finishStart
+    const showAdminDialog = jest.fn()
+    dashboardApi.rebuildFrontend.mockReturnValueOnce(new Promise(resolve => { finishStart = resolve }))
+    const wrapper = await mountRemote(showAdminDialog)
+    const pending = wrapper.vm.doRebuildFrontend()
+    const signal = dashboardApi.rebuildFrontend.mock.calls[0][0]
+    wrapper.unmount()
+    expect(signal.aborted).toBe(true)
+    finishStart({ ok: false, code: 'ADMIN_REQUIRED', data: {} })
+    await pending
+    expect(showAdminDialog).not.toHaveBeenCalled()
+    expect(dashboardApi.rebuildFrontendStatus).not.toHaveBeenCalled()
+  })
+
+  test('卸载取消在途状态读取且释放后续计时器', async () => {
+    let finishRead
+    dashboardApi.rebuildFrontendStatus.mockReturnValueOnce(new Promise(resolve => { finishRead = resolve }))
+    const wrapper = await mountRemote()
+    await wrapper.vm.doRebuildFrontend()
+    await jest.advanceTimersByTimeAsync(2000)
+    const signal = dashboardApi.rebuildFrontendStatus.mock.calls[0][0]
+    wrapper.unmount()
+    expect(signal.aborted).toBe(true)
+    finishRead({ ok: true, data: { state: 'building' } })
+    await jest.advanceTimersByTimeAsync(150000)
+    expect(dashboardApi.rebuildFrontendStatus).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('DeployPanel 缓存切页与运行中的发布', () => {
   beforeEach(() => {
     jest.useFakeTimers()

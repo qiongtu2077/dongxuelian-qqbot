@@ -2,6 +2,7 @@
 
 const assert = require('assert')
 const crypto = require('crypto')
+const { execFileSync } = require('node:child_process')
 const fs = require('fs')
 const path = require('path')
 const { PassThrough } = require('stream')
@@ -67,8 +68,9 @@ function dispatchJson(method, pathname, body, headers = {}, remoteAddress = '127
       resolve(res)
     }
 
-    router.dispatch(req, res, pathname, new URL('http://127.0.0.1:5150' + pathname))
-    req.end(JSON.stringify(body))
+    const url = new URL('http://127.0.0.1:5150' + pathname)
+    assert.strictEqual(router.dispatch(req, res, url.pathname, url), true)
+    req.end(body === undefined ? undefined : JSON.stringify(body))
   })
 }
 
@@ -308,11 +310,9 @@ function testResourceMemoryHistoryIncludesUsedMemory() {
 }
 
 // Verifies opening resource status never writes an extra Dashboard process-metrics sample.
-function testResourceStatusDoesNotWriteMemorySample() {
+async function testResourceStatusDoesNotWriteMemorySample() {
   resetDataDir()
-  const req = makeReq('GET', '/dashboard/api/resource/status', { authorization: 'Bearer ' + auth.createToken() })
-  const res = makeRes()
-  assert.strictEqual(router.dispatch(req, res, '/dashboard/api/resource/status', new URL('http://127.0.0.1:5150/dashboard/api/resource/status')), true)
+  const res = await dispatchJson('GET', '/dashboard/api/resource/status', undefined, { authorization: 'Bearer ' + auth.createToken() })
   assert.strictEqual(res.statusCode, 200)
   const systemRoot = path.join(process.env.DONGXUELIAN_AI_DATA_DIR, 'resource-system')
   const metricsFiles = fs.existsSync(systemRoot)
@@ -322,7 +322,7 @@ function testResourceStatusDoesNotWriteMemorySample() {
 }
 
 // Verifies resource status surfaces server mode and activity flags from the shared runtime facts.
-function testResourceStatusIncludesServerModeFlags() {
+async function testResourceStatusIncludesServerModeFlags() {
   resetDataDir()
   const dataDir = process.env.DONGXUELIAN_AI_DATA_DIR
   const controlDir = path.join(dataDir, 'resource-control')
@@ -352,9 +352,7 @@ function testResourceStatusIncludesServerModeFlags() {
   })
 
   try {
-    const req = makeReq('GET', '/dashboard/api/resource/status', { authorization: 'Bearer ' + auth.createToken() })
-    const res = makeRes()
-    assert.strictEqual(router.dispatch(req, res, '/dashboard/api/resource/status', new URL('http://127.0.0.1:5150/dashboard/api/resource/status')), true)
+    const res = await dispatchJson('GET', '/dashboard/api/resource/status', undefined, { authorization: 'Bearer ' + auth.createToken() })
     assert.strictEqual(res.statusCode, 200)
     const payload = parseJsonResponse(res)
     assert.strictEqual(payload.ok, true)
@@ -418,7 +416,7 @@ async function testResourceCancelReportsSpecificFailure() {
   assert.match(parseJsonResponse(terminal).message, /已完成/)
   const pending = store.submitResourceTask({ ...input, id: 'cancel-normal' })
   const success = await dispatchJson('POST', '/dashboard/api/resource/cancel', { taskId: pending.id }, adminHeaders())
-  assert.strictEqual(success.statusCode, 200)
+  assert.strictEqual(success.statusCode, 200, success.body)
   assert.strictEqual(parseJsonResponse(success).ok, true)
   assert.strictEqual(store.getResourceTaskById(pending.id).status, 'cancelled')
 }
@@ -431,16 +429,15 @@ async function testResourceReadApisRequireAccessOnly() {
     '/dashboard/api/resource/mode',
     '/dashboard/api/resource/status',
     '/dashboard/api/resource/tasks',
+    '/dashboard/api/resource/diagnostics',
     '/dashboard/api/resource/events',
     '/dashboard/api/resource/workers',
     '/dashboard/api/resource/media',
     '/dashboard/api/resource/precompute',
   ]
   for (const pathname of readPaths) {
-    const req = makeReq('GET', pathname, headers)
-    const res = makeRes()
-    assert.strictEqual(router.dispatch(req, res, pathname, new URL('http://127.0.0.1:5150' + pathname)), true)
-    assert.notStrictEqual(res.statusCode, 403)
+    const res = await dispatchJson('GET', pathname, undefined, headers)
+    assert.strictEqual(res.statusCode, 200, pathname)
   }
 
   const writeRes = await dispatchJson('POST', '/dashboard/api/resource/maintenance', { enabled: true }, headers)
@@ -450,6 +447,173 @@ async function testResourceReadApisRequireAccessOnly() {
   const modeWriteRes = await dispatchJson('POST', '/dashboard/api/resource/mode', { serverMode: 'small' }, headers)
   assert.strictEqual(modeWriteRes.statusCode, 403)
   assert.strictEqual(parseJsonResponse(modeWriteRes).code, 'ADMIN_REQUIRED')
+}
+
+// 在真实目录和已鉴权路由计量读取，同时核对其他进程迁移后的视图。
+async function testResourceDiagnosticReadCounts() {
+  resetDataDir()
+  const aiLib = '../../koishi-plugin-dongxuelian-ai/lib'
+  const store = require(aiLib + '/resource-workers/task-store')
+  const { TASKS_ROOT, getTaskFile } = require(aiLib + '/resource-workers/task-paths')
+  const media = require(aiLib + '/media/backpressure/media-queue')
+  const headers = { authorization: 'Bearer ' + auth.createToken() }
+  const base = '/dashboard/api/resource'
+  const stamp = '2026-08-30T12:00:00.000Z'
+  const fixtureError = 'unavailable api_key=fixture-value-to-hide'
+  store.ensureTaskDirs()
+  media.ensureMediaDirs()
+
+  const olderStamp = '2026-08-30T11:00:00.000Z'
+  for (let index = 0; index < 2000; index++) {
+    const id = `history-${String(index).padStart(4, '0')}`
+    const kind = index < 1820 ? 'dashboard_agent' : 'old_kind'
+    const status = index < 1500 ? 'done' : 'failed'
+    const task = {
+      id, kind, status, source: 'fixture', channelKey: '', userId: '', priority: 50,
+      createdAt: olderStamp, updatedAt: olderStamp, expiresAt: '', timeoutMs: 1000,
+      payload: { content: 'fixture payload ' + 'x'.repeat(2000) }, notify: {}, error: fixtureError,
+    }
+    fs.writeFileSync(getTaskFile(status, kind, id), JSON.stringify(task))
+  }
+
+  const longId = 'media-' + 'q'.repeat(158)
+  for (const [directory, count] of [['dropped', 300], ['done', 1200]]) {
+    for (let index = 0; index < count; index++) {
+      const id = directory === 'dropped' && index === 299 ? longId : `${directory}-${index}`
+      const kind = index === 0 ? 'media_image_analysis' : 'media_file_analysis'
+      const task = { id, kind, status: directory, channelKey: '', messageId: 'fixture', urlHash: '', url: '',
+        fileId: null, createdAt: stamp, finishedAt: stamp, expiresAt: '', priority: 50, payload: {},
+        error: fixtureError, finishReason: index === 1 ? 'queue_limit' : 'processing_failed',
+        result: index === 0 ? { mode: 'image_cache' } : undefined }
+      fs.writeFileSync(path.join(media.MEDIA_ROOT, directory, id.slice(0, 160) + '.json'), JSON.stringify(task))
+    }
+  }
+
+  const originals = { sync: fs.readFileSync, async: fs.promises.readFile }
+  const reads = []
+  // 只计资源和媒体任务正文，文件属性查验和其他状态读不计。
+  function recordRead(file) {
+    if (typeof file === 'string' && file.endsWith('.json') && (file.startsWith(TASKS_ROOT + path.sep)
+      || ['done', 'dropped'].some(dir => file.startsWith(path.join(media.MEDIA_ROOT, dir) + path.sep)))) reads.push(file)
+  }
+  fs.readFileSync = function countSync(file, ...args) {
+    recordRead(file)
+    return originals.sync.call(this, file, ...args)
+  }
+  fs.promises.readFile = function countAsync(file, ...args) {
+    recordRead(file)
+    return originals.async.call(this, file, ...args)
+  }
+  // 通过原路由读取结果，并按请求检查实际的正文文件。
+  async function request(route, expectedStatus, expectedReads) {
+    reads.length = 0
+    const res = await dispatchJson('GET', base + route, undefined, headers)
+    assert.strictEqual(res.statusCode, expectedStatus, res.body)
+    if (typeof expectedReads === 'number') assert.strictEqual(reads.length, expectedReads, route)
+    else assert.deepStrictEqual(reads, expectedReads, route)
+    return parseJsonResponse(res)
+  }
+  // 以独立进程执行真实文件替换、移动和删除。
+  function changeFiles(script, ...paths) {
+    execFileSync(process.execPath, ['-e', 'const fs = require("node:fs"); const args = process.argv.slice(1); ' + script, ...paths])
+  }
+  try {
+    const targetId = 'history-1999'
+    const target = getTaskFile('failed', 'old_kind', targetId)
+    const unknown = '/diagnostics/detail?id=unknown:' + targetId
+    const mediaRoute = '/diagnostics/detail?id=media:' + longId
+    const mediaFile = path.join(media.MEDIA_ROOT, 'dropped', longId.slice(0, 160) + '.json')
+    const cold = await request(unknown, 200, [target])
+    assert.strictEqual(cold.item.taskId, targetId)
+    assert(cold.error.includes('[redacted]'))
+    assert(!JSON.stringify(cold).includes('fixture payload'))
+    assert(!JSON.stringify(cold).includes('fixture-value-to-hide'))
+    const mediaDetail = await request(mediaRoute, 200, [mediaFile])
+    assert.strictEqual(mediaDetail.item.taskId, longId)
+    await request('/diagnostics/detail?id=unknown:missing', 404, 0)
+    await request('/diagnostics/detail?id=unknown:..%2Fdo-not-read', 404, 0)
+    await request('/diagnostics/detail?id=unknown:history-1999%0A', 404, 0)
+    const first = await request('/diagnostics', 200, 2300)
+    assert.deepStrictEqual(first.counts, { all: 480, unknown: 180, media: 300 })
+    assert.strictEqual(first.items.length, 120)
+    const second = await request('/diagnostics?cursor=' + first.nextCursor, 200, 0)
+    assert.strictEqual(new Set([...first.items, ...second.items].map(item => item.recordId)).size, 240)
+    assert.strictEqual((await request('/diagnostics?group=media&reason=queue_limit', 200, 0)).total, 1)
+    const firstStatus = await request('/status', 200, 1200)
+    assert.strictEqual(firstStatus.media.doneCount, 1200)
+    assert.strictEqual(firstStatus.media.queues.imageCache.doneCount, 1)
+    assert.strictEqual(firstStatus.media.droppedCount, 300)
+    assert.strictEqual(firstStatus.media.lastQueueLimitAt, stamp)
+    assert.deepStrictEqual((await request('/status', 200, 0)).media, firstStatus.media)
+    await request('/media', 200, 0)
+
+    // 同次冷刷新共用正文读取，并覆盖损坏、超限及有效的旧文件编号。
+    const legacyFile = getTaskFile('failed', 'old_kind', 'legacy-file-name')
+    const invalid = getTaskFile('failed', 'old_kind', 'invalid')
+    const oversized = path.join(media.MEDIA_ROOT, 'dropped', 'oversized.json')
+    const validTask = JSON.parse(originals.sync(target, 'utf8'))
+    const vanishing = getTaskFile('failed', 'old_kind', 'vanishing')
+    fs.writeFileSync(vanishing, JSON.stringify({ ...validTask, id: 'vanishing' }))
+    const countAsync = fs.promises.readFile
+    fs.promises.readFile = function removeDuringRead(file, ...args) {
+      if (file === vanishing) fs.unlinkSync(file)
+      return countAsync.call(this, file, ...args)
+    }
+    try {
+      assert.strictEqual((await request('/diagnostics', 200, [vanishing])).counts.unknown, 180)
+      await request('/diagnostics/detail?id=unknown:vanishing', 404, 0)
+    } finally {
+      fs.promises.readFile = countAsync
+    }
+    fs.writeFileSync(legacyFile, JSON.stringify({ ...validTask, id: 'legacy-body-id' }))
+    fs.writeFileSync(invalid, '{invalid')
+    fs.writeFileSync(oversized, Buffer.alloc(2 * 1024 * 1024 + 1))
+    reads.length = 0
+    const simultaneous = await Promise.all([
+      dispatchJson('GET', base + '/diagnostics', undefined, headers),
+      dispatchJson('GET', base + '/diagnostics?group=unknown', undefined, headers),
+    ])
+    assert.deepStrictEqual(simultaneous.map(res => res.statusCode), [200, 200])
+    assert.deepStrictEqual([...reads].sort(), [legacyFile, invalid].sort())
+    assert.strictEqual(parseJsonResponse(simultaneous[1]).total, 181)
+    await request('/diagnostics/detail?id=unknown:legacy-body-id', 200, [legacyFile])
+    await request('/diagnostics/detail?id=unknown:legacy-file-name', 404, [legacyFile])
+
+    const newer = getTaskFile('done', 'dashboard_agent', targetId)
+    const archiveFile = path.join(media.MEDIA_ROOT, 'archive', path.basename(mediaFile))
+    changeFiles(`
+      const [target, newer, media, archived] = args
+      const task = JSON.parse(fs.readFileSync(target, 'utf8'))
+      fs.writeFileSync(newer + '.tmp', JSON.stringify({ ...task, kind: 'dashboard_agent', status: 'done', updatedAt: '2026-08-30T13:00:00Z', step: 'newest' }))
+      fs.renameSync(newer + '.tmp', newer)
+      fs.renameSync(media, archived)
+    `, target, newer, mediaFile, archiveFile)
+    assert.strictEqual((await request('/diagnostics', 200, [newer])).counts.media, 299)
+    const duplicate = await request(unknown, 200, [newer, target])
+    assert.strictEqual(duplicate.item.status, 'failed')
+    assert.strictEqual(duplicate.diagnostics.step, 'newest')
+    await request(mediaRoute, 404, 0)
+
+    const moved = getTaskFile('cancelled', 'old_kind', targetId)
+    changeFiles(`
+      const [target, moved, newer, legacy] = args
+      fs.renameSync(target, moved)
+      const task = JSON.parse(fs.readFileSync(moved, 'utf8'))
+      fs.writeFileSync(moved + '.tmp', JSON.stringify({ ...task, status: 'cancelled', error: 'changed' }))
+      fs.renameSync(moved + '.tmp', moved)
+      fs.unlinkSync(newer)
+      fs.unlinkSync(legacy)
+    `, target, moved, newer, legacyFile)
+    assert.strictEqual((await request('/diagnostics', 200, [moved])).counts.unknown, 180)
+    const afterMove = await request(unknown, 200, [moved])
+    assert.strictEqual(afterMove.item.status, 'cancelled')
+    assert.strictEqual(afterMove.error, 'changed')
+    await request('/diagnostics/detail?id=unknown:legacy-body-id', 404, 0)
+    assert.strictEqual((await request('/status', 200, 0)).media.droppedCount, 299)
+  } finally {
+    fs.readFileSync = originals.sync
+    fs.promises.readFile = originals.async
+  }
 }
 
 // 验证切换、协议确认、QQ 接入和桌面票据均拒绝只有访问令牌的请求。
@@ -492,9 +656,7 @@ async function testResourceModeRoundTripRequiresAdminAndUpdatesStatus() {
   assert.strictEqual(modeBody.serverMode, 'small')
   assert.strictEqual(modeBody.serverModeSource, 'resource-control/config.json')
 
-  const statusReq = makeReq('GET', '/dashboard/api/resource/status', headers)
-  const statusRes = makeRes()
-  assert.strictEqual(router.dispatch(statusReq, statusRes, '/dashboard/api/resource/status', new URL('http://127.0.0.1:5150/dashboard/api/resource/status')), true)
+  const statusRes = await dispatchJson('GET', '/dashboard/api/resource/status', undefined, headers)
   assert.strictEqual(statusRes.statusCode, 200)
   const statusBody = parseJsonResponse(statusRes)
   assert.strictEqual(statusBody.ok, true)
@@ -713,11 +875,12 @@ async function run() {
   testResourceDiskUsageShape()
   testResourceMemoryHistoryRequiresAccessOnly()
   testResourceMemoryHistoryIncludesUsedMemory()
-  testResourceStatusDoesNotWriteMemorySample()
-  testResourceStatusIncludesServerModeFlags()
+  await testResourceStatusDoesNotWriteMemorySample()
+  await testResourceStatusIncludesServerModeFlags()
   testResourceTaskSummaryWhitelist()
   await testResourceCancelReportsSpecificFailure()
   await testResourceReadApisRequireAccessOnly()
+  await testResourceDiagnosticReadCounts()
   await testProtocolApisRequireAdmin()
   testDailyReportAnalysisRoute()
   await testResourceModeRoundTripRequiresAdminAndUpdatesStatus()

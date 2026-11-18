@@ -2,7 +2,8 @@
 import { existsSync } from 'node:fs'
 import { ChatTurnBudget, outsideChatTurn } from './chat-turn-budget'
 const { enqueueForChannel } = require('./channel-task-queue') as typeof import('./channel-task-queue')
-import { isSessionParticipationEnabled } from '../core/participation-policy'
+import { isSessionAllowedByPolicy, isSessionParticipationEnabled, readParticipationPolicy } from '../core/participation-policy'
+import type { ParticipationPolicy } from '../core/participation-policy'
 const { MAINTENANCE_FILE } = require('../core/constants') as typeof import('../core/constants')
 
 interface TurnSession {
@@ -10,6 +11,16 @@ interface TurnSession {
   send(content: string): unknown | Promise<unknown>
 }
 interface TurnContext { logger(name: string): { info(message: string): void } }
+
+export interface ChatQueuePolicy {
+  participation: ParticipationPolicy
+  maintenance: boolean
+}
+
+// 从文件读取一次本轮队列监视共用的授权状态。
+function readChatQueuePolicy(): ChatQueuePolicy {
+  return { participation: readParticipationPolicy(), maintenance: existsSync(MAINTENANCE_FILE) }
+}
 
 // 从已解析的入口身份建立预算；无须聊天时没有常驻记录，阶段计时器由解析器释放。
 export function createChatTurn(channelKey: string, session: TurnSession, ctx: TurnContext): ChatTurnBudget {
@@ -24,6 +35,10 @@ export function submitChatTurn(turn: ChatTurnBudget, session: TurnSession, fn: (
   const accepted = enqueueForChannel(turn.identity.channelKey, fn, maxDepth, {
     turn,
     isActive: () => isSessionParticipationEnabled(session) && !existsSync(MAINTENANCE_FILE) && options.isFresh(),
+    monitor: {
+      readPolicy: readChatQueuePolicy,
+      isActive: policy => isSessionAllowedByPolicy(session, policy.participation) && !policy.maintenance && options.isFresh(),
+    },
     onSettled: reason => outsideChatTurn(async () => {
       if (turn.random || !['queue_full', 'run_timeout', 'cleanup_failed'].includes(reason)
         || turn.submittedSends || !isSessionParticipationEnabled(session) || existsSync(MAINTENANCE_FILE)) return

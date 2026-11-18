@@ -4,7 +4,7 @@
  * 边界: 不调用 AI API、不发送消息、不保存文件正文/真实 URL/本地路径。
  * 状态: data/group-scenes/<safeChannelKey>.json。
  */
-const fs = require('fs/promises')
+const fs = require('fs/promises') as typeof import('node:fs/promises')
 const path = require('path')
 const { DATA_DIR } = require('../core/constants') as typeof import('../core/constants')
 const { normalizeText, normalizeMessageText, sanitizeUserName, safeChannelKey, formatShanghaiTime24h } = require('../core/utils') as typeof import('../core/utils')
@@ -17,6 +17,8 @@ const GROUP_SCENE_COLD_GAP_MS = 10 * 60 * 1000
 const GROUP_SCENE_MAX_SCENES = 160
 const GROUP_SCENE_MAX_SNIPPETS = 16
 const GROUP_SCENE_MAX_FILE_BYTES = 768 * 1024
+const GROUP_SCENE_BATCH_SIZE = 20
+const GROUP_SCENE_FLUSH_DELAY_MS = 250
 const ACTIVE_SCENE_MAX_ITEMS = 12
 const ACTIVE_SCENE_HOT_MS = 3 * 60 * 1000
 const ACTIVE_SCENE_THIN_MS = 10 * 60 * 1000
@@ -141,33 +143,27 @@ interface FsErrorLike {
   code?: string
 }
 
-const sceneQueues: Map<string, Promise<unknown>> = new Map()
+interface PendingSceneEntry {
+  value: NormalizedSceneEntry
+  resolve(persisted: boolean): void
+  reject(error: unknown): void
+}
+
+interface SceneWriteQueue {
+  waiting: PendingSceneEntry[]
+  tail: Promise<void>
+  timer?: ReturnType<typeof setTimeout>
+}
+
+const sceneQueues = new Map<string, SceneWriteQueue>()
 const sceneCache: Map<string, GroupSceneData> = new Map()
+let acceptingSceneEntries = true
 
 const safeSceneChannelKey = safeChannelKey
 
-function ignoreSceneQueueFailure(error: unknown): void {
-  void error
-}
-
+// 返回已规范化频道对应的场景快照路径。
 function getSceneFilePath(channelKey: string = ''): string {
   return path.join(GROUP_SCENE_DIR, safeSceneChannelKey(channelKey) + '.json')
-}
-
-function enqueueSceneTask<T>(channelKey: string, task: () => T | Promise<T>): Promise<T> {
-  const key = safeSceneChannelKey(channelKey)
-  const previous = sceneQueues.get(key) || Promise.resolve()
-  const current = previous.catch(ignoreSceneQueueFailure).then(task)
-  const cleanup = current.finally(() => {
-    if (sceneQueues.get(key) === cleanup) sceneQueues.delete(key)
-  }).catch(ignoreSceneQueueFailure)
-  sceneQueues.set(key, cleanup)
-  return current
-}
-
-async function waitForSceneTasks(channelKey: string): Promise<void> {
-  const pending = sceneQueues.get(safeSceneChannelKey(channelKey))
-  if (pending) await pending.catch(ignoreSceneQueueFailure)
 }
 
 // 清理群聊片段中的敏感材料，保留正文分行供历史上下文使用。
@@ -253,6 +249,7 @@ function normalizeSceneEntry(channelKey: string, entry: RawSceneEntry = {}): Nor
   }
 }
 
+// 校验旧磁盘快照，并按原规则裁剪每个场景的字段。
 function normalizeSceneData(data: RawSceneData | Partial<GroupSceneData> | null | undefined): GroupSceneData {
   const scenes = Array.isArray(data?.scenes) ? data.scenes : []
   return {
@@ -291,7 +288,8 @@ function normalizeSceneData(data: RawSceneData | Partial<GroupSceneData> | null 
   }
 }
 
-async function loadGroupScenes(channelKey: string): Promise<GroupSceneData> {
+// 读取已持久化快照，批写取得独立副本，异常时复用最后已提交的数据。
+async function readSceneSnapshot(channelKey: string, forWrite: boolean): Promise<GroupSceneData> {
   const key = safeSceneChannelKey(channelKey)
   try {
     await fs.mkdir(GROUP_SCENE_DIR, { recursive: true })
@@ -301,26 +299,43 @@ async function loadGroupScenes(channelKey: string): Promise<GroupSceneData> {
     const parsed = JSON.parse(await fs.readFile(file, 'utf8'))
     const data = normalizeSceneData(parsed)
     sceneCache.set(key, data)
-    return data
+    return forWrite ? { ...data, scenes: data.scenes.slice() } : data
   } catch (error) {
     const code = String((error as FsErrorLike)?.code || '')
     if (code === 'ENOENT') {
       sceneCache.delete(key)
       return { version: GROUP_SCENE_VERSION, updatedAt: 0, scenes: [] }
     }
-    return sceneCache.get(key) || { version: GROUP_SCENE_VERSION, updatedAt: 0, scenes: [] }
+    const previous = sceneCache.get(key)
+    if (previous) return forWrite ? { ...previous, scenes: previous.scenes.slice() } : previous
+    return { version: GROUP_SCENE_VERSION, updatedAt: 0, scenes: [] }
   }
 }
 
-async function writeGroupScenes(channelKey: string, data: Partial<GroupSceneData>): Promise<boolean> {
+// 返回磁盘上已提交的群聊场景。
+async function loadGroupScenes(channelKey: string): Promise<GroupSceneData> {
+  return readSceneSnapshot(channelKey, false)
+}
+
+// 序列化一次并原子替换，瞬时写入失败时用相同正文重试一次。
+async function writeGroupScenes(channelKey: string, data: GroupSceneData): Promise<void> {
   await fs.mkdir(GROUP_SCENE_DIR, { recursive: true })
-  const normalized = normalizeSceneData({ ...data, updatedAt: Date.now() })
   const file = getSceneFilePath(channelKey)
   const tmp = file + '.tmp'
-  await fs.writeFile(tmp, JSON.stringify(normalized), 'utf8')
-  await fs.rename(tmp, file)
-  sceneCache.set(safeSceneChannelKey(channelKey), normalized)
-  return true
+  data.updatedAt = Date.now()
+  const body = JSON.stringify(data)
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.writeFile(tmp, body, 'utf8')
+      await fs.rename(tmp, file)
+      break
+    } catch (error) {
+      if (attempt === 0) continue
+      await fs.unlink(tmp).catch(() => {})
+      throw error
+    }
+  }
+  sceneCache.set(safeSceneChannelKey(channelKey), data)
 }
 
 function createSceneId(entry: NormalizedSceneEntry): string {
@@ -345,7 +360,8 @@ function shouldMergeScene(lastScene: GroupScene | null | undefined, entry: Norma
   return false
 }
 
-function appendEntryToScene(scene: GroupScene, entry: NormalizedSceneEntry): GroupScene {
+// 将一条已规范化消息加入场景并裁剪用于后续匹配的字段。
+function appendEntryToScene(scene: GroupScene, entry: NormalizedSceneEntry): void {
   scene.endTs = Math.max(Number(scene.endTs || 0), entry.ts)
   if (entry.messageId && !scene.messageIds.includes(entry.messageId)) scene.messageIds.push(entry.messageId)
   if (!entry.hasMessageRecordCue && !scene.speakers.includes(entry.speakerName)) scene.speakers.push(entry.speakerName)
@@ -376,39 +392,95 @@ function appendEntryToScene(scene: GroupScene, entry: NormalizedSceneEntry): Gro
   scene.samples = scene.samples.slice(-8)
   scene.snippets = scene.snippets.slice(-GROUP_SCENE_MAX_SNIPPETS)
   scene.state = Date.now() - scene.endTs <= ACTIVE_SCENE_THIN_MS ? 'warm' : 'cold'
-  return scene
 }
 
-async function appendGroupSceneEntry(channelKey: string, rawEntry: RawSceneEntry = {}): Promise<boolean> {
-  const entry = normalizeSceneEntry(channelKey, rawEntry)
-  if (!entry) return false
-  return enqueueSceneTask(channelKey, async () => {
-    const data = await loadGroupScenes(channelKey)
-    const scenes = data.scenes || []
-    const last = scenes[scenes.length - 1]
-    if (shouldMergeScene(last, entry)) {
-      appendEntryToScene(last, entry)
-    } else {
-      scenes.push(appendEntryToScene({
-        id: createSceneId(entry),
-        channelKey: safeSceneChannelKey(channelKey),
-        startTs: entry.ts,
-        endTs: entry.ts,
-        messageIds: [],
-        speakers: [],
-        speakerCount: 0,
-        anchors: [],
-        keywords: [],
-        samples: [],
-        snippets: [],
-        state: 'warm',
-        source: 'deterministic',
-      }, entry))
-    }
-    while (scenes.length > GROUP_SCENE_MAX_SCENES) scenes.shift()
-    data.scenes = scenes
-    return writeGroupScenes(channelKey, data)
+// 在已隔离的工作快照上按接收次序应用一条消息，保留逐条裁剪语义。
+function applySceneEntry(data: GroupSceneData, entry: NormalizedSceneEntry): void {
+  const { scenes } = data
+  const last = scenes[scenes.length - 1]
+  const merge = shouldMergeScene(last, entry)
+  const scene = merge ? structuredClone(last) : {
+    id: createSceneId(entry),
+    channelKey: entry.channelKey,
+    startTs: entry.ts,
+    endTs: entry.ts,
+    messageIds: [],
+    speakers: [],
+    speakerCount: 0,
+    anchors: [],
+    keywords: [],
+    samples: [],
+    snippets: [],
+    state: 'warm',
+    source: 'deterministic',
+  }
+  appendEntryToScene(scene, entry)
+  // 仅重新规范化变更的场景，避免后续消息看到原本会在写盘时被裁掉的字段。
+  const [updated] = normalizeSceneData({ scenes: [scene] }).scenes
+  if (merge) scenes.pop()
+  if (updated) scenes.push(updated)
+  while (scenes.length > GROUP_SCENE_MAX_SCENES) scenes.shift()
+}
+
+// --- 场景持久化队列 --- //
+
+// 保存同群读写的完成顺序，最后一个操作结束后回收空队列。
+function enqueueSceneOperation<T>(key: string, queue: SceneWriteQueue, action: () => Promise<T>): Promise<T> {
+  const result = queue.tail.then(action)
+  const tail = result.then(() => {}, () => {}).finally(() => {
+    if (queue.tail === tail && !queue.waiting.length && sceneQueues.get(key) === queue) sceneQueues.delete(key)
   })
+  queue.tail = tail
+  return result
+}
+
+// 取出本批后挂到同群写入末尾，成功后才结算本批条目。
+function flushSceneBatch(key: string, queue: SceneWriteQueue): Promise<void> {
+  clearTimeout(queue.timer)
+  queue.timer = undefined
+  if (!queue.waiting.length) return queue.tail
+  const batch = queue.waiting.splice(0, GROUP_SCENE_BATCH_SIZE)
+  return enqueueSceneOperation(key, queue, async () => {
+    try {
+      // 工作快照与可读缓存分离，写入失败时仍可读取最后已提交版本。
+      const data = await readSceneSnapshot(key, true)
+      for (const { value } of batch) applySceneEntry(data, value)
+      await writeGroupScenes(key, data)
+      for (const entry of batch) entry.resolve(true)
+    } catch (error) {
+      for (const entry of batch) entry.reject(error)
+    }
+  })
+}
+
+// 达到批量时立刻提交，否则从最早等待条目开始计时。
+async function appendGroupSceneEntry(channelKey: string, rawEntry: RawSceneEntry = {}): Promise<boolean> {
+  if (!acceptingSceneEntries) return false
+  const value = normalizeSceneEntry(channelKey, rawEntry)
+  if (!value) return false
+  const key = value.channelKey
+  let queue = sceneQueues.get(key)
+  if (!queue) {
+    queue = { waiting: [], tail: Promise.resolve() }
+    sceneQueues.set(key, queue)
+  }
+  const current = queue
+  return new Promise<boolean>((resolve, reject) => {
+    current.waiting.push({ value, resolve, reject })
+    if (current.waiting.length >= GROUP_SCENE_BATCH_SIZE) void flushSceneBatch(key, current)
+    else current.timer ??= setTimeout(() => { void flushSceneBatch(key, current) }, GROUP_SCENE_FLUSH_DELAY_MS)
+  })
+}
+
+// 插件正常装载或重新装载时恢复接纳场景消息。
+function openGroupSceneWrites(): void {
+  acceptingSceneEntries = true
+}
+
+// 停止接纳新条目，将已接纳的尾批提交并等待各群持久化结束。
+async function closeGroupSceneWrites(): Promise<void> {
+  acceptingSceneEntries = false
+  await Promise.all([...sceneQueues].map(([key, queue]) => flushSceneBatch(key, queue)))
 }
 
 function formatSceneLine(item: SceneItemLike = {}): string {
@@ -663,6 +735,7 @@ function formatRetrievedScene(scene: GroupScene): string {
   return `${header}\n${body}`
 }
 
+// 将检索排在当前接纳的写入之后，后续消息从新的尾批继续入队。
 async function readGroupContext(channelKey: string, args: ReadGroupContextArgs = {}): Promise<string> {
   if (!channelKey) return '无法获取当前群聊频道。'
   const sceneId = String(args.sceneId || '').trim()
@@ -670,8 +743,14 @@ async function readGroupContext(channelKey: string, args: ReadGroupContextArgs =
   const maxAgeMinutes = Math.min(Math.max(parseInt(String(args.maxAgeMinutes || ''), 10) || 60, 1), 24 * 60)
   const maxScenes = Math.min(Math.max(parseInt(String(args.maxScenes || ''), 10) || 2, 1), 3)
   const anchorType = String(args.anchorType || 'any')
-  await waitForSceneTasks(channelKey)
-  const data = await loadGroupScenes(channelKey)
+  const key = safeSceneChannelKey(channelKey)
+  let queue = sceneQueues.get(key)
+  if (!queue) {
+    queue = { waiting: [], tail: Promise.resolve() }
+    sceneQueues.set(key, queue)
+  }
+  void flushSceneBatch(key, queue)
+  const data = await enqueueSceneOperation(key, queue, () => loadGroupScenes(key))
   const cutoff = Date.now() - maxAgeMinutes * 60 * 1000
   const tokens = tokenizeQuery([query, args.timeHint || '', args.reason || ''].filter(Boolean).join(' '))
   const candidates = (data.scenes || [])
@@ -698,6 +777,8 @@ export = {
   extractSceneAnchors,
   extractSceneKeywords,
   appendGroupSceneEntry,
+  openGroupSceneWrites,
+  closeGroupSceneWrites,
   loadGroupScenes,
   readGroupContext,
   buildActiveGroupSceneNote,

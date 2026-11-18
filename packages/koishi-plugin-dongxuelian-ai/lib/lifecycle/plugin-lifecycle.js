@@ -7,6 +7,7 @@
  * ========================================================================== */
 const fsSync = require('fs');
 const chat_turn_budget_1 = require("./chat-turn-budget");
+const { openGroupSceneWrites, closeGroupSceneWrites } = require('../routing/group-scene-index');
 const { clearTopicSwitchLocks } = require('../chat/chat-topic-switch');
 const path = require('path');
 const { DATA_DIR, PLUGIN_VERSION, THINKING_MODE_FILE, POLITICAL_DETECT_FILE, } = require('../core/constants');
@@ -130,6 +131,7 @@ function discardInterruptedRuntimeState(bootId = readLinuxBootId()) {
 }
 // --- 生命周期注册 --- //
 function registerPluginLifecycle(ctx, options = {}) {
+    openGroupSceneWrites();
     const { configureAgentQueue, chat, retellAgentResult } = options;
     const supervisorGeneration = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     let resultNotifierBusy = false;
@@ -307,7 +309,7 @@ function registerPluginLifecycle(ctx, options = {}) {
             ctx.logger('dongxuelian-ai').warn(`agent cron scheduler stop failed: ${getLifecycleErrorMessage(error)}`);
         }
         clearTopicSwitchLocks();
-        await Promise.all([(0, chat_turn_budget_1.cancelChatTurnStages)(), clearChannelQueues()]);
+        await Promise.all([(0, chat_turn_budget_1.cancelChatTurnStages)(), clearChannelQueues(), closeGroupSceneWrites()]);
         clearLocateSnapshots();
         clearRandomPendingState();
         clearStartupSchedulers();

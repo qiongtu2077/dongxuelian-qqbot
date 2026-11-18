@@ -7,6 +7,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.RESOURCE_DIAGNOSTIC_PAGE_SIZE = void 0;
 exports.buildResourceDiagnosticsPage = buildResourceDiagnosticsPage;
+exports.parseResourceDiagnosticId = parseResourceDiagnosticId;
 exports.buildResourceDiagnosticDetail = buildResourceDiagnosticDetail;
 exports.RESOURCE_DIAGNOSTIC_PAGE_SIZE = 120;
 const KNOWN_RESOURCE_TASK_KINDS = new Set([
@@ -58,7 +59,7 @@ function buildUnknownTaskItem(task) {
         finishedAt: normalizeTime(task.finishedAt),
         relatedAt: updatedAt || createdAt,
         finishReason: '',
-        hasError: !!String(task.error || ''),
+        hasError: !!(task.hasError ?? String(task.error || '')),
     };
 }
 // 把一个未完成媒体任务转换为不含输入数据的诊断摘要。
@@ -79,7 +80,7 @@ function buildMediaTaskItem(task) {
         finishedAt,
         relatedAt: finishedAt,
         finishReason,
-        hasError: !!String(task.error || ''),
+        hasError: !!(task.hasError ?? String(task.error || '')),
     };
 }
 // --- 排序、筛选与游标 --- //
@@ -93,16 +94,36 @@ function dedupeNewest(items) {
     }
     return Array.from(result.values());
 }
-// 收集全部诊断摘要并按相关时间、内部标识稳定倒序排列。
-function collectDiagnosticItems(source) {
-    const unknown = source.resourceTasks
+// 为排序与游标使用同一倒序规则，补足语言比较认为等价的编号。
+function compareDiagnosticItems(a, b) {
+    return b.relatedAt.localeCompare(a.relatedAt) || b.recordId.localeCompare(a.recordId)
+        || (b.recordId > a.recordId ? 1 : b.recordId < a.recordId ? -1 : 0);
+}
+let cachedIndex;
+// 两个来源的摘要发生变化时，才重建去重结果及筛选顺序。
+function indexDiagnosticItems(source) {
+    if (cachedIndex?.resourceTasks === source.resourceTasks && cachedIndex.mediaTasks === source.mediaTasks)
+        return cachedIndex.index;
+    const items = source.resourceTasks
         .filter(task => !KNOWN_RESOURCE_TASK_KINDS.has(String(task.kind || '')))
         .map(buildUnknownTaskItem);
-    const media = source.mediaTasks.map(buildMediaTaskItem);
-    return dedupeNewest([...unknown, ...media]).sort((a, b) => {
-        const timeOrder = b.relatedAt.localeCompare(a.relatedAt);
-        return timeOrder || b.recordId.localeCompare(a.recordId);
-    });
+    for (const task of source.mediaTasks)
+        items.push(buildMediaTaskItem(task));
+    const index = { all: dedupeNewest(items).sort(compareDiagnosticItems), unknown: [], media: [], reasons: new Map() };
+    for (const item of index.all) {
+        if (item.recordType === 'unknown_task') {
+            index.unknown.push(item);
+            continue;
+        }
+        index.media.push(item);
+        const matching = index.reasons.get(item.finishReason);
+        if (matching)
+            matching.push(item);
+        else
+            index.reasons.set(item.finishReason, [item]);
+    }
+    cachedIndex = { resourceTasks: source.resourceTasks, mediaTasks: source.mediaTasks, index };
+    return index;
 }
 // 将稳定游标编码为 URL 安全文本。
 function encodeCursor(item) {
@@ -124,60 +145,73 @@ function decodeCursor(value) {
         return null;
     }
 }
-// 判断一条倒序记录是否位于游标之后。
-function isAfterCursor(item, cursor) {
+// 从有序结果二分定位游标后的第一条记录，游标所在记录即使删除也可继续翻页。
+function findPageStart(items, cursor) {
     if (!cursor)
-        return true;
-    if (item.relatedAt < cursor.relatedAt)
-        return true;
-    return item.relatedAt === cursor.relatedAt && item.recordId < cursor.recordId;
-}
-// 按分组和结束原因筛选诊断摘要。
-function filterDiagnosticItems(items, group, reason) {
-    return items.filter(item => {
-        if (group === 'unknown' && item.recordType !== 'unknown_task')
-            return false;
-        if (group === 'media' && item.recordType !== 'unfinished_media')
-            return false;
-        if (reason && (item.recordType !== 'unfinished_media' || item.finishReason !== reason))
-            return false;
-        return true;
-    });
+        return 0;
+    let start = 0;
+    let end = items.length;
+    while (start < end) {
+        const middle = Math.floor((start + end) / 2);
+        if (compareDiagnosticItems(items[middle], cursor) <= 0)
+            start = middle + 1;
+        else
+            end = middle;
+    }
+    return start;
 }
 // --- 接口响应 --- //
 // 构建诊断列表的固定 120 条稳定游标分页响应。
 function buildResourceDiagnosticsPage(source, query = {}) {
-    const all = collectDiagnosticItems(source);
+    const index = indexDiagnosticItems(source);
     const group = normalizeGroup(query.group);
     const reason = normalizeReason(query.reason);
-    const filtered = filterDiagnosticItems(all, group, reason);
-    const remaining = filtered.filter(item => isAfterCursor(item, decodeCursor(query.cursor)));
-    const items = remaining.slice(0, exports.RESOURCE_DIAGNOSTIC_PAGE_SIZE);
-    const hasMore = remaining.length > items.length;
+    const filtered = reason ? (group === 'unknown' ? [] : index.reasons.get(reason) ?? []) : index[group];
+    const start = findPageStart(filtered, decodeCursor(query.cursor));
+    const items = filtered.slice(start, start + exports.RESOURCE_DIAGNOSTIC_PAGE_SIZE);
+    const hasMore = start + items.length < filtered.length;
     return {
         ok: true,
         items,
         total: filtered.length,
         counts: {
-            all: all.length,
-            unknown: all.filter(item => item.recordType === 'unknown_task').length,
-            media: all.filter(item => item.recordType === 'unfinished_media').length,
+            all: index.all.length,
+            unknown: index.unknown.length,
+            media: index.media.length,
         },
         nextCursor: hasMore && items.length ? encodeCursor(items[items.length - 1]) : '',
         hasMore,
         pageSize: exports.RESOURCE_DIAGNOSTIC_PAGE_SIZE,
     };
 }
+// 仅识别接口生成的两类记录标识，允许媒体历史文件使用较长编号。
+function parseResourceDiagnosticId(value) {
+    const text = String(value || '');
+    const match = /^(unknown|media):([^/\\\x00-\x1f\x7f]+)$/.exec(text);
+    if (!match || match[0] !== text || match[2] === '.' || match[2] === '..')
+        return null;
+    return { source: match[1] === 'unknown' ? 'unknown' : 'media', taskId: match[2] };
+}
 // 构建一条诊断记录的按需详情，只返回已保存且再次脱敏的错误和诊断字段。
 function buildResourceDiagnosticDetail(source, recordIdValue) {
-    const recordId = String(recordIdValue || '');
-    const item = collectDiagnosticItems(source).find(candidate => candidate.recordId === recordId);
-    if (!item)
+    const id = parseResourceDiagnosticId(recordIdValue);
+    if (!id)
         return null;
-    const sourceTask = item.recordType === 'unfinished_media'
-        ? source.mediaTasks.find(task => String(task.id || '') === item.taskId)
-        : source.resourceTasks.find(task => String(task.id || '') === item.taskId);
-    if (!sourceTask)
+    const tasks = id.source === 'media' ? source.mediaTasks : source.resourceTasks;
+    let sourceTask;
+    let item;
+    for (const task of tasks) {
+        if (task.id !== id.taskId)
+            continue;
+        // 旧详情从已排序来源取首条报错，摘要则选最新的可见诊断副本。
+        sourceTask ?? (sourceTask = task);
+        if (id.source === 'unknown' && KNOWN_RESOURCE_TASK_KINDS.has(String(task.kind || '')))
+            continue;
+        const candidate = id.source === 'media' ? buildMediaTaskItem(task) : buildUnknownTaskItem(task);
+        if (!item || candidate.relatedAt > item.relatedAt)
+            item = candidate;
+    }
+    if (!item || !sourceTask)
         return null;
     return {
         ok: true,

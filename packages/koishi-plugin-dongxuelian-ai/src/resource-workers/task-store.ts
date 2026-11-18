@@ -5,6 +5,7 @@
  */
 const fs = require('fs') as typeof import('fs')
 const path = require('path')
+import { createTaskSummaryCache, findDiagnosticTaskFiles, indexTaskFileAliases } from '../resource-common/task-summary-cache'
 const { isFixedReportExecutionKind } = require('../resource-common/resource-task-kinds') as typeof import('../resource-common/resource-task-kinds')
 const {
   appendJsonlEvent,
@@ -27,6 +28,7 @@ type ResourceTaskNotify = import('./task-types').ResourceTaskNotify
 type DailyReportDeliveryProgress = import('./task-types').DailyReportDeliveryProgress
 type ResourceTaskStatus = import('./task-types').ResourceTaskStatus
 type ResourceWorkerState = import('./task-types').ResourceWorkerState
+type ResourceTaskSummary = Pick<ResourceTask, 'id' | 'kind' | 'status' | 'priority' | 'createdAt' | 'updatedAt' | 'finishedAt'> & { hasError: boolean }
 const {
   WORKERS_ROOT,
   TASKS_ROOT,
@@ -86,6 +88,8 @@ const RESOURCE_TASK_CANONICAL_STATUS_ORDER: ResourceTaskStatus[] = [
 ]
 
 const DEFAULT_ACTIVE_TASK_STATUSES: ResourceTaskStatus[] = ['pending', 'claiming', 'running', 'deferred']
+const DIAGNOSTIC_STATUSES: ResourceTaskStatus[] = ['pending', 'claiming', 'running', 'done', 'failed', 'cancelled', 'deferred']
+const MAX_TASK_BYTES = 8 * 1024 * 1024 // 有界的图片任务可以包含 Base64 输入。
 const TASK_TRANSITION_ROOT = path.join(WORKERS_ROOT, 'task-transitions')
 const TASK_TRANSITION_OWNER = /^(\d+)-[a-zA-Z0-9]+\.owner$/
 
@@ -216,8 +220,7 @@ function parseResourceTask(value: unknown): ResourceTask | null {
 
 // 从任意状态目录读取任务文件。
 function readTaskFile(file: string): ResourceTask | null {
-  // A bounded Agent image request can contain up to 4 MB of bytes encoded as Base64.
-  return parseResourceTask(readJsonFile<unknown>(file, null, 8 * 1024 * 1024))
+  return parseResourceTask(readJsonFile<unknown>(file, null, MAX_TASK_BYTES))
 }
 
 function normalizeKinds(kinds: string[] = []): string[] {
@@ -225,7 +228,7 @@ function normalizeKinds(kinds: string[] = []): string[] {
 }
 
 // 按原队列优先级和创建时间比较，完全相同时由目录顺序决定。
-function compareTaskQueueOrder(left: ResourceTask, right: ResourceTask): number {
+function compareTaskQueueOrder(left: Pick<ResourceTask, 'priority' | 'createdAt'>, right: Pick<ResourceTask, 'priority' | 'createdAt'>): number {
   return Number(left.priority || 50) - Number(right.priority || 50)
     || String(left.createdAt || '').localeCompare(String(right.createdAt || ''))
 }
@@ -261,17 +264,6 @@ function listResourceTasks(options: ListTasksOptions = {}): ResourceTask[] {
   }
   tasks.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))
   return tasks.slice(0, limit)
-}
-
-// 列出每个状态目录中仍被系统保留的任务，供管理员诊断分页统一排序。
-function listResourceTasksForDiagnostics(): ResourceTask[] {
-  ensureTaskDirs()
-  const tasks: ResourceTask[] = []
-  for (const status of ['pending', 'claiming', 'running', 'done', 'failed', 'cancelled', 'deferred']) {
-    tasks.push(...scanTasksByStatus(status, 20000))
-  }
-  tasks.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')))
-  return tasks
 }
 
 // 完整枚举活动日报及预分析用于删除保护；读取失败、非法DTO和链接不能被当成无任务。
@@ -609,6 +601,63 @@ function prepareTaskTransition(task: ResourceTask, targetStatus: ResourceTaskSta
 function getResourceTaskById(taskId: string): ResourceTask | null {
   ensureTaskDirs()
   return getCanonicalTaskCopyById(taskId)
+}
+
+// --- 资源诊断读取 --- //
+
+// 生成列表所需字段，错误正文与任务载荷留在源文件。
+function summarizeDiagnosticTask(record: unknown): ResourceTaskSummary | null {
+  const task = parseResourceTask(record)
+  if (!task) return null
+  const { id, kind, status, priority, createdAt, updatedAt, finishedAt } = task
+  return { id, kind, status, priority, createdAt, updatedAt, finishedAt, hasError: !!String(task.error || '') }
+}
+
+const diagnosticDirectories = DIAGNOSTIC_STATUSES.map(status => ({ status, path: getTaskStatusDir(status), recursive: status === 'pending' }))
+const diagnosticDirectoryRanks = new Map(diagnosticDirectories.map((directory, index) => [directory.path, index]))
+const readDiagnosticFiles = createTaskSummaryCache(diagnosticDirectories, MAX_TASK_BYTES, summarizeDiagnosticTask)
+let diagnosticFiles: Awaited<ReturnType<typeof readDiagnosticFiles>> | undefined
+let diagnosticTasks: readonly ResourceTaskSummary[] = []
+let diagnosticAliases = new Map<string, Set<string>>()
+
+// 保持旧诊断的更新时间、状态目录、队列优先级及文件名择优顺序。
+function compareDiagnosticCopies(
+  left: ResourceTaskSummary | ResourceTask,
+  right: ResourceTaskSummary | ResourceTask,
+  leftDirectory: string,
+  rightDirectory: string,
+): number {
+  return (right.updatedAt || right.createdAt).localeCompare(left.updatedAt || left.createdAt)
+    || (diagnosticDirectoryRanks.get(leftDirectory) ?? 0) - (diagnosticDirectoryRanks.get(rightDirectory) ?? 0)
+    || compareTaskQueueOrder(left, right)
+}
+
+// 列表复用已验证的轻量任务摘要及旧文件编号映射。
+async function listResourceTasksForDiagnostics(): Promise<readonly ResourceTaskSummary[]> {
+  const files = await readDiagnosticFiles()
+  if (files !== diagnosticFiles) {
+    diagnosticTasks = [...files].sort((a, b) => compareDiagnosticCopies(a.value, b.value, a.directory, b.directory))
+      .map(({ value }) => value)
+    diagnosticAliases = indexTaskFileAliases(files)
+    diagnosticFiles = files
+  }
+  return diagnosticTasks
+}
+
+// 只解析同编号候选，保留诊断取源顺序以及每个状态原有的扫描上限。
+function readResourceTasksForDiagnosticDetail(id: string): ResourceTask[] {
+  const aliases = diagnosticAliases.get(id)
+  const candidates: { task: ResourceTask; directory: string }[] = []
+  for (const directory of diagnosticDirectories) {
+    const target = getTaskFile(directory.status, '', id)
+    const files = findDiagnosticTaskFiles(directory, target, aliases)
+    for (const file of files) {
+      const task = readMatchingTaskFile(file, id)
+      if (task) candidates.push({ task, directory: directory.path })
+    }
+  }
+  return candidates.sort((a, b) => compareDiagnosticCopies(a.task, b.task, a.directory, b.directory))
+    .map(({ task }) => task)
 }
 
 // 将 claiming 任务移动为 running。
@@ -1080,6 +1129,7 @@ export = {
   findResourceTaskByKindAndChannel,
   listResourceTasks,
   listResourceTasksForDiagnostics,
+  readResourceTasksForDiagnosticDetail,
   listActiveDailyReportTasks,
   listTerminalTasksForNotification,
   countResourceTasks,

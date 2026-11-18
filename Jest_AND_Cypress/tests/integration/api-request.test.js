@@ -1,4 +1,4 @@
-import { addManagedGroup, deleteManagedGroup, detectAiModelCapabilities, fetchAiModelApiConfig, fetchGroupSettings, fetchResourceStatus, saveGroupSettings, updateSelfId, verifyAdmin } from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
+import { addManagedGroup, deleteManagedGroup, detectAiModelCapabilities, fetchAiModelApiConfig, fetchGroupSettings, fetchResourceStatus, rebuildFrontend, rebuildFrontendStatus, saveGroupSettings, updateSelfId, verifyAdmin } from '../../../packages/koishi-plugin-dashboard/frontend/src/api'
 
 // 创建足以模拟浏览器 fetch Response 的响应对象。
 function response(status, data) {
@@ -84,6 +84,24 @@ describe('主控制台 API 请求封装', () => {
     controller.abort()
     expect(fetchSignal.aborted).toBe(true)
     resolveResponse(response(401, { message: 'stale response' }))
+    expect(await pending).toEqual({ ok: false, data: null })
+    expect(localStorage.getItem('dashboard_token')).toBe('current-token')
+  })
+
+  test.each([
+    ['/dashboard/api/frontend/rebuild', rebuildFrontend],
+    ['/dashboard/api/frontend/rebuild-status', rebuildFrontendStatus],
+  ])('取消重建请求 %s 后忽略迟到的鉴权响应', async (url, request) => {
+    localStorage.setItem('dashboard_token', 'current-token')
+    let respond
+    global.fetch.mockReturnValueOnce(new Promise(resolve => { respond = resolve }))
+    const controller = new AbortController()
+    const pending = request(controller.signal)
+    const [calledUrl, options] = global.fetch.mock.calls[0]
+    expect(calledUrl).toBe(url)
+    controller.abort()
+    expect(options.signal.aborted).toBe(true)
+    respond(response(401, { message: 'stale response' }))
     expect(await pending).toEqual({ ok: false, data: null })
     expect(localStorage.getItem('dashboard_token')).toBe('current-token')
   })

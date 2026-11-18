@@ -1,7 +1,9 @@
 const path = require('path')
 const fs = require('fs')
+const asyncFs = require('node:fs/promises')
 const { withScenario } = require('./_setup')
-const { AI_ROOT } = require('../fake/file')
+const { AI_ROOT, reloadPlugin } = require('../fake/file')
+const { flushAsync } = require('../fake/koishi')
 const { mockFetch } = require('../fake/fetch')
 const { checkSentExcludes, checkSentIncludes } = require('../helpers/assert')
 
@@ -31,8 +33,210 @@ async function withFetch(mocked, fn) {
   }
 }
 
+// 通过真实共享消息入口计量磁盘批次，并与逐条提交的场景结果比对。
+async function testSceneBatchAndSummaryWhitelist(t) {
+  await withScenario({ fakeTimers: true }, async ({ makeSession, data }) => {
+    const scene = require('../../lib/routing/group-scene-index')
+    const conversation = require('../../lib/conversation')
+    const channel = '10001'
+    const batchFile = scene.getSceneFilePath(channel)
+    const serialFile = scene.getSceneFilePath('serial-reference')
+    const whitelist = data.pathFor('summary-whitelist.json')
+    const session = makeSession({ guildId: channel, channelId: channel })
+    const now = Date.now()
+    const seedTime = now - 160 * 11 * 60 * 1000
+    const initial = Array.from({ length: 160 }, (_, index) => {
+      const ts = seedTime + index * 11 * 60 * 1000
+      const messageId = 'old-' + index
+      return { id: 'scene-' + messageId, channelKey: channel, startTs: ts, endTs: ts, messageIds: [messageId],
+        speakers: ['群友'], speakerCount: 1, snippets: [{ messageId, ts, speakerName: '群友', role: 'user', content: '历史消息' }] }
+    })
+    fs.mkdirSync(scene.GROUP_SCENE_DIR, { recursive: true })
+    const seed = JSON.stringify({ version: 1, updatedAt: seedTime, scenes: initial })
+    fs.writeFileSync(batchFile, seed)
+    fs.writeFileSync(serialFile, seed)
+
+    const originals = { read: asyncFs.readFile, rename: asyncFs.rename, sync: fs.readFileSync }
+    let sceneReads = 0
+    let sceneWrites = 0
+    let whitelistReads = 0
+    asyncFs.readFile = function countSceneRead(file, ...args) {
+      if (file === batchFile) sceneReads++
+      return originals.read.call(this, file, ...args)
+    }
+    asyncFs.rename = function countSceneWrite(source, file) {
+      if (file === batchFile) sceneWrites++
+      return originals.rename.call(this, source, file)
+    }
+    fs.readFileSync = function countWhitelistRead(file, ...args) {
+      if (file === whitelist) whitelistReads++
+      return originals.sync.call(this, file, ...args)
+    }
+    try {
+      const entries = Array.from({ length: 60 }, (_, index) => ({
+        messageId: 'scene-batch-' + index,
+        replyToId: index ? 'scene-batch-' + (index - 1) : '',
+        speakerName: '测试成员' + index % 13,
+        content: index === 59 ? '批量场景链接 https://private.example/path?token=fixture-hidden' : '批量场景消息 ' + index,
+        hasMessageRecordCue: index === 58,
+        ts: now,
+      }))
+      for (const { speakerName, content, ...metadata } of entries) conversation.saveSharedChannelTurn(session, speakerName, content, 'user', metadata)
+      const immediate = await scene.readGroupContext(channel, { query: '批量场景链接' })
+      t.check('scene batch persists sixty messages in three replacements with four reads including lookup',
+        sceneReads === 4 && sceneWrites === 3, JSON.stringify({ sceneReads, sceneWrites }))
+      t.check('unchanged summary whitelist is parsed once for sixty plain messages', whitelistReads === 1, String(whitelistReads))
+      t.check('scene search sees newly admitted messages and keeps credentials out',
+        immediate.includes('批量场景链接') && !immediate.includes('private.example') && !immediate.includes('fixture-hidden'))
+
+      for (const entry of entries) {
+        const stored = scene.appendGroupSceneEntry('serial-reference', entry)
+        await scene.readGroupContext('serial-reference')
+        await stored
+      }
+      const batch = JSON.parse(originals.sync(batchFile, 'utf8'))
+      const serial = JSON.parse(originals.sync(serialFile, 'utf8'))
+      batch.scenes.at(-1).channelKey = 'serial-reference'
+      t.check('scene batches preserve serial scene merge fields and caps',
+        JSON.stringify(batch) === JSON.stringify(serial) && batch.scenes.length === 160
+        && batch.scenes.at(-1).snippets.length === 16 && batch.scenes.at(-1).anchors.some(anchor => anchor.type === 'forward'))
+
+      // 验证同一条消息热路径即时识别新增、原子替换、坏文件和删除。
+      const updates = [[10001], ['10001'], '{broken', ['10001'], null, ['10001'], 'x'.repeat(256 * 1024 + 1)]
+      const expectedCounts = [0, 1, 1, 2, 2, 3, 3]
+      for (let index = 0; index < updates.length; index++) {
+        const next = updates[index]
+        if (next === null) fs.unlinkSync(whitelist)
+        else {
+          fs.writeFileSync(whitelist + '.tmp', typeof next === 'string' ? next : JSON.stringify(next))
+          fs.renameSync(whitelist + '.tmp', whitelist)
+        }
+        conversation.saveSharedChannelTurn(session, '群友', '白名单测试', 'user', { messageId: 'whitelist-' + index })
+        const count = conversation.channelTodayCache.get(channel)?.messages.length || 0
+        t.check('summary whitelist immediate membership transition ' + index, count === expectedCounts[index], JSON.stringify({ count }))
+      }
+      await scene.readGroupContext(channel)
+    } finally {
+      asyncFs.readFile = originals.read
+      asyncFs.rename = originals.rename
+      fs.readFileSync = originals.sync
+    }
+  })
+}
+
+// 验证延迟、查询屏障、重试、跨群并行以及卸载后的磁盘恢复。
+async function testSceneBatchLifecycle(t) {
+  await withScenario({ fakeTimers: true }, async ({ clock, harness }) => {
+    const scene = require('../../lib/routing/group-scene-index')
+    const file = scene.getSceneFilePath('first')
+    const originals = { write: asyncFs.writeFile, rename: asyncFs.rename }
+    const commits = []
+    let nextWrite
+    let nextRenameFailures = 0
+    let renameAttempts = 0
+    asyncFs.writeFile = async function controlWrite(fileName, ...args) {
+      if (fileName === file + '.tmp' && nextWrite) {
+        const wait = nextWrite
+        nextWrite = null
+        await wait
+      }
+      return originals.write.call(this, fileName, ...args)
+    }
+    asyncFs.rename = async function trackCommit(temp, destination) {
+      if (destination === file) {
+        renameAttempts++
+        if (nextRenameFailures > 0) {
+          nextRenameFailures--
+          throw new Error('fixture scene rename failure')
+        }
+      }
+      await originals.rename.call(this, temp, destination)
+      commits.push(destination)
+    }
+    // 生成固定时间的可检索条目。
+    const append = (channel, id) => scene.appendGroupSceneEntry(channel, {
+      messageId: id, content: '独立标记 ' + id, speakerName: '测试者', ts: Date.now(),
+    })
+    let release
+    try {
+      let persisted = false
+      const single = append('first', 'single-entry').then(ok => { persisted = ok })
+      await clock.tick(249)
+      t.check('single scene waits until its deadline', !persisted && !fs.existsSync(file))
+      await clock.tick(1)
+      await single
+      t.check('single scene is durably written at the timer boundary', persisted && commits.length === 1)
+
+      const atBoundary = Array.from({ length: 21 }, (_, index) => append('first', 'border-' + index))
+      await Promise.all(atBoundary.slice(0, 20))
+      t.check('twenty of twenty-one messages commit before the tail deadline', commits.length === 2)
+      await scene.readGroupContext('first')
+      await atBoundary[20]
+      t.check('twenty-first entry is flushed by immediate lookup', commits.length === 3)
+
+      const beforeIdleSearch = commits.length
+      // 读时没有待写队列，之后接收的满批也要等这个查询取完快照。
+      const idleLookup = scene.readGroupContext('idle-read', { query: 'afteridle' })
+      const idleWrites = Array.from({ length: 20 }, () => append('idle-read', 'afteridle'))
+      const idleResult = await idleLookup
+      t.check('an idle lookup is ordered before messages admitted after the query',
+        !idleResult.includes('afteridle') && commits.length === beforeIdleSearch)
+      await Promise.all(idleWrites)
+
+      nextWrite = new Promise(resolve => { release = resolve })
+      const before = append('first', 'querybefore')
+      const lookup = scene.readGroupContext('first', { query: 'querybefore' })
+      const after = append('first', 'queryafter')
+      const other = append('other', 'other-group')
+      await clock.tick(250)
+      await other
+      t.check('blocked scene writer does not block another group', commits.includes(scene.getSceneFilePath('other')))
+      release()
+      const result = await lookup
+      t.check('scene lookup boundary sees prior entries and excludes those accepted afterward',
+        result.includes('querybefore') && !result.includes('queryafter'), result)
+      await Promise.all([before, after])
+
+      nextRenameFailures = 1
+      const firstAttempt = renameAttempts
+      const retry = append('first', 'retry-once')
+      await scene.readGroupContext('first')
+      t.check('transient rename retries exactly once', await retry && renameAttempts === firstAttempt + 2)
+      const afterRetry = await scene.loadGroupScenes('first')
+      t.check('retry does not duplicate snippets', afterRetry.scenes.flatMap(entry => entry.snippets)
+        .filter(snippet => snippet.messageId === 'retry-once').length === 1)
+
+      nextRenameFailures = 2
+      const failed = append('first', 'failed-twice').then(() => '', error => error.message)
+      const next = scene.readGroupContext('first', { query: 'failed-twice' })
+      const following = append('first', 'after-failure')
+      t.check('persistent failure rejects its batch and does not expose unsaved snippets',
+        (await failed).includes('fixture scene rename failure') && !(await next).includes('failed-twice'))
+      t.check('persistent failure leaves no temporary snapshot', !fs.existsSync(file + '.tmp'))
+
+      const tail = append('first', 'unload-pending')
+      await harness.ctx.emit('dispose')
+      t.check('normal unload writes all previously admitted scenes and stops accepting',
+        await following && await tail && await append('first', 'after-dispose') === false)
+      reloadPlugin()
+      const restored = await require('../../lib/routing/group-scene-index').loadGroupScenes('first')
+      const ids = restored.scenes.flatMap(entry => entry.snippets).map(snippet => snippet.messageId)
+      t.check('cold restart reads the final parseable snapshot in original order',
+        ids.includes('unload-pending') && ids.indexOf('after-failure') < ids.indexOf('unload-pending')
+        && !ids.includes('failed-twice') && !ids.includes('after-dispose'))
+      await flushAsync()
+    } finally {
+      release?.()
+      asyncFs.writeFile = originals.write
+      asyncFs.rename = originals.rename
+    }
+  })
+}
+
 async function run(t) {
   t.section('scenario: file history and natural reading')
+  await testSceneBatchAndSummaryWhitelist(t)
+  await testSceneBatchLifecycle(t)
 
   await withScenario({}, async ({ makeSession, run, data }) => {
     const session = makeSession({

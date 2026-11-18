@@ -60,7 +60,7 @@ export declare class ChatTurnBudget {
     remaining(): number;
     extendTextFallback(): void;
     private resetRunTimer;
-    assertActive(): void;
+    assertActive(validity?: (() => boolean) | undefined): void;
     modelBudget(): ModelTimeBudget;
     sendWindow(): number;
     openStage(name: string, maximumMs: number, reserveMs?: number): TurnStage;

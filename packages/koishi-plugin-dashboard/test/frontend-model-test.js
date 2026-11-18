@@ -343,11 +343,49 @@ function testResourceDiagnostics(diagnostics) {
   const ids = [...first.items, ...second.items, ...third.items].map(item => item.recordId)
   assert.strictEqual(new Set(ids).size, 246)
   assert.strictEqual(first.items[0].recordId, 'media:media-failed')
+  assert.deepStrictEqual(first.counts, { all: 246, unknown: 245, media: 1 })
+  assert.deepStrictEqual(diagnostics.buildResourceDiagnosticsPage(source, { cursor: 'invalid' }), first)
+  assert.strictEqual(diagnostics.buildResourceDiagnosticsPage(source, { group: 'unknown', reason: 'processing_failed' }).total, 0)
   const mediaOnly = diagnostics.buildResourceDiagnosticsPage(source, { group: 'media', reason: 'processing_failed' })
   assert.strictEqual(mediaOnly.total, 1)
   const detail = diagnostics.buildResourceDiagnosticDetail(source, 'media:media-failed')
   assert.strictEqual(detail.error, 'media failure')
   assert.strictEqual(Object.prototype.hasOwnProperty.call(detail, 'payload'), false)
+
+  const sharedId = 'same-id'
+  const sourceCopies = {
+    resourceTasks: [
+      { id: sharedId, kind: 'dashboard_agent', status: 'done', updatedAt: '2026-08-30T12:00:00Z', step: 'finalize', error: 'private raw value' },
+      { id: sharedId, kind: 'legacy_queue', status: 'failed', updatedAt: '2026-08-30T11:30:00Z' },
+      { id: sharedId, kind: 'legacy_queue', status: 'running', updatedAt: '2026-08-30T11:30:00Z' },
+    ],
+    mediaTasks: [],
+    redactText: value => value.replace('private raw value', '[redacted]'),
+  }
+  const duplicate = diagnostics.buildResourceDiagnosticDetail(sourceCopies, 'unknown:' + sharedId)
+  assert.strictEqual(duplicate.item.status, 'failed')
+  assert.strictEqual(duplicate.error, '[redacted]')
+  assert.strictEqual(duplicate.diagnostics.step, 'finalize')
+  assert.strictEqual(diagnostics.buildResourceDiagnosticsPage(sourceCopies).total, 1)
+
+  const sameTime = resourceTasks[0].updatedAt
+  const caseVariants = ['A', 'a', 'B', 'b'].map(letter => ({
+    id: `case-${letter}`, kind: 'legacy_queue', updatedAt: sameTime,
+  }))
+  const mixed = { ...source, resourceTasks: [...resourceTasks.slice(0, 118), ...caseVariants] }
+  const expected = [
+    'media:media-failed',
+    ...mixed.resourceTasks.map(task => `unknown:${task.id}`).sort((left, right) => right.localeCompare(left)),
+  ]
+  const actual = []
+  let cursor = ''
+  do {
+    const page = diagnostics.buildResourceDiagnosticsPage(mixed, { cursor })
+    actual.push(...page.items.map(item => item.recordId))
+    cursor = page.nextCursor
+    assert(actual.length <= expected.length)
+  } while (cursor)
+  assert.deepStrictEqual(actual, expected)
 }
 
 // Verifies persona diagnostics and cloned-voice normalization.

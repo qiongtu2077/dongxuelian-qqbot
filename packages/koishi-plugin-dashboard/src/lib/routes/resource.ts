@@ -2,7 +2,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http'
 import { buildMediaRisk, buildResourceReadability } from '../resource-readability'
-import { buildResourceDiagnosticDetail, buildResourceDiagnosticsPage } from '../resource-diagnostics'
+import { buildResourceDiagnosticDetail, buildResourceDiagnosticsPage, parseResourceDiagnosticId } from '../resource-diagnostics'
 
 /**
  * MODULE: Dashboard 资源中心路由。
@@ -576,13 +576,13 @@ function collectResourceEvents(mods: ResourceModuleSet, limit = RESOURCE_EVENT_L
 }
 
 // 合成资源中心总览状态。
-function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown> {
+async function buildResourceStatus(mods: ResourceModuleSet): Promise<Record<string, unknown>> {
+  const media = await mods.media.readMediaBackpressureStatus()
   const snapshot = mods.scheduler.readResourceSnapshot()
   const gate = mods.gate.getResourceGateStatus()
   const queue = mods.tasks.getTaskQueueSummary()
   const workers = mods.tasks.listWorkerStates()
   const activeTasks = mods.tasks.listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 1000 })
-  const media = mods.media.getMediaBackpressureStatus()
   const readability = buildResourceReadability({
     snapshot: snapshot as unknown as Record<string, unknown>,
     workers: workers as unknown as Record<string, unknown>[],
@@ -641,15 +641,6 @@ function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown> {
   }
 }
 
-// 读取诊断接口需要的两类任务源，并只交给独立诊断模块处理。
-function loadResourceDiagnosticSource(mods: ResourceModuleSet) {
-  return {
-    resourceTasks: mods.tasks.listResourceTasksForDiagnostics() as unknown as Record<string, unknown>[],
-    mediaTasks: mods.media.listUnfinishedMediaTasksForDiagnostics() as unknown as Record<string, unknown>[],
-    redactText: (value: string) => mods.redactor.redactSensitiveText(value),
-  }
-}
-
 // GET /resource/mode：读取服务器资源模式与派生门禁状态。
 function handleGetResourceMode(req: IncomingMessage, res: ServerResponse) {
   try {
@@ -684,9 +675,9 @@ function handleGetResourceMemoryHistory(req: IncomingMessage, res: ServerRespons
 }
 
 // GET /resource/status：返回资源中心总览。
-function handleGetResourceStatus(req: IncomingMessage, res: ServerResponse) {
+async function handleGetResourceStatus(req: IncomingMessage, res: ServerResponse) {
   try {
-    return json(res, buildResourceStatus(loadResourceModules()))
+    return json(res, await buildResourceStatus(loadResourceModules()))
   } catch (e) {
     return json(res, { ok: false, message: getErrorMessage(e) }, 500)
   }
@@ -707,10 +698,14 @@ function handleGetResourceTasks(req: IncomingMessage, res: ServerResponse, pathn
 }
 
 // GET /resource/diagnostics：按稳定游标分页读取未知任务和未完成媒体任务摘要。
-function handleGetResourceDiagnostics(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) {
+async function handleGetResourceDiagnostics(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) {
   try {
     const mods = loadResourceModules()
-    return json(res, buildResourceDiagnosticsPage(loadResourceDiagnosticSource(mods), {
+    const [resourceTasks, mediaTasks] = await Promise.all([
+      mods.tasks.listResourceTasksForDiagnostics(),
+      mods.media.listUnfinishedMediaSummaries(),
+    ])
+    return json(res, buildResourceDiagnosticsPage({ resourceTasks, mediaTasks }, {
       group: url.searchParams.get('group'),
       reason: url.searchParams.get('reason'),
       cursor: url.searchParams.get('cursor'),
@@ -723,10 +718,15 @@ function handleGetResourceDiagnostics(req: IncomingMessage, res: ServerResponse,
 // GET /resource/diagnostics/detail：按需返回一条已脱敏的完整保存报错。
 function handleGetResourceDiagnosticDetail(req: IncomingMessage, res: ServerResponse, pathname: string, url: URL) {
   try {
-    const detail = buildResourceDiagnosticDetail(
-      loadResourceDiagnosticSource(loadResourceModules()),
-      url.searchParams.get('id'),
-    )
+    const recordId = url.searchParams.get('id')
+    const id = parseResourceDiagnosticId(recordId)
+    if (!id) return json(res, { ok: false, message: '诊断记录不存在或已被清理' }, 404)
+    const mods = loadResourceModules()
+    const detail = buildResourceDiagnosticDetail({
+      resourceTasks: id.source === 'unknown' ? mods.tasks.readResourceTasksForDiagnosticDetail(id.taskId) : [],
+      mediaTasks: id.source === 'media' ? mods.media.readUnfinishedMediaDiagnosticDetails(id.taskId) : [],
+      redactText: mods.redactor.redactSensitiveText,
+    }, recordId)
     return detail
       ? json(res, detail)
       : json(res, { ok: false, message: '诊断记录不存在或已被清理' }, 404)
@@ -777,9 +777,9 @@ function handleGetResourceWorkers(req: IncomingMessage, res: ServerResponse) {
 }
 
 // GET /resource/media：返回媒体背压状态。
-function handleGetResourceMedia(req: IncomingMessage, res: ServerResponse) {
+async function handleGetResourceMedia(req: IncomingMessage, res: ServerResponse) {
   try {
-    const media = loadResourceModules().media.getMediaBackpressureStatus()
+    const media = await loadResourceModules().media.readMediaBackpressureStatus()
     return json(res, { ok: true, media: { ...media, ...buildMediaRisk(media) } })
   } catch (e) {
     return json(res, { ok: false, message: getErrorMessage(e) }, 500)

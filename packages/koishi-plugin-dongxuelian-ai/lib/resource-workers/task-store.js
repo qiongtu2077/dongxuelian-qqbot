@@ -6,6 +6,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const task_summary_cache_1 = require("../resource-common/task-summary-cache");
 const { isFixedReportExecutionKind } = require('../resource-common/resource-task-kinds');
 const { appendJsonlEvent, ensureDir, isProcessAlive, listJsonFiles, nowIso, readJsonFile, removePath, renameFileAtomic, sanitizeId, writeJsonAtomic, } = require('../resource-common/files');
 const { redactSensitiveData, redactSensitiveText } = require('../core/redactor');
@@ -22,6 +23,8 @@ const RESOURCE_TASK_CANONICAL_STATUS_ORDER = [
     'pending',
 ];
 const DEFAULT_ACTIVE_TASK_STATUSES = ['pending', 'claiming', 'running', 'deferred'];
+const DIAGNOSTIC_STATUSES = ['pending', 'claiming', 'running', 'done', 'failed', 'cancelled', 'deferred'];
+const MAX_TASK_BYTES = 8 * 1024 * 1024; // 有界的图片任务可以包含 Base64 输入。
 const TASK_TRANSITION_ROOT = path.join(WORKERS_ROOT, 'task-transitions');
 const TASK_TRANSITION_OWNER = /^(\d+)-[a-zA-Z0-9]+\.owner$/;
 // 任务完成回调集合 - 用于事件驱动通知
@@ -139,8 +142,7 @@ function parseResourceTask(value) {
 }
 // 从任意状态目录读取任务文件。
 function readTaskFile(file) {
-    // A bounded Agent image request can contain up to 4 MB of bytes encoded as Base64.
-    return parseResourceTask(readJsonFile(file, null, 8 * 1024 * 1024));
+    return parseResourceTask(readJsonFile(file, null, MAX_TASK_BYTES));
 }
 function normalizeKinds(kinds = []) {
     return Array.from(new Set(kinds.map(String).filter(Boolean)));
@@ -180,16 +182,6 @@ function listResourceTasks(options = {}) {
     }
     tasks.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
     return tasks.slice(0, limit);
-}
-// 列出每个状态目录中仍被系统保留的任务，供管理员诊断分页统一排序。
-function listResourceTasksForDiagnostics() {
-    ensureTaskDirs();
-    const tasks = [];
-    for (const status of ['pending', 'claiming', 'running', 'done', 'failed', 'cancelled', 'deferred']) {
-        tasks.push(...scanTasksByStatus(status, 20000));
-    }
-    tasks.sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
-    return tasks;
 }
 // 完整枚举活动日报及预分析用于删除保护；读取失败、非法DTO和链接不能被当成无任务。
 function listActiveDailyReportTasks() {
@@ -545,6 +537,54 @@ function prepareTaskTransition(task, targetStatus) {
 function getResourceTaskById(taskId) {
     ensureTaskDirs();
     return getCanonicalTaskCopyById(taskId);
+}
+// --- 资源诊断读取 --- //
+// 生成列表所需字段，错误正文与任务载荷留在源文件。
+function summarizeDiagnosticTask(record) {
+    const task = parseResourceTask(record);
+    if (!task)
+        return null;
+    const { id, kind, status, priority, createdAt, updatedAt, finishedAt } = task;
+    return { id, kind, status, priority, createdAt, updatedAt, finishedAt, hasError: !!String(task.error || '') };
+}
+const diagnosticDirectories = DIAGNOSTIC_STATUSES.map(status => ({ status, path: getTaskStatusDir(status), recursive: status === 'pending' }));
+const diagnosticDirectoryRanks = new Map(diagnosticDirectories.map((directory, index) => [directory.path, index]));
+const readDiagnosticFiles = (0, task_summary_cache_1.createTaskSummaryCache)(diagnosticDirectories, MAX_TASK_BYTES, summarizeDiagnosticTask);
+let diagnosticFiles;
+let diagnosticTasks = [];
+let diagnosticAliases = new Map();
+// 保持旧诊断的更新时间、状态目录、队列优先级及文件名择优顺序。
+function compareDiagnosticCopies(left, right, leftDirectory, rightDirectory) {
+    return (right.updatedAt || right.createdAt).localeCompare(left.updatedAt || left.createdAt)
+        || (diagnosticDirectoryRanks.get(leftDirectory) ?? 0) - (diagnosticDirectoryRanks.get(rightDirectory) ?? 0)
+        || compareTaskQueueOrder(left, right);
+}
+// 列表复用已验证的轻量任务摘要及旧文件编号映射。
+async function listResourceTasksForDiagnostics() {
+    const files = await readDiagnosticFiles();
+    if (files !== diagnosticFiles) {
+        diagnosticTasks = [...files].sort((a, b) => compareDiagnosticCopies(a.value, b.value, a.directory, b.directory))
+            .map(({ value }) => value);
+        diagnosticAliases = (0, task_summary_cache_1.indexTaskFileAliases)(files);
+        diagnosticFiles = files;
+    }
+    return diagnosticTasks;
+}
+// 只解析同编号候选，保留诊断取源顺序以及每个状态原有的扫描上限。
+function readResourceTasksForDiagnosticDetail(id) {
+    const aliases = diagnosticAliases.get(id);
+    const candidates = [];
+    for (const directory of diagnosticDirectories) {
+        const target = getTaskFile(directory.status, '', id);
+        const files = (0, task_summary_cache_1.findDiagnosticTaskFiles)(directory, target, aliases);
+        for (const file of files) {
+            const task = readMatchingTaskFile(file, id);
+            if (task)
+                candidates.push({ task, directory: directory.path });
+        }
+    }
+    return candidates.sort((a, b) => compareDiagnosticCopies(a.task, b.task, a.directory, b.directory))
+        .map(({ task }) => task);
 }
 // 将 claiming 任务移动为 running。
 function markTaskRunning(task, workerName, step = 'starting') {
@@ -1014,6 +1054,7 @@ module.exports = {
     findResourceTaskByKindAndChannel,
     listResourceTasks,
     listResourceTasksForDiagnostics,
+    readResourceTasksForDiagnosticDetail,
     listActiveDailyReportTasks,
     listTerminalTasksForNotification,
     countResourceTasks,

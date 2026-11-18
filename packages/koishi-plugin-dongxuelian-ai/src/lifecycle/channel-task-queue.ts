@@ -1,11 +1,16 @@
 /** 同频道有界串行队列；外层超时绝不释放仍运行的所有者。 */
 import { ChatTurnBudget, CHAT_TURN_LIMITS, runWithChatTurn } from './chat-turn-budget'
+import type { ChatQueuePolicy } from './chat-turn-execution'
 
 type QueueResult = 'completed' | 'failed' | 'queue_timeout' | 'queue_full' | 'run_timeout' | 'revoked' | 'disposed' | 'cleanup_failed'
 interface QueueOptions {
   ctx?: unknown
   turn?: ChatTurnBudget
   isActive?: () => boolean
+  monitor?: {
+    readPolicy(): ChatQueuePolicy
+    isActive(policy: ChatQueuePolicy): boolean
+  }
   onSettled?: (reason: QueueResult) => void | Promise<void>
 }
 interface QueueItem {
@@ -16,13 +21,49 @@ interface QueueItem {
   settled: boolean
   waitTimer?: ReturnType<typeof setTimeout>
   cleanupTimer?: ReturnType<typeof setTimeout>
-  monitor?: ReturnType<typeof setInterval>
   abort: () => void
   exited: Promise<void>
   resolveExit: () => void
 }
 interface ChannelState { running?: QueueItem; waiting: QueueItem[]; cleanupFailed: boolean }
 const channels = new Map<string, ChannelState>()
+const monitoredItems = new Set<QueueItem>()
+let monitorTimer: ReturnType<typeof setInterval> | undefined
+
+// --- 授权监视 --- //
+
+// 同一轮共享持久配置，只把本轮结果传给各队列项的即时撤销判断。
+function inspectQueuedTurns(): void {
+  let policy: ChatQueuePolicy | undefined
+  let policyFailed = false
+  for (const item of [...monitoredItems]) {
+    if (!monitoredItems.has(item)) continue
+    const monitor = item.options.monitor
+    if (monitor && !policy && !policyFailed) {
+      try { policy = monitor.readPolicy() }
+      catch { policyFailed = true }
+    }
+    try {
+      item.turn.assertActive(monitor ? () => !!policy && monitor.isActive(policy) : undefined)
+    } catch {
+      // 根信号的监听器负责摘除等待项或观察现有运行项退出。
+    }
+  }
+}
+
+// 一个进程只维持一套授权检查，首个有资格的队列项负责启动。
+function startMonitoring(item: QueueItem): void {
+  monitoredItems.add(item)
+  monitorTimer ??= setInterval(inspectQueuedTurns, 250)
+}
+
+// 取消或完成后马上退出监视，释放最后一个项目的周期计时器。
+function stopMonitoring(item: QueueItem): void {
+  monitoredItems.delete(item)
+  if (monitoredItems.size || monitorTimer === undefined) return
+  clearInterval(monitorTimer)
+  monitorTimer = undefined
+}
 
 // --- 结算与真实退出 --- //
 
@@ -40,7 +81,7 @@ function removeWaiting(key: string, state: ChannelState, item: QueueItem, reason
   if (index < 0) return
   state.waiting.splice(index, 1)
   clearTimeout(item.waitTimer)
-  clearInterval(item.monitor)
+  stopMonitoring(item)
   item.turn.signal.removeEventListener('abort', item.abort)
   item.state = 'cancelled'
   item.turn.cancel(reason)
@@ -53,6 +94,7 @@ function removeWaiting(key: string, state: ChannelState, item: QueueItem, reason
 // 运行项只能进入取消观察；两秒未退出隔离该频道，不能假报已释放。
 function cancelRunning(key: string, state: ChannelState, item: QueueItem): void {
   if (state.running !== item || item.state !== 'running') return
+  stopMonitoring(item)
   item.state = 'cancelling'
   item.turn.event('cleanup_start')
   item.cleanupTimer = setTimeout(() => {
@@ -71,7 +113,7 @@ function cancelRunning(key: string, state: ChannelState, item: QueueItem): void 
 // 真实业务退出后核对所有者再放行，迟到退出不能删除其他代的频道状态。
 function finishRunning(key: string, state: ChannelState, item: QueueItem, failed: boolean): void {
   clearTimeout(item.cleanupTimer)
-  clearInterval(item.monitor)
+  stopMonitoring(item)
   item.turn.signal.removeEventListener('abort', item.abort)
   item.state = item.turn.reason ? 'cancelled' : failed ? 'failed' : 'completed'
   const reason = item.turn.reason as QueueResult
@@ -125,7 +167,7 @@ function enqueueForChannel(channelKey: string, fn: () => Promise<unknown> | unkn
   }
   turn.signal.addEventListener('abort', item.abort, { once: true })
   // 等待期间也撤销失效授权，避免短暂关群再开启后复活旧任务。
-  item.monitor = setInterval(() => { try { turn.assertActive() } catch { /* 取消监听负责摘除或清理。 */ } }, 250)
+  startMonitoring(item)
   if (turn.random) {
     item.waitTimer = setTimeout(() => removeWaiting(key, state, item, 'queue_timeout'), CHAT_TURN_LIMITS.randomQueue)
   }

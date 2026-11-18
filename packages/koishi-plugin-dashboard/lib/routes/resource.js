@@ -490,13 +490,13 @@ function collectResourceEvents(mods, limit = RESOURCE_EVENT_LIMIT) {
     return events.slice(0, limit);
 }
 // 合成资源中心总览状态。
-function buildResourceStatus(mods) {
+async function buildResourceStatus(mods) {
+    const media = await mods.media.readMediaBackpressureStatus();
     const snapshot = mods.scheduler.readResourceSnapshot();
     const gate = mods.gate.getResourceGateStatus();
     const queue = mods.tasks.getTaskQueueSummary();
     const workers = mods.tasks.listWorkerStates();
     const activeTasks = mods.tasks.listResourceTasks({ statuses: ['pending', 'claiming', 'running', 'deferred'], limit: 1000 });
-    const media = mods.media.getMediaBackpressureStatus();
     const readability = (0, resource_readability_1.buildResourceReadability)({
         snapshot: snapshot,
         workers: workers,
@@ -554,14 +554,6 @@ function buildResourceStatus(mods) {
         events: collectResourceEvents(mods, 40),
     };
 }
-// 读取诊断接口需要的两类任务源，并只交给独立诊断模块处理。
-function loadResourceDiagnosticSource(mods) {
-    return {
-        resourceTasks: mods.tasks.listResourceTasksForDiagnostics(),
-        mediaTasks: mods.media.listUnfinishedMediaTasksForDiagnostics(),
-        redactText: (value) => mods.redactor.redactSensitiveText(value),
-    };
-}
 // GET /resource/mode：读取服务器资源模式与派生门禁状态。
 function handleGetResourceMode(req, res) {
     try {
@@ -595,9 +587,9 @@ function handleGetResourceMemoryHistory(req, res, pathname, url) {
     }
 }
 // GET /resource/status：返回资源中心总览。
-function handleGetResourceStatus(req, res) {
+async function handleGetResourceStatus(req, res) {
     try {
-        return json(res, buildResourceStatus(loadResourceModules()));
+        return json(res, await buildResourceStatus(loadResourceModules()));
     }
     catch (e) {
         return json(res, { ok: false, message: getErrorMessage(e) }, 500);
@@ -618,10 +610,14 @@ function handleGetResourceTasks(req, res, pathname, url) {
     }
 }
 // GET /resource/diagnostics：按稳定游标分页读取未知任务和未完成媒体任务摘要。
-function handleGetResourceDiagnostics(req, res, pathname, url) {
+async function handleGetResourceDiagnostics(req, res, pathname, url) {
     try {
         const mods = loadResourceModules();
-        return json(res, (0, resource_diagnostics_1.buildResourceDiagnosticsPage)(loadResourceDiagnosticSource(mods), {
+        const [resourceTasks, mediaTasks] = await Promise.all([
+            mods.tasks.listResourceTasksForDiagnostics(),
+            mods.media.listUnfinishedMediaSummaries(),
+        ]);
+        return json(res, (0, resource_diagnostics_1.buildResourceDiagnosticsPage)({ resourceTasks, mediaTasks }, {
             group: url.searchParams.get('group'),
             reason: url.searchParams.get('reason'),
             cursor: url.searchParams.get('cursor'),
@@ -634,7 +630,16 @@ function handleGetResourceDiagnostics(req, res, pathname, url) {
 // GET /resource/diagnostics/detail：按需返回一条已脱敏的完整保存报错。
 function handleGetResourceDiagnosticDetail(req, res, pathname, url) {
     try {
-        const detail = (0, resource_diagnostics_1.buildResourceDiagnosticDetail)(loadResourceDiagnosticSource(loadResourceModules()), url.searchParams.get('id'));
+        const recordId = url.searchParams.get('id');
+        const id = (0, resource_diagnostics_1.parseResourceDiagnosticId)(recordId);
+        if (!id)
+            return json(res, { ok: false, message: '诊断记录不存在或已被清理' }, 404);
+        const mods = loadResourceModules();
+        const detail = (0, resource_diagnostics_1.buildResourceDiagnosticDetail)({
+            resourceTasks: id.source === 'unknown' ? mods.tasks.readResourceTasksForDiagnosticDetail(id.taskId) : [],
+            mediaTasks: id.source === 'media' ? mods.media.readUnfinishedMediaDiagnosticDetails(id.taskId) : [],
+            redactText: mods.redactor.redactSensitiveText,
+        }, recordId);
         return detail
             ? json(res, detail)
             : json(res, { ok: false, message: '诊断记录不存在或已被清理' }, 404);
@@ -687,9 +692,9 @@ function handleGetResourceWorkers(req, res) {
     }
 }
 // GET /resource/media：返回媒体背压状态。
-function handleGetResourceMedia(req, res) {
+async function handleGetResourceMedia(req, res) {
     try {
-        const media = loadResourceModules().media.getMediaBackpressureStatus();
+        const media = await loadResourceModules().media.readMediaBackpressureStatus();
         return json(res, { ok: true, media: { ...media, ...(0, resource_readability_1.buildMediaRisk)(media) } });
     }
     catch (e) {

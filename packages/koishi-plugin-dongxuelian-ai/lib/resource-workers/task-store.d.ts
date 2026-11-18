@@ -3,6 +3,9 @@ type ResourceTaskNotify = import('./task-types').ResourceTaskNotify;
 type DailyReportDeliveryProgress = import('./task-types').DailyReportDeliveryProgress;
 type ResourceTaskStatus = import('./task-types').ResourceTaskStatus;
 type ResourceWorkerState = import('./task-types').ResourceWorkerState;
+type ResourceTaskSummary = Pick<ResourceTask, 'id' | 'kind' | 'status' | 'priority' | 'createdAt' | 'updatedAt' | 'finishedAt'> & {
+    hasError: boolean;
+};
 interface SubmitTaskInput {
     id?: string;
     kind: string;
@@ -45,7 +48,6 @@ declare function createTaskId(kind: string, channelKey?: string): string;
 declare function submitResourceTask(input: SubmitTaskInput): ResourceTask;
 declare function parseResourceTask(value: unknown): ResourceTask | null;
 declare function listResourceTasks(options?: ListTasksOptions): ResourceTask[];
-declare function listResourceTasksForDiagnostics(): ResourceTask[];
 declare function listActiveDailyReportTasks(): ResourceTask[];
 declare function listTerminalTasksForNotification(matcher: (task: ResourceTask) => boolean, limit: number): ResourceTask[];
 declare function countResourceTasks(options?: CountTasksOptions): number;
@@ -56,6 +58,8 @@ declare function claimNextTask(kind: string | string[], workerName: string): Res
 declare function claimTaskById(taskId: string, workerName: string, kind?: string): ResourceTask | null;
 declare function getResourceTaskByIdForKind(taskId: string, kind: string, statuses?: ResourceTaskStatus[]): ResourceTask | null;
 declare function getResourceTaskById(taskId: string): ResourceTask | null;
+declare function listResourceTasksForDiagnostics(): Promise<readonly ResourceTaskSummary[]>;
+declare function readResourceTasksForDiagnosticDetail(id: string): ResourceTask[];
 declare function markTaskRunning(task: ResourceTask, workerName: string, step?: string): ResourceTask;
 declare function failIsolatedClaimingTask(task: ResourceTask, error: unknown, result?: Record<string, unknown>): ResourceTask;
 declare function updateTaskStep(taskId: string, kind: string, step: string): ResourceTask | null;
@@ -109,6 +113,7 @@ declare const _default: {
     findResourceTaskByKindAndChannel: typeof findResourceTaskByKindAndChannel;
     listResourceTasks: typeof listResourceTasks;
     listResourceTasksForDiagnostics: typeof listResourceTasksForDiagnostics;
+    readResourceTasksForDiagnosticDetail: typeof readResourceTasksForDiagnosticDetail;
     listActiveDailyReportTasks: typeof listActiveDailyReportTasks;
     listTerminalTasksForNotification: typeof listTerminalTasksForNotification;
     countResourceTasks: typeof countResourceTasks;

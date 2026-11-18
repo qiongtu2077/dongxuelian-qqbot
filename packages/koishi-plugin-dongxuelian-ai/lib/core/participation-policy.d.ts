@@ -19,5 +19,6 @@ export declare function validateParticipationPolicy(value: unknown): Participati
 export declare function readParticipationPolicy(): ParticipationPolicy;
 export declare function isGroupParticipationEnabled(groupId: string | number): boolean;
 export declare function isGroupAbusiveEnabled(groupId: string | number): boolean;
+export declare function isSessionAllowedByPolicy(session: ParticipationSession, policy: ParticipationPolicy): boolean;
 export declare function isSessionParticipationEnabled(session: ParticipationSession): boolean;
 export declare function isOneBotActionAllowed(action: string, params: Record<string, unknown>): boolean;

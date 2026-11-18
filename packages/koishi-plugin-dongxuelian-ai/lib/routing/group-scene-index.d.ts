@@ -87,6 +87,8 @@ declare function extractSceneAnchors(content?: string): SceneAnchor[];
 declare function extractSceneKeywords(content?: string): string[];
 declare function loadGroupScenes(channelKey: string): Promise<GroupSceneData>;
 declare function appendGroupSceneEntry(channelKey: string, rawEntry?: RawSceneEntry): Promise<boolean>;
+declare function openGroupSceneWrites(): void;
+declare function closeGroupSceneWrites(): Promise<void>;
 declare function classifySceneItemsForActive(items?: SceneItemLike[], options?: ActiveSceneOptions): ActiveSceneLayers;
 declare function buildActiveGroupSceneNote(channelKey: string, items?: SceneItemLike[], currentUserId?: string, options?: ActiveSceneOptions): string;
 declare function readGroupContext(channelKey: string, args?: ReadGroupContextArgs): Promise<string>;
@@ -99,6 +101,8 @@ declare const _default: {
     extractSceneAnchors: typeof extractSceneAnchors;
     extractSceneKeywords: typeof extractSceneKeywords;
     appendGroupSceneEntry: typeof appendGroupSceneEntry;
+    openGroupSceneWrites: typeof openGroupSceneWrites;
+    closeGroupSceneWrites: typeof closeGroupSceneWrites;
     loadGroupScenes: typeof loadGroupScenes;
     readGroupContext: typeof readGroupContext;
     buildActiveGroupSceneNote: typeof buildActiveGroupSceneNote;

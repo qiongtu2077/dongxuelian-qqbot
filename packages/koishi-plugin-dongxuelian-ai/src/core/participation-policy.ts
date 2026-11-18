@@ -83,14 +83,18 @@ export function isGroupAbusiveEnabled(groupId: string | number): boolean {
   return GROUP_ID_PATTERN.test(String(groupId)) && readParticipationPolicy().abusiveGroups[String(groupId)] === true
 }
 
-// 临时私聊即使带有来源群号，也必须先受全局私聊开关控制。
-export function isSessionParticipationEnabled(session: ParticipationSession): boolean {
-  const policy = readParticipationPolicy()
+// 用同一份已验证的策略判断会话，临时私聊仍优先受全局开关控制。
+export function isSessionAllowedByPolicy(session: ParticipationSession, policy: ParticipationPolicy): boolean {
   // Satori 的 isDirect getter 直接读取 event.channel.type，生命周期事件没有 channel。
   const canReadIsDirect = !session.event || Boolean(session.event.channel)
   if ((canReadIsDirect && session.isDirect) || session.subtype === 'private' || String(session.channelId || '').startsWith('private:')) return policy.privateEnabled
   if (session.guildId) return policy.groups[String(session.guildId)] === true
   return true
+}
+
+// 即时判定读取当前持久策略，供入口与实际发送等关键边界使用。
+export function isSessionParticipationEnabled(session: ParticipationSession): boolean {
+  return isSessionAllowedByPolicy(session, readParticipationPolicy())
 }
 
 // 在真实传输前检查目标，覆盖排队完成后的消息、文件和戳一戳。

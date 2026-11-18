@@ -53,7 +53,7 @@ interface ImageAnalysisPayloadOptions {
     conversationKey?: string;
     randomAuthorization?: unknown;
 }
-interface MediaDiagnosticTask {
+interface MediaDiagnosticFields {
     id: string;
     kind: string;
     status: string;
@@ -61,6 +61,11 @@ interface MediaDiagnosticTask {
     updatedAt: string;
     finishedAt: string;
     finishReason: 'queue_limit' | 'processing_failed' | 'restart_interrupted' | 'legacy_unknown';
+}
+type MediaDiagnosticSummary = MediaDiagnosticFields & {
+    hasError: boolean;
+};
+interface MediaDiagnosticTask extends MediaDiagnosticFields {
     error: string;
     claimedBy: string;
 }
@@ -109,7 +114,10 @@ declare function recoverDeadMediaTasks(): number;
 declare function discardInterruptedMediaTasks(reason?: string): DiscardInterruptedMediaTasksResult;
 declare function enqueueMediaTask(input: MediaTaskInput): EnqueueMediaTaskResult;
 declare function listUnfinishedMediaTasksForDiagnostics(): MediaDiagnosticTask[];
+declare function listUnfinishedMediaSummaries(): Promise<readonly MediaDiagnosticSummary[]>;
+declare function readUnfinishedMediaDiagnosticDetails(id: string): MediaDiagnosticTask[];
 declare function getMediaBackpressureStatus(): Record<string, unknown>;
+declare function readMediaBackpressureStatus(): Promise<Record<string, unknown>>;
 declare const _default: {
     MEDIA_ROOT: string;
     MEDIA_QUEUE_ROOT: string;
@@ -138,7 +146,10 @@ declare const _default: {
     failMediaTask: typeof failMediaTask;
     discardInterruptedMediaTasks: typeof discardInterruptedMediaTasks;
     listUnfinishedMediaTasksForDiagnostics: typeof listUnfinishedMediaTasksForDiagnostics;
+    listUnfinishedMediaSummaries: typeof listUnfinishedMediaSummaries;
+    readUnfinishedMediaDiagnosticDetails: typeof readUnfinishedMediaDiagnosticDetails;
     getMediaBackpressureStatus: typeof getMediaBackpressureStatus;
+    readMediaBackpressureStatus: typeof readMediaBackpressureStatus;
     isMediaTaskDeferred: typeof isMediaTaskDeferred;
     _test: {
         parseMediaTask: typeof parseMediaTask;

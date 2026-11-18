@@ -106,12 +106,12 @@ class ChatTurnBudget {
         this.timer = setTimeout(() => this.cancel('run_timeout'), this.remaining());
     }
     // 在模型、工具、保存和发送前复检；计时器尚未被调度时也不能越过截止边界。
-    assertActive() {
+    assertActive(validity = this.validity) {
         if (!this.reason && this.remaining() <= 0)
             this.cancel('run_timeout');
-        if (!this.reason && this.validity) {
+        if (!this.reason && validity) {
             try {
-                if (!this.validity())
+                if (!validity())
                     this.cancel('revoked');
             }
             catch {

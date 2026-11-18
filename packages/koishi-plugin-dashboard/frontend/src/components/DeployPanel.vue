@@ -505,6 +505,12 @@ interface RebuildStatusData {
   detail?: string
 }
 
+interface RebuildRun {
+  controller: AbortController
+  nextRead?: ReturnType<typeof setTimeout>
+  deadline?: ReturnType<typeof setTimeout>
+}
+
 interface DeployActionData {
   message?: string
   manualSteps?: string[]
@@ -598,8 +604,8 @@ export default {
     let panelActive = false
     let localPolling = false
     let pollingGeneration = 0
-    let rebuildTimer: ReturnType<typeof setInterval> | null = null
-    let rebuildTimeout: ReturnType<typeof setTimeout> | null = null
+    let rebuildRun: RebuildRun | undefined
+    let panelUnmounted = false
     let previewExpiryTimer: ReturnType<typeof setTimeout> | null = null
 
     const localFlowText = '环境检测 -> 安装 NapCat -> 生成配置 -> npm install -> 启动 NapCat -> 等待扫码 -> 启动 Koishi -> 健康检查'
@@ -1462,34 +1468,59 @@ export default {
       }, Math.min(delay, 2_147_000_000))
     }
 
-    function clearRebuildPolling() {
-      if (rebuildTimer) clearInterval(rebuildTimer)
-      if (rebuildTimeout) clearTimeout(rebuildTimeout)
-      rebuildTimer = null
-      rebuildTimeout = null
+    // 先作废当前轮次，再取消它持有的计时和网络等待。
+    function finishRebuild(run: RebuildRun, message?: { type: 'ok' | 'err'; text: string }): void {
+      if (rebuildRun !== run) return
+      rebuildRun = undefined
+      clearTimeout(run.nextRead)
+      clearTimeout(run.deadline)
+      run.controller.abort()
+      rebuilding.value = false
+      if (message && !panelUnmounted) remoteMsg.value = message
     }
 
-    async function doRebuildFrontend() {
-      clearRebuildPolling()
-      rebuilding.value = true; remoteMsg.value = null
-      const res = await rebuildFrontend()
-      if (withAdminRetry(res, '重建前端需要管理员密码', doRebuildFrontend)) { rebuilding.value = false; return }
-      if (!res.ok) { remoteMsg.value = { type: 'err', text: messageFromData(res.data, '启动失败') }; rebuilding.value = false; return }
-      remoteMsg.value = { type: 'ok', text: '前端构建中...' }
-      rebuildTimer = setInterval(async () => {
-        const sr = await rebuildFrontendStatus()
-        if (sr.ok) {
-          const data = dataRecord<RebuildStatusData>(sr.data)
-          if (data.state === 'success') {
-            clearRebuildPolling(); rebuilding.value = false
-            remoteMsg.value = { type: 'ok', text: '前端构建成功，请刷新页面' }
-          } else if (data.state === 'failed') {
-            clearRebuildPolling(); rebuilding.value = false
-            remoteMsg.value = { type: 'err', text: (data.message || '构建失败') + (data.detail ? '：' + data.detail : '') }
-          }
+    // 保持轮询单请求在途，响应完成后才启动下一次等待。
+    async function readRebuildStatus(run: RebuildRun): Promise<void> {
+      if (rebuildRun !== run) return
+      const response = await rebuildFrontendStatus(run.controller.signal)
+      if (rebuildRun !== run) return
+      if (response.ok) {
+        const data = dataRecord<RebuildStatusData>(response.data)
+        if (data.state === 'success') {
+          finishRebuild(run, { type: 'ok', text: '前端构建成功，请刷新页面' })
+          return
         }
-      }, 2000)
-      rebuildTimeout = setTimeout(() => { clearRebuildPolling(); if (rebuilding.value) { rebuilding.value = false; remoteMsg.value = { type: 'err', text: '构建超时' } } }, 150000)
+        if (data.state === 'failed') {
+          finishRebuild(run, { type: 'err', text: (data.message || '构建失败') + (data.detail ? '：' + data.detail : '') })
+          return
+        }
+      }
+      run.nextRead = setTimeout(() => { void readRebuildStatus(run) }, 2000)
+    }
+
+    // 每次启动及管理员重试都拥有独立轮次，只接纳当前轮次的回包。
+    async function doRebuildFrontend(): Promise<void> {
+      if (panelUnmounted || rebuilding.value) return
+      if (rebuildRun) finishRebuild(rebuildRun)
+      const run: RebuildRun = { controller: new AbortController() }
+      rebuildRun = run
+      rebuilding.value = true; remoteMsg.value = null
+      const res = await rebuildFrontend(run.controller.signal)
+      if (rebuildRun !== run) return
+      if (res.code === 'ADMIN_REQUIRED') {
+        rebuilding.value = false
+        showAdminDialog?.('重建前端需要管理员密码', async () => {
+          if (rebuildRun === run) await doRebuildFrontend()
+        })
+        return
+      }
+      if (!res.ok) {
+        finishRebuild(run, { type: 'err', text: messageFromData(res.data, '启动失败') })
+        return
+      }
+      remoteMsg.value = { type: 'ok', text: '前端构建中...' }
+      run.nextRead = setTimeout(() => { void readRebuildStatus(run) }, 2000)
+      run.deadline = setTimeout(() => finishRebuild(run, { type: 'err', text: '构建超时' }), 150000)
     }
 
     /** 提交唯一的已确认预览编号，不允许页面在执行时替换目标。 */
@@ -1687,12 +1718,13 @@ export default {
     onActivated(activatePanel)
     onDeactivated(deactivatePanel)
     onUnmounted(() => {
+      panelUnmounted = true
       deactivatePanel()
       localStatusRead?.controller.abort()
       localStatusRead = null
       clearProgressPolling()
       clearPreviewExpiryTimer()
-      clearRebuildPolling()
+      if (rebuildRun) finishRebuild(rebuildRun)
     })
 
     return { mode, local, remote, remoteModeOptions, env, electronAppInfo, electronPathRows, electronPathHint, localMsg, localAlert, remoteMsg, logs, napcatUrl, napcatInstallDir, deletePreview, uninstallPreview, deployPreview, deployConfirmed, deployLogRef, localLogRef, cookieInput, checking, installingNode, downloading, installingNapcat, localDeploying, previewingDelete, deletingConfig, previewingUninstall, uninstalling, uninstallConfirmed, autoDeploying, installingDeps, repairingNpm, startingNapcat, startingKoishi, checkingReady, activeLocalStep, localFlowText, wizardSteps, activeStation, activeStationHint, currentLocalLogLines, npmGuideSteps, npmFailureGuide, npmGuideCommands, npmDiagnosticRows, readyCheck, savingRemote, previewingRemote, deploying, rebuilding, canRunRemoteDeploy, isWindows, canRunWindowsLocalDeploy, localDeployBlocked, localDeployBlockedReason, localDeployTargetSummary, localDeployDescription, workspaceSafe, workspaceStatusText, workspaceStatusHint, canChooseDirectory, deleteCandidates, keptCandidates, previewRows, localConfigReady, localConfigSummary, napcatStatusText, napcatStatusClass, portSummary, uninstallDeleteItems, uninstallUserDataItems, uninstallKeepItems, uninstallWarnings, uninstallBaseDeleteSize, uninstallUserDataSize, uninstallSelectedDeleteSize, uninstallSelectedDeleteCount, stationStatusText, closeLocalAlert, checkEnv, chooseNapcatDir, installPortableNodeStep, doDownloadWindowsNapcat, doDownloadNapcat, writeLocalConfig, runNpmInstallStep, confirmNpmDone, copyNpmGuideCommands, repairNpmProxyFlow, startNapcatStep, continueAfterScan, startKoishiStep, runReadyCheckStep, openNapcatWebui, runLocalWizard, previewDeleteConfig, confirmDeleteConfig, previewLocalUninstallFlow, closeUninstallPreview, shouldKeepUserData, setUserDataKeep, onUserDataKeepChange, setAllUserDataKeep, formatUninstallPaths, confirmLocalUninstallFlow, loadRemoteConfig, saveRemoteConfig, generateRemotePreview, startRemoteDeploy, doRebuildFrontend, uploadCookie, formatSize, formatTimestamp, formatPreviewAction, copyNpmFixCommands, openElectronPath, copyElectronPath }

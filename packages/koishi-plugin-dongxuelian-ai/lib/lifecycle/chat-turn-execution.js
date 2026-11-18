@@ -8,6 +8,10 @@ const chat_turn_budget_1 = require("./chat-turn-budget");
 const { enqueueForChannel } = require('./channel-task-queue');
 const participation_policy_1 = require("../core/participation-policy");
 const { MAINTENANCE_FILE } = require('../core/constants');
+// 从文件读取一次本轮队列监视共用的授权状态。
+function readChatQueuePolicy() {
+    return { participation: (0, participation_policy_1.readParticipationPolicy)(), maintenance: (0, node_fs_1.existsSync)(MAINTENANCE_FILE) };
+}
 // 从已解析的入口身份建立预算；无须聊天时没有常驻记录，阶段计时器由解析器释放。
 function createChatTurn(channelKey, session, ctx) {
     return new chat_turn_budget_1.ChatTurnBudget({ channelKey, messageId: session.messageId }, event => ctx.logger('dongxuelian-ai').info(`chat_turn ${JSON.stringify(event)}`), () => (0, participation_policy_1.isSessionParticipationEnabled)(session) && !(0, node_fs_1.existsSync)(MAINTENANCE_FILE));
@@ -18,6 +22,10 @@ function submitChatTurn(turn, session, fn, maxDepth, options) {
     const accepted = enqueueForChannel(turn.identity.channelKey, fn, maxDepth, {
         turn,
         isActive: () => (0, participation_policy_1.isSessionParticipationEnabled)(session) && !(0, node_fs_1.existsSync)(MAINTENANCE_FILE) && options.isFresh(),
+        monitor: {
+            readPolicy: readChatQueuePolicy,
+            isActive: policy => (0, participation_policy_1.isSessionAllowedByPolicy)(session, policy.participation) && !policy.maintenance && options.isFresh(),
+        },
         onSettled: reason => (0, chat_turn_budget_1.outsideChatTurn)(async () => {
             if (turn.random || !['queue_full', 'run_timeout', 'cleanup_failed'].includes(reason)
                 || turn.submittedSends || !(0, participation_policy_1.isSessionParticipationEnabled)(session) || (0, node_fs_1.existsSync)(MAINTENANCE_FILE))

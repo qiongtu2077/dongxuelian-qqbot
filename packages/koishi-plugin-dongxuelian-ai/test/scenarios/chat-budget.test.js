@@ -3,6 +3,7 @@ const { flushAsync } = require('../fake/koishi')
 const { seedCapabilityConfig } = require('../helpers/ai-capability-fixture')
 const { mockFetch } = require('../fake/fetch')
 const { setTimeout: realSetTimeout } = require('node:timers')
+const fs = require('node:fs')
 
 // 只等真实异步初始化完成，不用虚拟时钟推进文件/网络准备。
 async function until(predicate) {
@@ -23,9 +24,105 @@ function abortableRequest(signal, record) {
   })
 }
 
+// 用虚拟时间量化满队共享检查并验证关群、维护和卸载仍撤销原任务。
+async function testSharedQueueMonitor(t) {
+  await withScenario({ fakeTimers: true, participationGroups: ['10001', '10002'] }, async ({ clock, data }) => {
+    const { createChatTurn, submitChatTurn } = require('../../lib/lifecycle/chat-turn-execution')
+    const { clearChannelQueues } = require('../../lib/lifecycle/channel-task-queue')
+    const { PARTICIPATION_POLICY_FILE } = require('../../lib/core/participation-policy')
+    const { MAINTENANCE_FILE } = require('../../lib/core/constants')
+    const baseline = clock.pendingCount()
+    const originals = { stat: fs.statSync, exists: fs.existsSync }
+    const released = []
+    const turns = []
+    const started = []
+    const logs = []
+    let participationChecks = 0
+    let maintenanceChecks = 0
+    fs.statSync = function countPolicy(file, ...args) {
+      if (file === PARTICIPATION_POLICY_FILE) participationChecks++
+      return originals.stat.call(this, file, ...args)
+    }
+    fs.existsSync = function countMaintenance(file, ...args) {
+      if (file === MAINTENANCE_FILE) maintenanceChecks++
+      return originals.exists.call(this, file, ...args)
+    }
+    // 一条执行项占槽并可外部释放，其余消息在相同生产入口入队。
+    function fill(groupId) {
+      const ctx = { logger: () => ({ info: line => logs.push(line) }) }
+      const options = { random: false, recordImages: false, isFresh: () => true }
+      const entries = []
+      for (let index = 0; index < 5; index++) {
+        const messageId = `${groupId}-${index}`
+        const session = { guildId: groupId, channelId: groupId, messageId, send: async () => {} }
+        const turn = createChatTurn(groupId, session, ctx)
+        const work = index ? () => { started.push(messageId) } : () => new Promise(resolve => released.push(resolve))
+        t.check('monitor fixture queues ' + messageId, submitChatTurn(turn, session, work, 5, options))
+        entries.push(turn)
+        turns.push(turn)
+      }
+      return entries
+    }
+    // 仅记录计时器周期，排除入队、启动和结算使用的实时检查。
+    async function checkTicks(ms, expected, label) {
+      participationChecks = 0
+      maintenanceChecks = 0
+      await clock.tick(ms)
+      t.check(label, participationChecks === expected && maintenanceChecks === expected,
+        JSON.stringify({ participationChecks, maintenanceChecks, expected }))
+    }
+    try {
+      const first = fill('10001')
+      await flushAsync(10)
+      await checkTicks(10000, 40, 'filled channel uses forty shared config checks per ten seconds')
+      const second = fill('10002')
+      await flushAsync(10)
+      await checkTicks(10000, 40, 'two full channels still use forty shared config checks per ten seconds')
+
+      // 首个所有者超时后继续持有频道，第二个频道通过维护撤销。
+      await clock.tick(42000)
+      t.check('timed-out owner is isolated while its explicit waiters remain', first[0].reason === 'run_timeout'
+        && first.slice(1).every(turn => !turn.reason) && logs.some(line => line.includes('"event":"cleanup_failed"')))
+      await checkTicks(1000, 4, 'active waiting turns share a single periodic policy read during isolation')
+      data.writeJson('bot-participation.json', { version: 1, privateEnabled: true, groups: { 10001: false, 10002: true } })
+      await clock.tick(250)
+      t.check('closing one group revokes its waiters and leaves the other group', first.slice(1).every(turn => turn.reason === 'revoked')
+        && second.slice(1).every(turn => !turn.reason))
+      data.writeJson('bot-participation.json', { version: 1, privateEnabled: true, groups: { 10001: true, 10002: true } })
+      released[0]()
+      await flushAsync(20)
+      t.check('reopening cannot revive revoked waiters', started.length === 0)
+
+      data.writeText('ai-paused.txt', 'fixture maintenance')
+      await clock.tick(250)
+      t.check('externally enabled maintenance revokes running and waiting turns', second.every(turn => turn.reason === 'revoked'))
+      released[1]()
+      await flushAsync(20)
+      await checkTicks(1000, 0, 'cancelled turns leave no periodic reads')
+      fs.unlinkSync(MAINTENANCE_FILE)
+
+      const final = fill('10001')
+      await flushAsync(10)
+      const disposal = clearChannelQueues()
+      released[2]()
+      await disposal
+      t.check('unload releases shared monitor and revokes queued work', final.every(turn => turn.reason === 'disposed')
+        && clock.pendingCount() === baseline && started.length === 0)
+    } finally {
+      fs.statSync = originals.stat
+      fs.existsSync = originals.exists
+      for (const turn of turns) turn.cancel('disposed')
+      for (const release of released) release()
+      await flushAsync(20)
+      await clearChannelQueues()
+    }
+  })
+}
+
 // 验证真实队列计时器；虚拟时间仅在本场景显式开启。
 async function run(t) {
   t.section('scenario: chat turn budget and queue ownership')
+  await testSharedQueueMonitor(t)
   await withScenario({ fakeTimers: true }, async ({ clock }) => {
     const baseline = clock.pendingCount()
     const { enqueueForChannel } = require('../../lib/lifecycle/channel-task-queue')

@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const task_summary_cache_1 = require("../../resource-common/task-summary-cache");
 const { DATA_DIR } = require('../../core/constants');
 const { appendJsonlEvent, ensureDir, listJsonFiles, isProcessAlive, nowIso, readJsonFile, removePath, sanitizeId, writeJsonAtomic, } = require('../../resource-common/files');
 const { redactSensitiveText } = require('../../core/redactor');
@@ -16,6 +17,7 @@ const MEDIA_QUEUE_ROOT = path.join(MEDIA_ROOT, 'queue');
 const MEDIA_RUNNING_ROOT = path.join(MEDIA_ROOT, 'running');
 const MEDIA_DONE_ROOT = path.join(MEDIA_ROOT, 'done');
 const MEDIA_DROPPED_ROOT = path.join(MEDIA_ROOT, 'dropped');
+const MAX_MEDIA_TASK_BYTES = 2 * 1024 * 1024;
 const MEDIA_ARCHIVE_ROOT = path.join(MEDIA_ROOT, 'archive');
 const MEDIA_RETENTION_CONTROL_FILE = path.join(MEDIA_ROOT, 'retention-control.json');
 const MEDIA_CACHE_INDEX_FILE = path.join(MEDIA_ROOT, 'cache-index.json');
@@ -386,7 +388,7 @@ function hasImageAnalysisDemand(channelKey, messageId, excludeTaskId = '') {
 }
 // 读取媒体任务文件，非法任务返回 null。
 function readMediaTaskFile(file) {
-    return parseMediaTask(readJsonFile(file, null));
+    return parseMediaTask(readJsonFile(file, null, MAX_MEDIA_TASK_BYTES));
 }
 // 判断 pending 媒体任务是否仍处于冷却窗口。
 function isMediaTaskDeferred(task, now = Date.now()) {
@@ -705,10 +707,9 @@ function normalizeMediaFinishReason(task) {
         return 'restart_interrupted';
     return 'legacy_unknown';
 }
-// 列出资源中心诊断区块需要的未完成媒体任务摘要与已脱敏报错。
-function listUnfinishedMediaTasksForDiagnostics() {
-    ensureMediaDirs();
-    return listStoredMediaTasks(MEDIA_DROPPED_ROOT).map(task => ({
+// 提取控制台列表和状态汇总需要的字段。
+function summarizeUnfinishedMediaTask(task) {
+    return {
         id: task.id,
         kind: task.kind,
         status: task.status,
@@ -716,9 +717,52 @@ function listUnfinishedMediaTasksForDiagnostics() {
         updatedAt: String(task.updatedAt || ''),
         finishedAt: String(task.finishedAt || task.updatedAt || task.createdAt || ''),
         finishReason: normalizeMediaFinishReason(task),
+    };
+}
+// 只在详情读取时提供已脱敏的报错正文。
+function describeUnfinishedMediaTask(task) {
+    return {
+        ...summarizeUnfinishedMediaTask(task),
         error: redactSensitiveText(String(task.error || '')),
         claimedBy: String(task.claimedBy || ''),
-    }));
+    };
+}
+// 保留已有同步诊断调用。
+function listUnfinishedMediaTasksForDiagnostics() {
+    ensureMediaDirs();
+    return listStoredMediaTasks(MEDIA_DROPPED_ROOT).map(describeUnfinishedMediaTask);
+}
+const unfinishedMediaDirectory = { path: MEDIA_DROPPED_ROOT };
+const readUnfinishedMediaFiles = (0, task_summary_cache_1.createTaskSummaryCache)([unfinishedMediaDirectory], MAX_MEDIA_TASK_BYTES, record => {
+    const task = parseMediaTask(record);
+    return task && { ...summarizeUnfinishedMediaTask(task), hasError: !!String(task.error || '') };
+});
+let unfinishedMediaFiles;
+let unfinishedMediaSummaries = [];
+let unfinishedMediaAliases = new Map();
+// 诊断列表与状态汇总共享未完成记录的轻量快照。
+async function listUnfinishedMediaSummaries() {
+    const files = await readUnfinishedMediaFiles();
+    if (files !== unfinishedMediaFiles) {
+        unfinishedMediaSummaries = files.map(({ value }) => value);
+        unfinishedMediaAliases = (0, task_summary_cache_1.indexTaskFileAliases)(files);
+        unfinishedMediaFiles = files;
+    }
+    return unfinishedMediaSummaries;
+}
+// 按完整媒体编号读取未完成记录，同名路径仍须核对正文身份。
+function readUnfinishedMediaDiagnosticDetails(id) {
+    const target = getFlatMediaTaskFile(MEDIA_DROPPED_ROOT, id);
+    const files = (0, task_summary_cache_1.findDiagnosticTaskFiles)(unfinishedMediaDirectory, target, unfinishedMediaAliases.get(id));
+    const candidates = [];
+    for (const file of files) {
+        if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile())
+            continue;
+        const task = readMediaTaskFile(file);
+        if (task?.id === id)
+            candidates.push(describeUnfinishedMediaTask(task));
+    }
+    return candidates;
 }
 // 旧未执行任务转为缓存；历史上已经真实分析完成的记录保留原来的分析分类。
 function mediaTaskStatusKind(task) {
@@ -728,7 +772,7 @@ function mediaTaskStatusKind(task) {
     return mediaKindKey(task.kind);
 }
 // 将旧无来源分析归为缓存，真实新需求仍保留独立的图片分析统计。
-function buildMediaQueueKindStatus(kind, pending, running, done, cacheValues, now = Date.now()) {
+function buildMediaQueueKindStatus(kind, pending, running, doneCount, cacheValues, now = Date.now()) {
     const pendingForKind = pending.filter(task => mediaTaskStatusKind(task) === kind);
     const deferredCount = pendingForKind.filter(task => isMediaTaskDeferred(task, now)).length;
     return {
@@ -738,7 +782,7 @@ function buildMediaQueueKindStatus(kind, pending, running, done, cacheValues, no
         deferredCount,
         runningCount: running.filter(task => mediaTaskStatusKind(task) === kind).length,
         queueLimit: mediaQueueLimit(kind),
-        doneCount: done.filter(task => mediaTaskStatusKind(task) === kind).length,
+        doneCount,
         cacheReusableCount: cacheValues.filter(item => {
             const storedKind = String(item?.kind || '');
             const result = item.result;
@@ -757,48 +801,69 @@ function sanitizeRunningMediaTask(task) {
         updatedAt: String(task.updatedAt || ''),
     };
 }
-// 汇总媒体处理队列状态，分别显示图片分析、原图缓存、文件与语音。
-function getMediaBackpressureStatus() {
-    ensureMediaDirs();
+// 根据保留中的终态记录计算分类数量和最近触顶时刻。
+function summarizeMediaHistory(doneKinds, unfinished) {
+    const doneByKind = { image: 0, image_cache: 0, file: 0, voice: 0 };
+    const unfinishedByReason = { queue_limit: 0, processing_failed: 0, restart_interrupted: 0, legacy_unknown: 0 };
+    let lastQueueLimitAt = '';
+    for (const kind of doneKinds)
+        doneByKind[kind]++;
+    for (const { finishReason, finishedAt } of unfinished) {
+        unfinishedByReason[finishReason]++;
+        if (finishReason === 'queue_limit' && finishedAt.localeCompare(lastQueueLimitAt) > 0)
+            lastQueueLimitAt = finishedAt;
+    }
+    return { doneByKind, droppedCount: unfinished.length, unfinishedByReason, lastQueueLimitAt };
+}
+const readDoneMediaKinds = (0, task_summary_cache_1.createTaskSummaryCache)([{ path: MEDIA_DONE_ROOT }], MAX_MEDIA_TASK_BYTES, record => {
+    const task = parseMediaTask(record);
+    return task && mediaTaskStatusKind(task);
+});
+let mediaHistoryCache;
+// 汇总终态数量以及按本次请求时刻计算的活动队列与缓存状态。
+function buildMediaBackpressureStatus(history) {
     const pending = listJsonFiles(MEDIA_QUEUE_ROOT, { recursive: true, maxFiles: 20000 })
         .map(readMediaTaskFile)
         .filter((task) => task !== null);
     const running = listStoredMediaTasks(MEDIA_RUNNING_ROOT);
-    const done = listStoredMediaTasks(MEDIA_DONE_ROOT);
-    const unfinished = listUnfinishedMediaTasksForDiagnostics();
     const cacheIndex = readCacheIndex();
     const cacheValues = Object.values(cacheIndex)
         .filter((item) => !!item && typeof item === 'object' && !Array.isArray(item))
         .filter(item => !['media_image_cache', 'media_image_analysis'].includes(String(item.kind || '')) || Date.parse(String(item.expiresAt || '')) > Date.now());
     const queues = {
-        image: buildMediaQueueKindStatus('image', pending, running, done, cacheValues),
-        imageCache: buildMediaQueueKindStatus('image_cache', pending, running, done, cacheValues),
-        file: buildMediaQueueKindStatus('file', pending, running, done, cacheValues),
-        voice: buildMediaQueueKindStatus('voice', pending, running, done, cacheValues),
+        image: buildMediaQueueKindStatus('image', pending, running, history.doneByKind.image, cacheValues),
+        imageCache: buildMediaQueueKindStatus('image_cache', pending, running, history.doneByKind.image_cache, cacheValues),
+        file: buildMediaQueueKindStatus('file', pending, running, history.doneByKind.file, cacheValues),
+        voice: buildMediaQueueKindStatus('voice', pending, running, history.doneByKind.voice, cacheValues),
     };
-    const unfinishedByReason = {
-        queue_limit: unfinished.filter(task => task.finishReason === 'queue_limit').length,
-        processing_failed: unfinished.filter(task => task.finishReason === 'processing_failed').length,
-        restart_interrupted: unfinished.filter(task => task.finishReason === 'restart_interrupted').length,
-        legacy_unknown: unfinished.filter(task => task.finishReason === 'legacy_unknown').length,
-    };
-    const lastQueueLimitAt = unfinished
-        .filter(task => task.finishReason === 'queue_limit')
-        .map(task => task.finishedAt)
-        .sort((a, b) => b.localeCompare(a))[0] || '';
     return {
         imagePending: queues.image.queueTotal,
         imageCachePending: queues.imageCache.queueTotal,
         filePending: queues.file.queueTotal,
         voicePending: queues.voice.queueTotal,
         running: running.map(sanitizeRunningMediaTask),
-        doneCount: done.length,
-        droppedCount: unfinished.length,
+        doneCount: Object.values(history.doneByKind).reduce((sum, count) => sum + count, 0),
+        droppedCount: history.droppedCount,
         cacheIndexSize: cacheValues.length,
         queues,
-        unfinishedByReason,
-        lastQueueLimitAt,
+        unfinishedByReason: { ...history.unfinishedByReason },
+        lastQueueLimitAt: history.lastQueueLimitAt,
     };
+}
+// 供需要同步队列状态的内部调用使用。
+function getMediaBackpressureStatus() {
+    ensureMediaDirs();
+    const doneKinds = listStoredMediaTasks(MEDIA_DONE_ROOT).map(mediaTaskStatusKind);
+    const unfinished = listStoredMediaTasks(MEDIA_DROPPED_ROOT).map(summarizeUnfinishedMediaTask);
+    return buildMediaBackpressureStatus(summarizeMediaHistory(doneKinds, unfinished));
+}
+// 控制台只重新解析发生变化的终态文件。
+async function readMediaBackpressureStatus() {
+    const [done, unfinished] = await Promise.all([readDoneMediaKinds(), listUnfinishedMediaSummaries()]);
+    if (mediaHistoryCache?.done !== done || mediaHistoryCache.unfinished !== unfinished) {
+        mediaHistoryCache = { done, unfinished, counts: summarizeMediaHistory(done.map(({ value }) => value), unfinished) };
+    }
+    return buildMediaBackpressureStatus(mediaHistoryCache.counts);
 }
 module.exports = {
     MEDIA_ROOT,
@@ -828,7 +893,10 @@ module.exports = {
     failMediaTask,
     discardInterruptedMediaTasks,
     listUnfinishedMediaTasksForDiagnostics,
+    listUnfinishedMediaSummaries,
+    readUnfinishedMediaDiagnosticDetails,
     getMediaBackpressureStatus,
+    readMediaBackpressureStatus,
     isMediaTaskDeferred,
     _test: {
         parseMediaTask,

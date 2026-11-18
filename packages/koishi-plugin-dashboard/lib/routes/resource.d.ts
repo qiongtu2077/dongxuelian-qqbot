@@ -73,7 +73,7 @@ declare function sanitizeTask(task: ResourceTaskLike): {
     };
     payloadKeys: string[];
 };
-declare function buildResourceStatus(mods: ResourceModuleSet): Record<string, unknown>;
+declare function buildResourceStatus(mods: ResourceModuleSet): Promise<Record<string, unknown>>;
 declare const _default: {
     routes: Record<string, RouteHandler>;
     buildResourceStatus: typeof buildResourceStatus;

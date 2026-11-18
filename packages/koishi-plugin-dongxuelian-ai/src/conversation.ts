@@ -230,6 +230,8 @@ const MAX_SENSITIVE_CACHE_FILE_BYTES = parseConversationPositiveInt(process.env.
 const MAX_CONVERSATION_FILE_BYTES = parseConversationPositiveInt(process.env.DONGXUELIAN_CONVERSATION_MAX_BYTES, 1024 * 1024, 64 * 1024, 8 * 1024 * 1024)
 const MAX_USER_PROFILE_FILE_BYTES = parseConversationPositiveInt(process.env.DONGXUELIAN_USER_PROFILE_MAX_BYTES, 512 * 1024, 64 * 1024, 4 * 1024 * 1024)
 const MAX_SMALL_CONFIG_FILE_BYTES = parseConversationPositiveInt(process.env.DONGXUELIAN_SMALL_CONFIG_MAX_BYTES, 256 * 1024, 4 * 1024, 1024 * 1024)
+let summaryWhitelistFingerprint = ''
+let summaryWhitelist = new Set<unknown>()
 const MAX_DAILY_STATS_FILE_BYTES = parseConversationPositiveInt(process.env.DONGXUELIAN_DAILY_STATS_MAX_BYTES, 8 * 1024 * 1024, 512 * 1024, 64 * 1024 * 1024)
 const STATS_FILE_RETENTION_DAYS = 6
 
@@ -263,6 +265,28 @@ function readJsonFileIfSmallSync<T>(file: string, maxBytes: number, fallback: T,
   } catch { /* non-critical: missing or malformed optional json falls back to caller default */
     return fallback
   }
+}
+
+// 文件属性变化时才重新解析白名单，配置缺失或损坏时清除旧成员。
+function isSummaryChannelAllowed(channelKey: string): boolean {
+  const fs = require('node:fs') as typeof import('node:fs')
+  try {
+    const stat = fs.statSync(SUMMARY_WHITELIST_FILE)
+    const fingerprint = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`
+    if (fingerprint !== summaryWhitelistFingerprint) {
+      let value: unknown
+      if (stat.isFile() && stat.size <= MAX_SMALL_CONFIG_FILE_BYTES) {
+        const raw = fs.readFileSync(SUMMARY_WHITELIST_FILE, 'utf8')
+        try { value = JSON.parse(raw) } catch { /* 配置无效视为空名单，等待下次文件变更。 */ }
+      }
+      summaryWhitelist = new Set(Array.isArray(value) ? value : [])
+      summaryWhitelistFingerprint = fingerprint
+    }
+  } catch {
+    summaryWhitelist.clear()
+    summaryWhitelistFingerprint = ''
+  }
+  return summaryWhitelist.has(channelKey)
 }
 
 function getConversationFileSafeKeys(key: string = ''): string[] {
@@ -710,8 +734,7 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
   trimChannelRuntimeCaches()
   if (role === 'user' && metadata.fromSummary !== true) {
     try {
-      const sw = readJsonFileIfSmallSync<string[]>(SUMMARY_WHITELIST_FILE, MAX_SMALL_CONFIG_FILE_BYTES, [])
-      if (Array.isArray(sw) && sw.includes(String(channelKey))) {
+      if (isSummaryChannelAllowed(String(channelKey))) {
         const today = todayCst(); let cache = channelTodayCache.get(channelKey)
         if (!cache) {
           // 先回读磁盘当日历史再重建，避免 TTL 驱逐后日报/谁艾特我丢掉驱逐前的消息。

@@ -6,6 +6,7 @@
 const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const crypto = require('crypto') as typeof import('crypto')
+import { createTaskSummaryCache, findDiagnosticTaskFiles, indexTaskFileAliases } from '../../resource-common/task-summary-cache'
 const { DATA_DIR } = require('../../core/constants') as typeof import('../../core/constants')
 const {
   appendJsonlEvent,
@@ -90,7 +91,7 @@ interface ImageAnalysisPayloadOptions {
   randomAuthorization?: unknown
 }
 
-interface MediaDiagnosticTask {
+interface MediaDiagnosticFields {
   id: string
   kind: string
   status: string
@@ -98,6 +99,11 @@ interface MediaDiagnosticTask {
   updatedAt: string
   finishedAt: string
   finishReason: 'queue_limit' | 'processing_failed' | 'restart_interrupted' | 'legacy_unknown'
+}
+
+type MediaDiagnosticSummary = MediaDiagnosticFields & { hasError: boolean }
+
+interface MediaDiagnosticTask extends MediaDiagnosticFields {
   error: string
   claimedBy: string
 }
@@ -130,6 +136,7 @@ const MEDIA_QUEUE_ROOT = path.join(MEDIA_ROOT, 'queue')
 const MEDIA_RUNNING_ROOT = path.join(MEDIA_ROOT, 'running')
 const MEDIA_DONE_ROOT = path.join(MEDIA_ROOT, 'done')
 const MEDIA_DROPPED_ROOT = path.join(MEDIA_ROOT, 'dropped')
+const MAX_MEDIA_TASK_BYTES = 2 * 1024 * 1024
 const MEDIA_ARCHIVE_ROOT = path.join(MEDIA_ROOT, 'archive')
 const MEDIA_RETENTION_CONTROL_FILE = path.join(MEDIA_ROOT, 'retention-control.json')
 const MEDIA_CACHE_INDEX_FILE = path.join(MEDIA_ROOT, 'cache-index.json')
@@ -498,7 +505,7 @@ function hasImageAnalysisDemand(channelKey: string, messageId: string, excludeTa
 
 // 读取媒体任务文件，非法任务返回 null。
 function readMediaTaskFile(file: string): MediaTask | null {
-  return parseMediaTask(readJsonFile<unknown>(file, null))
+  return parseMediaTask(readJsonFile<unknown>(file, null, MAX_MEDIA_TASK_BYTES))
 }
 
 // 判断 pending 媒体任务是否仍处于冷却窗口。
@@ -813,10 +820,9 @@ function normalizeMediaFinishReason(task: MediaTask): MediaDiagnosticTask['finis
   return 'legacy_unknown'
 }
 
-// 列出资源中心诊断区块需要的未完成媒体任务摘要与已脱敏报错。
-function listUnfinishedMediaTasksForDiagnostics(): MediaDiagnosticTask[] {
-  ensureMediaDirs()
-  return listStoredMediaTasks(MEDIA_DROPPED_ROOT).map(task => ({
+// 提取控制台列表和状态汇总需要的字段。
+function summarizeUnfinishedMediaTask(task: MediaTask): MediaDiagnosticFields {
+  return {
     id: task.id,
     kind: task.kind,
     status: task.status,
@@ -824,9 +830,55 @@ function listUnfinishedMediaTasksForDiagnostics(): MediaDiagnosticTask[] {
     updatedAt: String(task.updatedAt || ''),
     finishedAt: String(task.finishedAt || task.updatedAt || task.createdAt || ''),
     finishReason: normalizeMediaFinishReason(task),
+  }
+}
+
+// 只在详情读取时提供已脱敏的报错正文。
+function describeUnfinishedMediaTask(task: MediaTask): MediaDiagnosticTask {
+  return {
+    ...summarizeUnfinishedMediaTask(task),
     error: redactSensitiveText(String(task.error || '')),
     claimedBy: String(task.claimedBy || ''),
-  }))
+  }
+}
+
+// 保留已有同步诊断调用。
+function listUnfinishedMediaTasksForDiagnostics(): MediaDiagnosticTask[] {
+  ensureMediaDirs()
+  return listStoredMediaTasks(MEDIA_DROPPED_ROOT).map(describeUnfinishedMediaTask)
+}
+
+const unfinishedMediaDirectory = { path: MEDIA_DROPPED_ROOT }
+const readUnfinishedMediaFiles = createTaskSummaryCache([unfinishedMediaDirectory], MAX_MEDIA_TASK_BYTES, record => {
+  const task = parseMediaTask(record)
+  return task && { ...summarizeUnfinishedMediaTask(task), hasError: !!String(task.error || '') }
+})
+let unfinishedMediaFiles: Awaited<ReturnType<typeof readUnfinishedMediaFiles>> | undefined
+let unfinishedMediaSummaries: readonly MediaDiagnosticSummary[] = []
+let unfinishedMediaAliases = new Map<string, Set<string>>()
+
+// 诊断列表与状态汇总共享未完成记录的轻量快照。
+async function listUnfinishedMediaSummaries(): Promise<readonly MediaDiagnosticSummary[]> {
+  const files = await readUnfinishedMediaFiles()
+  if (files !== unfinishedMediaFiles) {
+    unfinishedMediaSummaries = files.map(({ value }) => value)
+    unfinishedMediaAliases = indexTaskFileAliases(files)
+    unfinishedMediaFiles = files
+  }
+  return unfinishedMediaSummaries
+}
+
+// 按完整媒体编号读取未完成记录，同名路径仍须核对正文身份。
+function readUnfinishedMediaDiagnosticDetails(id: string): MediaDiagnosticTask[] {
+  const target = getFlatMediaTaskFile(MEDIA_DROPPED_ROOT, id)
+  const files = findDiagnosticTaskFiles(unfinishedMediaDirectory, target, unfinishedMediaAliases.get(id))
+  const candidates: MediaDiagnosticTask[] = []
+  for (const file of files) {
+    if (!fs.lstatSync(file, { throwIfNoEntry: false })?.isFile()) continue
+    const task = readMediaTaskFile(file)
+    if (task?.id === id) candidates.push(describeUnfinishedMediaTask(task))
+  }
+  return candidates
 }
 
 // 旧未执行任务转为缓存；历史上已经真实分析完成的记录保留原来的分析分类。
@@ -841,7 +893,7 @@ function buildMediaQueueKindStatus(
   kind: MediaQueueKind,
   pending: MediaTask[],
   running: MediaTask[],
-  done: MediaTask[],
+  doneCount: number,
   cacheValues: Record<string, unknown>[],
   now = Date.now(),
 ): MediaQueueKindStatus {
@@ -854,7 +906,7 @@ function buildMediaQueueKindStatus(
     deferredCount,
     runningCount: running.filter(task => mediaTaskStatusKind(task) === kind).length,
     queueLimit: mediaQueueLimit(kind),
-    doneCount: done.filter(task => mediaTaskStatusKind(task) === kind).length,
+    doneCount,
     cacheReusableCount: cacheValues.filter(item => {
       const storedKind = String(item?.kind || '')
       const result = item.result as Record<string, unknown> | undefined
@@ -875,48 +927,82 @@ function sanitizeRunningMediaTask(task: MediaTask): Record<string, unknown> {
   }
 }
 
-// 汇总媒体处理队列状态，分别显示图片分析、原图缓存、文件与语音。
-function getMediaBackpressureStatus(): Record<string, unknown> {
-  ensureMediaDirs()
+interface MediaHistoryCounts {
+  doneByKind: Record<MediaQueueKind, number>
+  droppedCount: number
+  unfinishedByReason: Record<MediaDiagnosticFields['finishReason'], number>
+  lastQueueLimitAt: string
+}
+
+// 根据保留中的终态记录计算分类数量和最近触顶时刻。
+function summarizeMediaHistory(doneKinds: readonly MediaQueueKind[], unfinished: readonly MediaDiagnosticFields[]): MediaHistoryCounts {
+  const doneByKind = { image: 0, image_cache: 0, file: 0, voice: 0 }
+  const unfinishedByReason = { queue_limit: 0, processing_failed: 0, restart_interrupted: 0, legacy_unknown: 0 }
+  let lastQueueLimitAt = ''
+  for (const kind of doneKinds) doneByKind[kind]++
+  for (const { finishReason, finishedAt } of unfinished) {
+    unfinishedByReason[finishReason]++
+    if (finishReason === 'queue_limit' && finishedAt.localeCompare(lastQueueLimitAt) > 0) lastQueueLimitAt = finishedAt
+  }
+  return { doneByKind, droppedCount: unfinished.length, unfinishedByReason, lastQueueLimitAt }
+}
+
+const readDoneMediaKinds = createTaskSummaryCache([{ path: MEDIA_DONE_ROOT }], MAX_MEDIA_TASK_BYTES, record => {
+  const task = parseMediaTask(record)
+  return task && mediaTaskStatusKind(task)
+})
+let mediaHistoryCache: {
+  done: Awaited<ReturnType<typeof readDoneMediaKinds>>
+  unfinished: readonly MediaDiagnosticSummary[]
+  counts: MediaHistoryCounts
+} | undefined
+
+// 汇总终态数量以及按本次请求时刻计算的活动队列与缓存状态。
+function buildMediaBackpressureStatus(history: MediaHistoryCounts): Record<string, unknown> {
   const pending = listJsonFiles(MEDIA_QUEUE_ROOT, { recursive: true, maxFiles: 20000 })
     .map(readMediaTaskFile)
     .filter((task): task is MediaTask => task !== null)
   const running = listStoredMediaTasks(MEDIA_RUNNING_ROOT)
-  const done = listStoredMediaTasks(MEDIA_DONE_ROOT)
-  const unfinished = listUnfinishedMediaTasksForDiagnostics()
   const cacheIndex = readCacheIndex()
   const cacheValues = Object.values(cacheIndex)
     .filter((item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item))
     .filter(item => !['media_image_cache', 'media_image_analysis'].includes(String(item.kind || '')) || Date.parse(String(item.expiresAt || '')) > Date.now())
   const queues = {
-    image: buildMediaQueueKindStatus('image', pending, running, done, cacheValues),
-    imageCache: buildMediaQueueKindStatus('image_cache', pending, running, done, cacheValues),
-    file: buildMediaQueueKindStatus('file', pending, running, done, cacheValues),
-    voice: buildMediaQueueKindStatus('voice', pending, running, done, cacheValues),
+    image: buildMediaQueueKindStatus('image', pending, running, history.doneByKind.image, cacheValues),
+    imageCache: buildMediaQueueKindStatus('image_cache', pending, running, history.doneByKind.image_cache, cacheValues),
+    file: buildMediaQueueKindStatus('file', pending, running, history.doneByKind.file, cacheValues),
+    voice: buildMediaQueueKindStatus('voice', pending, running, history.doneByKind.voice, cacheValues),
   }
-  const unfinishedByReason = {
-    queue_limit: unfinished.filter(task => task.finishReason === 'queue_limit').length,
-    processing_failed: unfinished.filter(task => task.finishReason === 'processing_failed').length,
-    restart_interrupted: unfinished.filter(task => task.finishReason === 'restart_interrupted').length,
-    legacy_unknown: unfinished.filter(task => task.finishReason === 'legacy_unknown').length,
-  }
-  const lastQueueLimitAt = unfinished
-    .filter(task => task.finishReason === 'queue_limit')
-    .map(task => task.finishedAt)
-    .sort((a, b) => b.localeCompare(a))[0] || ''
   return {
     imagePending: queues.image.queueTotal,
     imageCachePending: queues.imageCache.queueTotal,
     filePending: queues.file.queueTotal,
     voicePending: queues.voice.queueTotal,
     running: running.map(sanitizeRunningMediaTask),
-    doneCount: done.length,
-    droppedCount: unfinished.length,
+    doneCount: Object.values(history.doneByKind).reduce((sum, count) => sum + count, 0),
+    droppedCount: history.droppedCount,
     cacheIndexSize: cacheValues.length,
     queues,
-    unfinishedByReason,
-    lastQueueLimitAt,
+    unfinishedByReason: { ...history.unfinishedByReason },
+    lastQueueLimitAt: history.lastQueueLimitAt,
   }
+}
+
+// 供需要同步队列状态的内部调用使用。
+function getMediaBackpressureStatus(): Record<string, unknown> {
+  ensureMediaDirs()
+  const doneKinds = listStoredMediaTasks(MEDIA_DONE_ROOT).map(mediaTaskStatusKind)
+  const unfinished = listStoredMediaTasks(MEDIA_DROPPED_ROOT).map(summarizeUnfinishedMediaTask)
+  return buildMediaBackpressureStatus(summarizeMediaHistory(doneKinds, unfinished))
+}
+
+// 控制台只重新解析发生变化的终态文件。
+async function readMediaBackpressureStatus(): Promise<Record<string, unknown>> {
+  const [done, unfinished] = await Promise.all([readDoneMediaKinds(), listUnfinishedMediaSummaries()])
+  if (mediaHistoryCache?.done !== done || mediaHistoryCache.unfinished !== unfinished) {
+    mediaHistoryCache = { done, unfinished, counts: summarizeMediaHistory(done.map(({ value }) => value), unfinished) }
+  }
+  return buildMediaBackpressureStatus(mediaHistoryCache.counts)
 }
 
 export = {
@@ -947,7 +1033,10 @@ export = {
   failMediaTask,
   discardInterruptedMediaTasks,
   listUnfinishedMediaTasksForDiagnostics,
+  listUnfinishedMediaSummaries,
+  readUnfinishedMediaDiagnosticDetails,
   getMediaBackpressureStatus,
+  readMediaBackpressureStatus,
   isMediaTaskDeferred,
   _test: {
     parseMediaTask,
