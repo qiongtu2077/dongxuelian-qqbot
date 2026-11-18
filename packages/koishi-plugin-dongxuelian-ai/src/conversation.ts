@@ -123,9 +123,13 @@ interface TodayCacheMessage {
   mentionUserIds: string[]
 }
 
-interface TodayCache {
+interface TodayCacheSnapshot {
   date: string
   messages: TodayCacheMessage[]
+}
+
+interface TodayCache extends TodayCacheSnapshot {
+  pendingMessageCount: number
   updatedAt?: number
   lastDiskWrite?: number
 }
@@ -277,6 +281,8 @@ function getLastMessageTs(items: Array<{ ts?: number }> = []): number {
 }
 
 const TODAY_CACHE_RETENTION_MS = 5 * 24 * 60 * 60 * 1000
+const TODAY_CACHE_FLUSH_COUNT = 20
+const TODAY_CACHE_FLUSH_INTERVAL_MS = 5 * 60 * 1000
 
 function trimTodayCacheMessages(cache: TodayCache | null | undefined): void {
   if (!cache || !Array.isArray(cache.messages)) return
@@ -656,6 +662,7 @@ function normalizeRealSeqValue(value: unknown): string {
   return /^[1-9]\d*$/.test(raw) ? raw : ''
 }
 
+// 原子替换当天缓存快照；失败时保留待刷状态供后续消息重试。
 function flushTodayCacheToDisk(channelKey: string): void {
   const cache = channelTodayCache.get(channelKey)
   if (!cache || !Array.isArray(cache.messages)) return
@@ -666,6 +673,7 @@ function flushTodayCacheToDisk(channelKey: string): void {
   try {
     require('fs').writeFileSync(tmp, JSON.stringify({ date: cache.date, messages: cache.messages }), 'utf8')
     require('fs').renameSync(tmp, dst)
+    cache.pendingMessageCount = 0
     cache.lastDiskWrite = Date.now()
   } catch (error) {
     warnConversationFailure('flush today cache', error)
@@ -679,9 +687,10 @@ function flushTodayCacheToDisk(channelKey: string): void {
  */
 function loadTodayCacheFromDisk(channelKey: string): TodayCache | null {
   const safeKey = safeChannelKey(channelKey)
-  const data = readJsonFileIfSmallSync<TodayCache | null>(TODAY_CACHE_PREFIX + safeKey + '.json', MAX_DAILY_STATS_FILE_BYTES, null)
+  const data = readJsonFileIfSmallSync<TodayCacheSnapshot | null>(TODAY_CACHE_PREFIX + safeKey + '.json', MAX_DAILY_STATS_FILE_BYTES, null)
   if (!data || !Array.isArray(data.messages) || data.messages.length <= 0) return null
-  const cache: TodayCache = { date: todayCst(), messages: data.messages, updatedAt: Date.now(), lastDiskWrite: Date.now() }
+  const restoredAt = Date.now()
+  const cache: TodayCache = { date: todayCst(), messages: data.messages, pendingMessageCount: 0, updatedAt: restoredAt, lastDiskWrite: restoredAt }
   trimTodayCacheMessages(cache)
   return cache.messages.length > 0 ? cache : null
 }
@@ -706,7 +715,7 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
         const today = todayCst(); let cache = channelTodayCache.get(channelKey)
         if (!cache) {
           // 先回读磁盘当日历史再重建，避免 TTL 驱逐后日报/谁艾特我丢掉驱逐前的消息。
-          cache = loadTodayCacheFromDisk(channelKey) || { date: today, messages: [], updatedAt: Date.now() }
+          cache = loadTodayCacheFromDisk(channelKey) || { date: today, messages: [], pendingMessageCount: 0, updatedAt: Date.now() }
           channelTodayCache.set(channelKey, cache)
         } else { cache.date = today }
         if (value || hasMentions) {
@@ -730,6 +739,7 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
             ...(entryBotId ? { botId: entryBotId } : {}),
             mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [],
           })
+          cache.pendingMessageCount += 1
           appendPrecomputeIndex({
             channelKey,
             messageId,
@@ -744,8 +754,10 @@ function saveSharedChannelTurn(session: SessionLike, speakerName: string, conten
             ],
           })
           trimTodayCacheMessages(cache)
-          const now = Date.now(); const elapsed = now - (cache.lastDiskWrite || 0)
-          if (cache.messages.length % 20 === 0 || elapsed > 300000) {
+          // 裁剪不改变待刷条数；没有快照的频道仍立即保存第一条消息。
+          if (cache.pendingMessageCount >= TODAY_CACHE_FLUSH_COUNT
+            || cache.lastDiskWrite === undefined
+            || ts - cache.lastDiskWrite > TODAY_CACHE_FLUSH_INTERVAL_MS) {
             flushTodayCacheToDisk(channelKey)
           }
         }
@@ -773,7 +785,7 @@ async function cleanupDailyStatsFiles(): Promise<{ removed: number; compacted: n
           removed += 1
           continue
         }
-        const data = await readJsonFile<TodayCache | null>(filePath, null)
+        const data = await readJsonFile<TodayCacheSnapshot | null>(filePath, null)
         if (data && typeof data.date === 'string' && data.date < cutoffStr) {
           await fsp.unlink(filePath)
           removed += 1

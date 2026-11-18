@@ -98,6 +98,8 @@ function getLastMessageTs(items = []) {
     return 0;
 }
 const TODAY_CACHE_RETENTION_MS = 5 * 24 * 60 * 60 * 1000;
+const TODAY_CACHE_FLUSH_COUNT = 20;
+const TODAY_CACHE_FLUSH_INTERVAL_MS = 5 * 60 * 1000;
 function trimTodayCacheMessages(cache) {
     if (!cache || !Array.isArray(cache.messages))
         return;
@@ -506,6 +508,7 @@ function normalizeRealSeqValue(value) {
     const raw = String(value ?? '').trim();
     return /^[1-9]\d*$/.test(raw) ? raw : '';
 }
+// 原子替换当天缓存快照；失败时保留待刷状态供后续消息重试。
 function flushTodayCacheToDisk(channelKey) {
     const cache = channelTodayCache.get(channelKey);
     if (!cache || !Array.isArray(cache.messages))
@@ -517,6 +520,7 @@ function flushTodayCacheToDisk(channelKey) {
     try {
         require('fs').writeFileSync(tmp, JSON.stringify({ date: cache.date, messages: cache.messages }), 'utf8');
         require('fs').renameSync(tmp, dst);
+        cache.pendingMessageCount = 0;
         cache.lastDiskWrite = Date.now();
     }
     catch (error) {
@@ -533,7 +537,8 @@ function loadTodayCacheFromDisk(channelKey) {
     const data = readJsonFileIfSmallSync(TODAY_CACHE_PREFIX + safeKey + '.json', MAX_DAILY_STATS_FILE_BYTES, null);
     if (!data || !Array.isArray(data.messages) || data.messages.length <= 0)
         return null;
-    const cache = { date: todayCst(), messages: data.messages, updatedAt: Date.now(), lastDiskWrite: Date.now() };
+    const restoredAt = Date.now();
+    const cache = { date: todayCst(), messages: data.messages, pendingMessageCount: 0, updatedAt: restoredAt, lastDiskWrite: restoredAt };
     trimTodayCacheMessages(cache);
     return cache.messages.length > 0 ? cache : null;
 }
@@ -559,7 +564,7 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
                 let cache = channelTodayCache.get(channelKey);
                 if (!cache) {
                     // 先回读磁盘当日历史再重建，避免 TTL 驱逐后日报/谁艾特我丢掉驱逐前的消息。
-                    cache = loadTodayCacheFromDisk(channelKey) || { date: today, messages: [], updatedAt: Date.now() };
+                    cache = loadTodayCacheFromDisk(channelKey) || { date: today, messages: [], pendingMessageCount: 0, updatedAt: Date.now() };
                     channelTodayCache.set(channelKey, cache);
                 }
                 else {
@@ -586,6 +591,7 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
                         ...(entryBotId ? { botId: entryBotId } : {}),
                         mentionUserIds: Array.isArray(metadata.mentionUserIds) ? metadata.mentionUserIds.map(String).filter(Boolean) : [],
                     });
+                    cache.pendingMessageCount += 1;
                     appendPrecomputeIndex({
                         channelKey,
                         messageId,
@@ -600,9 +606,10 @@ function saveSharedChannelTurn(session, speakerName, content, role = 'user', met
                         ],
                     });
                     trimTodayCacheMessages(cache);
-                    const now = Date.now();
-                    const elapsed = now - (cache.lastDiskWrite || 0);
-                    if (cache.messages.length % 20 === 0 || elapsed > 300000) {
+                    // 裁剪不改变待刷条数；没有快照的频道仍立即保存第一条消息。
+                    if (cache.pendingMessageCount >= TODAY_CACHE_FLUSH_COUNT
+                        || cache.lastDiskWrite === undefined
+                        || ts - cache.lastDiskWrite > TODAY_CACHE_FLUSH_INTERVAL_MS) {
                         flushTodayCacheToDisk(channelKey);
                     }
                 }

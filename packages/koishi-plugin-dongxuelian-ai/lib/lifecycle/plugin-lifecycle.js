@@ -53,14 +53,16 @@ function isResourceWorkerSupervisorEnabled() {
     const raw = String(process.env.RESOURCE_WORKER_SUPERVISOR_ENABLED || '1').trim().toLowerCase();
     return !['0', 'false', 'off', 'no'].includes(raw);
 }
+// 恢复已持久化的历史，并从恢复时刻开启与运行期回读一致的节流窗口。
 function restoreTodayCacheEntry(key, data) {
     if (!data || !Array.isArray(data.messages) || data.messages.length <= 0)
         return;
-    const cutoff = Date.now() - 5 * 24 * 60 * 60 * 1000;
+    const restoredAt = Date.now();
+    const cutoff = restoredAt - 5 * 24 * 60 * 60 * 1000;
     const kept = data.messages.filter(m => m.ts >= cutoff).slice(-5000);
     if (kept.length <= 0)
         return;
-    channelTodayCache.set(key, { date: todayCst(), messages: kept, updatedAt: Date.now() });
+    channelTodayCache.set(key, { date: todayCst(), messages: kept, pendingMessageCount: 0, updatedAt: restoredAt, lastDiskWrite: restoredAt });
 }
 function restoreTodayCache() {
     try {

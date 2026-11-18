@@ -108,9 +108,12 @@ interface TodayCacheMessage {
     botId?: string;
     mentionUserIds: string[];
 }
-interface TodayCache {
+interface TodayCacheSnapshot {
     date: string;
     messages: TodayCacheMessage[];
+}
+interface TodayCache extends TodayCacheSnapshot {
+    pendingMessageCount: number;
     updatedAt?: number;
     lastDiskWrite?: number;
 }
