@@ -19,6 +19,7 @@ interface SessionLike {
 }
 interface AgentRetellOptions {
     randomTriggered?: boolean;
+    forwardMaterialNote?: string;
 }
 interface AgentRetellMessage {
     role: string;

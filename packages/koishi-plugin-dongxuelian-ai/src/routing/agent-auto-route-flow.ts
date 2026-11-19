@@ -11,6 +11,7 @@ const { hasAdminPermission, isJailbreakAttempt, sanitizeUserInput } = require('.
 const { logDebug } = require('../core/logging-config') as typeof import('../core/logging-config')
 const { submitAgentWorkerTask } = require('../agent/worker-submission') as typeof import('../agent/worker-submission')
 const { createAgentRunWorkerPayload } = require('../resource-workers/agent-payload') as typeof import('../resource-workers/agent-payload')
+const { createChatPromptForwardSummaryMessage } = require('../chat/chat-prompt-builder') as typeof import('../chat/chat-prompt-builder')
 
 interface LoggerLike {
   info(message: string): void
@@ -65,6 +66,7 @@ interface HandleAgentAutoRouteInput {
   currentUserId: string
   userName: string
   userText: string
+  forwardSummaryText?: string
   randomTriggered?: boolean
   recentUserMessages?: string[]
   searchContext?: Record<string, unknown>
@@ -90,6 +92,7 @@ function getAutoRouteErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String((error as AutoRouteErrorLike)?.message || error)
 }
 
+// 显式工具请求直接排入后台，保留本条消息引用的文本记录。
 async function handleAgentAutoRoute({
   ctx,
   liveSession,
@@ -97,6 +100,7 @@ async function handleAgentAutoRoute({
   currentUserId,
   userName,
   userText,
+  forwardSummaryText,
   randomTriggered,
   recentUserMessages,
   searchContext,
@@ -116,8 +120,9 @@ async function handleAgentAutoRoute({
   const agentConfig = getAgentConfig() as AgentConfigLike
   configureAgentQueue(agentConfig.queue || {})
   try {
+    const forwardMaterial = createChatPromptForwardSummaryMessage(forwardSummaryText)
     const agentRunInput = {
-      userMessage: searchRunOptions.agentUserMessage || userText,
+      userMessage: forwardMaterial ? userText : searchRunOptions.agentUserMessage || userText,
       userName,
       userId: currentUserId,
       channelKey,
@@ -125,6 +130,7 @@ async function handleAgentAutoRoute({
       agentMode: true,
       isAdmin: hasAdminPermission(liveSession),
       ...searchRunOptions,
+      ...(forwardMaterial ? { forwardMaterialNote: forwardMaterial.content } : {}),
     }
     assertChatTurnActive()
     const submission = outsideChatTurn(() => submitAgentWorkerTask({

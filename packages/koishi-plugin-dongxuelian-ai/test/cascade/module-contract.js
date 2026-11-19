@@ -646,7 +646,7 @@ async function runModuleContract(context) {
       'runHealthCheck', 'formatHealthReport', 'resetHealthCache',
     ],
     modelConnectivity: ['runTextConnectivityCheck'],
-    requestDiagnostics: ['ModelRequestError', 'isModelQuotaFailure', 'resolveModelQueueFailure', 'sanitizeDiagnosticText', 'assertModelResponseOk', 'getModelFailureReason', 'getFailedModelUsage', 'formatModelHttpStatus', 'createDiagnosticRequestId', 'buildModelFailureNotice', 'recordModelDiagnostic', 'formatRecentModelDiagnostic'],
+    requestDiagnostics: ['ModelRequestError', 'readModelTransportFailure', 'isModelQuotaFailure', 'resolveModelQueueFailure', 'sanitizeDiagnosticText', 'assertModelResponseOk', 'getModelFailureReason', 'getFailedModelUsage', 'formatModelHttpStatus', 'createDiagnosticRequestId', 'buildModelFailureNotice', 'recordModelDiagnostic', 'formatRecentModelDiagnostic'],
     retaliation: [
       'calculateRetaliationScore',
     ],

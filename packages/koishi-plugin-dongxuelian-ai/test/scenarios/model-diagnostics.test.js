@@ -1,4 +1,5 @@
 const fs = require('fs')
+const http = require('node:http')
 const path = require('path')
 const { withScenario } = require('./_setup')
 const { mockFetch } = require('../fake/fetch')
@@ -71,6 +72,89 @@ async function runEvidenceCases(t) {
     for (const record of Object.values(failed)) record.createdAt = instant
     data.writeJson(file, { [successKey]: failed[successKey], [failureKey]: failed[failureKey] })
     t.check('same-millisecond later failure is not hidden by previous success', diagnostic.formatRecentModelDiagnostic().startsWith('最近文字调用：请求受限'))
+  })
+}
+
+// 使用单一 DeepSeek 节点验证连接错误、响应体断开和脱敏。
+async function runTransportCases(t) {
+  await withApi([], async ({ api, data, mocked }) => {
+    seedCapabilityConfig(data, { text: [CHAIN[0]] })
+    const ipv4 = Object.assign(new Error('private connection payload'), { code: 'ETIMEDOUT', syscall: 'connect', address: '192.0.2.1' })
+    const ipv6 = Object.assign(new Error('private connection payload'), { code: 'ENETUNREACH', syscall: 'connect' })
+    const cause = new AggregateError([ipv4, ipv6], 'test-deepseek-key')
+    mocked.push({ error: new TypeError('fetch failed', { cause }) }, OK, OK, { invalidJson: true })
+    const diagnosticFile = 'ai-call-diagnostics/recent.json'
+    const key = 'text:' + CHAIN[0].provider + ':' + CHAIN[0].model
+    let error
+    try { await api.requestChatCompletions([], CONFIG) } catch (caught) { error = caught }
+    const failed = data.readJson(diagnosticFile)[key]
+    t.checkEqual('connection diagnostics keep the network error classification', error?.code, 'NETWORK_ERROR')
+    t.checkEqual('connection diagnostics retain each socket failure and stage', JSON.stringify(failed.transport),
+      JSON.stringify({ phase: 'request', errors: [{ code: 'ETIMEDOUT', syscall: 'connect' }, { code: 'ENETUNREACH', syscall: 'connect' }] }))
+    t.check('connection logs omit addresses, keys and raw exceptions', !/192\.0\.2\.1|test-deepseek-key|private connection payload/.test(JSON.stringify(failed)))
+    await api.requestChatCompletions([], CONFIG)
+    const recovered = data.readJson(diagnosticFile)[key]
+    t.check('success records its own fields and retains only the historical failure summary', recovered.status === 'success'
+      && !recovered.code && !recovered.reason && recovered.httpStatus === undefined && !recovered.transport
+      && recovered.lastFailureAt === failed.createdAt && recovered.lastFailureReason === failed.reason)
+
+    global.fetch = async (...args) => {
+      const response = await mocked.fetch(...args)
+      return { ...response, async json() {
+        throw new TypeError('terminated', { cause: Object.assign(new Error('private socket data'), { code: 'UND_ERR_SOCKET' }) })
+      } }
+    }
+    try { await api.requestChatCompletions([], CONFIG) } catch (caught) { error = caught }
+    const interrupted = data.readJson(diagnosticFile)[key]
+    t.check('response body failure retains HTTP status and socket code', error?.code === 'NETWORK_ERROR'
+      && interrupted.httpStatus === 200 && interrupted.transport?.phase === 'response_body'
+      && interrupted.transport.errors[0]?.code === 'UND_ERR_SOCKET')
+
+    global.fetch = mocked.fetch
+    try { await api.requestChatCompletions([], CONFIG) } catch (caught) { error = caught }
+    const malformed = data.readJson(diagnosticFile)[key]
+    t.check('malformed JSON remains a format error with the received HTTP status', error?.code === 'INVALID_RESPONSE'
+      && malformed.httpStatus === 200 && !malformed.transport)
+    t.check('transport verification stays on DeepSeek', mocked.calls.length === 4 && mocked.calls.every(call => call.requestBody.model === CHAIN[0].model))
+  })
+}
+
+// 用真实 HTTP 连接区分收头后的正文超时与调用方取消。
+async function runResponseBodyDeadlineCase(t) {
+  const fetchHttp = global.fetch
+  await withApi([], async ({ api, data, notifications }) => {
+    const server = http.createServer((request, response) => {
+      request.resume()
+      response.writeHead(200, { 'content-type': 'application/json' })
+      response.write('{"choices":')
+    })
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const config = { ...CHAIN[0], apiKey: 'local-fixture', baseURL: 'http://127.0.0.1:' + server.address().port }
+    const current = () => data.readJson('ai-call-diagnostics/recent.json')['text:' + config.provider + ':' + config.model]
+    try {
+      global.fetch = fetchHttp
+      const timeout = await api.requestChatCompletions([], config, { _timeoutMs: 1000 }).catch(error => error)
+      const failed = current()
+      t.check('body deadline after headers records TIMEOUT, HTTP 200 and response_body', timeout?.code === 'TIMEOUT'
+        && timeout.status === 200 && failed.code === 'TIMEOUT' && failed.httpStatus === 200 && failed.transport?.phase === 'response_body')
+
+      const count = notifications.length
+      const controller = new AbortController(), reason = new Error('caller cancelled after headers')
+      global.fetch = async (...args) => {
+        const response = await fetchHttp(...args)
+        setImmediate(() => controller.abort(reason))
+        return response
+      }
+      const cancelled = await api.requestChatCompletions([], config, { signal: controller.signal }).catch(error => error)
+      t.check('caller cancellation during body read preserves the reason and emits no upstream failure',
+        cancelled === reason && notifications.length === count && current().sequence === failed.sequence)
+    } finally {
+      server.closeAllConnections()
+      await new Promise(resolve => server.close(resolve))
+    }
   })
 }
 
@@ -225,6 +309,8 @@ async function runMediaUsageCases(t) {
 async function run(t) {
   t.section('scenario: model diagnostics')
   await runEvidenceCases(t)
+  await runTransportCases(t)
+  await runResponseBodyDeadlineCase(t)
   await runJudgmentCases(t)
   await runBoundaryCases(t)
   await runMediaUsageCases(t)

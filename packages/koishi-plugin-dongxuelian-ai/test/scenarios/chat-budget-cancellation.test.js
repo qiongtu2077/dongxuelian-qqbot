@@ -105,7 +105,8 @@ async function run(t) {
     const turn = new ChatTurnBudget({ channelKey: '10001' }); turn.select(true); turn.enqueue(); turn.start()
     const calls = [], originalFetch = global.fetch
     global.fetch = (url, options) => {
-      const body = JSON.parse(options.body), count = body.messages[0].content.filter(item => item.type === 'image_url').length
+      const body = JSON.parse(options.body)
+      const count = body.messages.find(message => message.role === 'user').content.filter(item => item.type === 'image_url').length
       const call = { count, at: Date.now(), signal: options.signal }; calls.push(call)
       if (calls.length === 1) return mockFetch([{ status: 413, json: { error: { message: 'request too large' } } }]).fetch(url, options)
       return new Promise((resolve, reject) => {

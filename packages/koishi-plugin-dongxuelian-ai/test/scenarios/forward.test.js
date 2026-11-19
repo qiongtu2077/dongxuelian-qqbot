@@ -1,8 +1,13 @@
 const path = require('path')
+const fs = require('node:fs')
+const { setTimeout: sleep } = require('node:timers/promises')
+const sharp = require('sharp')
 const { OneBot } = require('koishi-plugin-adapter-onebot')
 const { withScenario } = require('./_setup')
 const { AI_ROOT } = require('../fake/file')
 const { mockFetch } = require('../fake/fetch')
+const { withForwardServer } = require('../fake/forward-server')
+const { seedCapabilityConfig } = require('../helpers/ai-capability-fixture')
 
 // 记录实际请求的转发资源 ID，并返回固定协议响应。
 function makeForwardMock(fixtures) {
@@ -20,6 +25,139 @@ function makeForwardMock(fixtures) {
 function textNode(nickname, text) {
   return { sender: { nickname }, raw_message: text }
 }
+
+// --- 引用材料的后台交接 --- //
+
+// 等待正常中间件提交后台任务，沿用真实异步调度。
+async function waitForQueuedForwardTask() {
+  const { listResourceTasks } = require('../../lib/resource-workers/task-store')
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline) {
+    const task = listResourceTasks({ statuses: ['pending', 'deferred'], limit: 10 }).find(item => item.kind === 'agent_task')
+    if (task) return task
+    await sleep(10)
+  }
+  throw new Error('未收到转发问题对应的后台任务')
+}
+
+// 重放正常 QQ 入口、视觉请求、文字模型选择工具和持久化后的转述。
+async function runForwardTaskHandoff(t, withText) {
+  const label = withText ? 'mixed forward' : 'image-only forward'
+  await withScenario({}, async ({ data, harness, makeSession, run }) => {
+    const textModel = 'deepseek-flash', visionModel = 'qwen3.8-max-0902'
+    seedCapabilityConfig(data, {
+      text: [{ provider: 'deepseek', model: textModel }],
+      vision: [{ provider: 'dashscope', model: visionModel }],
+    })
+    const { saveConversationTurn } = require('../../lib/conversation')
+    const { chat } = require('../../lib/chat')
+    const { retellAgentResult } = require('../../lib/chat/chat-result-flow')
+    const { runAgentWorkerTask } = require('../../lib/resource-workers/agent-worker')
+    const { createAgentTaskSender } = require('../../lib/resource-workers/result-notifier')
+    const searchTool = require('../../lib/agent/tools/web-search')
+    const originalSearch = searchTool.execute
+    const searchQueries = []
+    const question = '这是什么意思？'
+    const recordText = '群友在讨论两张色卡的顺序'
+    const evidence = '第一张是红色色卡，第二张是蓝色色卡'
+    const answer = '第一张是红色，第二张是蓝色。'
+    const imageFiles = new Map()
+    const segments = withText ? [{ type: 'text', data: { text: recordText } }] : []
+    for (const color of ['red', 'blue']) {
+      const name = color + '.png', file = data.pathFor(name)
+      await sharp({ create: { width: 8, height: 8, channels: 3, background: color } }).png().toFile(file)
+      imageFiles.set(name, file)
+      segments.push({ type: 'image', data: { file: name } })
+    }
+    const records = [{ type: 'node', data: { nickname: '材料作者', content: segments } }]
+    const session = makeSession({ content: '<at id="90000"/> ' + question,
+      quote: { messageId: 'original-record', content: '<forward id="root"/>' } })
+    await saveConversationTurn(session, question, '你在问我上一句吗？')
+    const query = '核对色卡相关公开资料'
+    const toolCalls = [{ id: 'search-record', type: 'function', function: { name: 'web_search', arguments: JSON.stringify({ query }) } }]
+    const mocked = mockFetch([
+      { json: { choices: [{ message: { content: evidence } }] } },
+      { json: { choices: [{ message: { tool_calls: toolCalls } }] } },
+      { json: { choices: [{ message: { content: '先核对一下。' } }] } },
+      { json: { choices: [{ message: { content: '材料里有两张色卡。' } }] } },
+      { json: { choices: [{ message: { content: answer } }] } },
+    ])
+    const topic = mockFetch([{ json: { choices: [{ message: { content: 'NO' } }] } }])
+    const originalFetch = global.fetch
+    global.fetch = (url, options) => {
+      const body = JSON.parse(options.body)
+      return (String(body.messages[0]?.content).includes('判断用户是否切换了话题') ? topic : mocked).fetch(url, options)
+    }
+    // 只替换外部搜索的返回值；worker 正常运行任务文件里的预执行工具。
+    searchTool.execute = async args => { searchQueries.push(args.query); return '搜索状态：weak_hit（未读到可用正文）' }
+    try {
+      await withForwardServer(records, imageFiles, async () => {
+        await run(session)
+        const task = await waitForQueuedForwardTask()
+        const input = task.payload.agentWorker.engineInput
+        const note = input.forwardMaterialNote
+        const [visionRequest, firstTextRequest] = mocked.calls.map(call => call.requestBody)
+        const imageInput = visionRequest.messages.find(message => message.role === 'user').content
+        const imageUrls = imageInput.filter(part => part.type === 'image_url').map(part => part.image_url.url)
+        const originals = [...imageFiles.values()].map(file => 'data:image/png;base64,' + fs.readFileSync(file).toString('base64'))
+        t.check(label + ' sends both original files to the configured vision model', visionRequest.model === visionModel && JSON.stringify(imageUrls) === JSON.stringify(originals))
+        const firstPrompt = firstTextRequest.messages.map(message => String(message.content || '')).join('\n')
+        t.check(label + ' uses visual output in the initial question', firstTextRequest.model === textModel && firstPrompt.includes(evidence)
+          && (!withText || firstPrompt.includes(recordText)) && !firstPrompt.includes('优先理解为对你上一句'))
+        t.check(label + ' saves the original question and evidence to the task', task.payload.entry === 'chat-heavy-tool'
+          && input.userMessage === question && note?.includes(evidence) && (!withText || note.includes(recordText)))
+
+        const result = await runAgentWorkerTask(task)
+        const workerPrompt = mocked.calls.at(-1).requestBody.messages
+        t.check(label + ' worker receives the same evidence alongside the executed search', searchQueries.includes(query)
+          && workerPrompt.some(message => message.content === note) && workerPrompt.some(message => message.role === 'tool' && String(message.content).includes('weak_hit')))
+        const sent = []
+        const sender = createAgentTaskSender({ ctx: harness.ctx, chat, retellAgentResult, bot: {
+          async sendMessage(_channel, text) { sent.push(text); return ['sent'] },
+        } })
+        await sender(task, result)
+        const finalPrompt = mocked.calls.at(-1).requestBody.messages
+        t.check(label + ' final model sees the same evidence and user question', finalPrompt.some(message => message.content === note)
+          && finalPrompt.some(message => message.role === 'user' && message.content.includes(question)))
+        t.check(label + ' sends one answer and uses the text route after recognition', sent.length === 1 && sent[0].includes(answer)
+          && mocked.calls.length === 5 && [...mocked.calls.slice(1), ...topic.calls].every(call => call.requestBody.model === textModel))
+      })
+    } finally {
+      searchTool.execute = originalSearch
+      global.fetch = originalFetch
+    }
+  })
+}
+
+// 显式搜索走快捷入口；卡片不可读时不得发布无材料的任务。
+async function runForwardSearchShortcut(t, available) {
+  await withScenario({}, async ({ makeSession, run }) => {
+    const text = '需核对的原始说法'
+    const records = available ? [textNode('发言人', text)] : []
+    const question = '调用web_search核对这份聊天记录'
+    const session = makeSession({ content: '<at id="90000"/> ' + question, quote: { messageId: 'quoted', content: '<forward id="direct"/>' } })
+    const originalFetch = global.fetch, mocked = mockFetch([])
+    global.fetch = mocked.fetch
+    try {
+      await withForwardServer(records, new Map(), async () => {
+        await run(session)
+        if (available) {
+          const task = await waitForQueuedForwardTask()
+          const input = task.payload.agentWorker.engineInput
+          t.check('explicit search keeps the quoted text and original question on the direct worker route', task.payload.entry === 'qq-auto-route'
+            && input.userMessage === question && input.forwardMaterialNote?.includes(text) && input.forceTools.includes('web_search'))
+        } else {
+          await session.waitForSend(reply => reply.includes('消息记录暂时无法读取'))
+          const { listResourceTasks } = require('../../lib/resource-workers/task-store')
+          t.check('unreadable quoted search does not enqueue a worker', !listResourceTasks().some(task => task.kind === 'agent_task'))
+        }
+        t.check('direct search or unavailable record takes no intermediate model call', mocked.calls.length === 0)
+      })
+    } finally { global.fetch = originalFetch }
+  })
+}
+
+// --- 转发解析 --- //
 
 // 验证两种协议共用的正文解析、引用材料和失败隔离。
 async function run(t) {
@@ -225,6 +363,8 @@ async function run(t) {
     t.check('scenario forward empty array returns empty summary', emptySummary === '', JSON.stringify(emptySummary))
     t.check('scenario forward empty array does not write cache', !conversation.lastForwardSummaryCache.has('10003'), conversation.lastForwardSummaryCache.get('10003') || '')
   })
+  for (const withText of [true, false]) await runForwardTaskHandoff(t, withText)
+  for (const available of [true, false]) await runForwardSearchShortcut(t, available)
 }
 
 module.exports = { run }

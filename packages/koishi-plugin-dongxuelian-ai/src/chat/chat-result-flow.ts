@@ -47,6 +47,7 @@ interface HeavyToolRequest {
 interface ChatResultObject {
   text?: string
   heavyToolsRequested?: HeavyToolRequest[]
+  forwardMaterialNote?: string
 }
 
 interface AgentToolResult {
@@ -76,6 +77,7 @@ interface RetellToolBlockedOptions {
   randomTriggered?: boolean
   chat: ChatFn
   reason?: string
+  forwardMaterialNote?: string
 }
 
 interface RetellAgentResultOptions {
@@ -88,6 +90,7 @@ interface RetellAgentResultOptions {
   randomTriggered?: boolean
   chat: ChatFn
   emptyText?: string
+  forwardMaterialNote?: string
 }
 
 interface AgentEngineLike {
@@ -113,6 +116,7 @@ function normalizeChatResultText(chatResult: unknown, fallback: string = ''): st
   return String(chatResult || fallback)
 }
 
+// 工具无法执行时也保留用户原先引用的材料。
 async function retellToolBlockedReply(chatResult: unknown, {
   ctx,
   session,
@@ -120,12 +124,14 @@ async function retellToolBlockedReply(chatResult: unknown, {
   randomTriggered,
   chat,
   reason = '',
+  forwardMaterialNote,
 }: RetellToolBlockedOptions): Promise<string> {
   const seedText = normalizeChatResultText(chatResult).trim()
   try {
     const chatReply = await chat(session, userText, ctx, {
       randomTriggered,
       isAgentResult: true,
+      forwardMaterialNote,
       agentResultText: [
         seedText || '工具没有执行。',
         reason ? `工具边界：${reason}` : '',
@@ -139,6 +145,7 @@ async function retellToolBlockedReply(chatResult: unknown, {
   }
 }
 
+// 转述 Agent 结果时保留原问题和原引用，工具结果仅用于补充。
 async function retellAgentResult(agentResult: AgentResultLike, {
   ctx,
   session,
@@ -149,6 +156,7 @@ async function retellAgentResult(agentResult: AgentResultLike, {
   randomTriggered,
   chat,
   emptyText = '(未获取有效回复)',
+  forwardMaterialNote,
 }: RetellAgentResultOptions): Promise<string> {
   const safeAgentResult: AgentResultLike = {
     ...agentResult,
@@ -167,6 +175,7 @@ async function retellAgentResult(agentResult: AgentResultLike, {
       randomTriggered,
       isAgentResult: true,
       agentResultText: agentMaterial,
+      forwardMaterialNote,
     })
     const rawFinalReply = normalizeChatResultText(chatReply, AGENT_RETELL_FALLBACK).trim() || AGENT_RETELL_FALLBACK
     const finalReply = redactAgentMaterial(guardAgentRetellReply(rawFinalReply, safeAgentResult, {
@@ -180,6 +189,7 @@ async function retellAgentResult(agentResult: AgentResultLike, {
   }
 }
 
+// 将聊天模型选中的耗时工具交给后台，普通回复直接返回。
 async function handleChatResult(chatResult: unknown, {
   ctx,
   session,
@@ -199,6 +209,7 @@ async function handleChatResult(chatResult: unknown, {
   if (chatResult && typeof chatResult === 'object' && (chatResult as ChatResultObject).heavyToolsRequested) {
     const chatResultObject = chatResult as ChatResultObject
     const heavyToolsRequested = Array.isArray(chatResultObject.heavyToolsRequested) ? chatResultObject.heavyToolsRequested : []
+    const forwardMaterialNote = chatResultObject.forwardMaterialNote
     if (externalToolsDenied(userText)) return normalizeChatResultText(chatResult)
     const webSearchRequests = isAgentToolEnabled('qq', 'web_search') ? heavyToolsRequested
       .filter(t => t.name === 'web_search')
@@ -224,7 +235,10 @@ async function handleChatResult(chatResult: unknown, {
     const searchGateBlocked = searchContext && ['needs_chat_handling', 'blocked_by_cold'].includes(String(searchContext.searchReadiness || ''))
     const privateSearchGateBlocked = searchGateBlocked && (searchContext?.searchReadiness === 'blocked_by_cold' || !!searchContext?.blockedReason)
     if (searchGateBlocked && !webFetchRequests.length && webSearchRequests.length && (!hasExecutableWebSearchRequest || privateSearchGateBlocked)) {
-      return retellToolBlockedReply(chatResult, { ctx, session, userText, randomTriggered, chat, reason: searchContext?.blockedReason || searchContext?.searchReadiness || '' })
+      return retellToolBlockedReply(chatResult, {
+        ctx, session, userText, randomTriggered, chat, forwardMaterialNote,
+        reason: searchContext?.blockedReason || searchContext?.searchReadiness || '',
+      })
     }
     const agentConfig = getAgentConfig()
     const explicitFetchOptions = buildExplicitUrlFetchRunOptions(userText)
@@ -250,7 +264,7 @@ async function handleChatResult(chatResult: unknown, {
     }
     try {
       const agentRunInput = {
-        userMessage: searchRunOptions.agentUserMessage || userText,
+        userMessage: forwardMaterialNote ? userText : searchRunOptions.agentUserMessage || userText,
         userName,
         userId: currentUserId,
         channelKey,
@@ -258,6 +272,7 @@ async function handleChatResult(chatResult: unknown, {
         agentMode: true,
         isAdmin,
         ...searchRunOptions,
+        forwardMaterialNote,
       }
       assertChatTurnActive()
       const submission = outsideChatTurn(() => submitAgentWorkerTask({

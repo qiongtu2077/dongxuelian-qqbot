@@ -57,6 +57,7 @@ declare function extractSessionFromPayload(task: ResourceTask): {
     userId: string;
     userName: string;
     userText: string;
+    forwardMaterialNote?: string;
 };
 declare function createAgentTaskSender(options?: ResourceResultSenderOptions): ResultNotifierSender;
 declare function createEmotionRenderSender(options?: ResourceResultSenderOptions): ResultNotifierSender;

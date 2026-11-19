@@ -52,6 +52,7 @@ interface ChatSessionLike {
         elements?: unknown;
     };
     _skipVision?: boolean;
+    _forwardImageMessages?: Parameters<typeof import('./message/forward').resolveForwardSummary>[0]['_forwardImageMessages'];
     _visionUrls?: unknown;
     _visionFile?: unknown;
     _isVisionRequest?: unknown;
@@ -66,6 +67,8 @@ interface ChatRunOptions {
     activeSceneNote?: string;
     quotedMessageNote?: string;
     forwardSummaryText?: string;
+    forwardMaterialNote?: string;
+    preparedImageEvidence?: string;
     replyToId?: string;
     directAt?: boolean;
     nameMentioned?: boolean;
@@ -97,6 +100,7 @@ interface ChatHeavyToolRequest {
 interface ChatHeavyToolResult {
     text: unknown;
     heavyToolsRequested: ChatHeavyToolRequest[];
+    forwardMaterialNote?: string;
 }
 interface PublicRuntimeConfig {
     apiKey: string;

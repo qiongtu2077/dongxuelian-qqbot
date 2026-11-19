@@ -145,6 +145,7 @@ interface RunAgentOptions {
   channelKey?: unknown
   channel?: unknown
   systemExtra?: unknown
+  forwardMaterialNote?: unknown
   history?: unknown
   forceTools?: unknown
   preExecuteTools?: unknown
@@ -501,7 +502,12 @@ function normalizePreExecuteTools(value: unknown): Array<{ name?: string; args?:
   return Array.isArray(value) ? value as Array<{ name?: string; args?: unknown }> : []
 }
 
-async function runAgent({ userMessage, userImages, userName, userId, channelKey, channel = 'qq', systemExtra = [], history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false, agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false, resourceTaskId = '' }: RunAgentOptions): Promise<AgentRunResult> {
+// 按当前任务的上下文执行 Agent 和工具。
+async function runAgent({
+  userMessage, userImages, userName, userId, channelKey, channel = 'qq', systemExtra = [], forwardMaterialNote,
+  history = [], forceTools = [], preExecuteTools = [], onProgress, bot, enableThinking = false,
+  agentMode = false, scheduledTask = null, contextPolicy = null, isAdmin = false, resourceTaskId = '',
+}: RunAgentOptions): Promise<AgentRunResult> {
   const safeChannel = String(channel || 'qq')
   const safeUserMessage = String(userMessage || '')
   const safeUserName = String(userName || '')
@@ -523,6 +529,7 @@ async function runAgent({ userMessage, userImages, userName, userId, channelKey,
   const personaExtra = buildAgentPersonaContext({ channel: safeChannel, channelKey: safeChannelKey, userId: safeUserId, agentMode: !!agentMode })
   const workspaceExtra = await buildAgentWorkspaceContext({ userMessage: safeUserMessage, channel: safeChannel, roots })
   const allSystemExtra = mergeAgentSystemExtra(personaExtra, workspaceExtra, systemExtra, skillSummary ? [{ role: 'system', content: skillSummary }] : [], buildFileHintContext(safeChannelKey))
+  if (typeof forwardMaterialNote === 'string' && forwardMaterialNote) allSystemExtra.push({ role: 'system', content: forwardMaterialNote })
   const messages: AgentMessage[] = buildAgentMessages({ userMessage: safeUserMessage, userImages, userName: safeUserName, tools, systemExtra: allSystemExtra as SystemMessage[], history, agentMode: !!agentMode })
   const config = await loadAgentMessageConfig(messages)
   const toolResults: ToolResultItem[] = []

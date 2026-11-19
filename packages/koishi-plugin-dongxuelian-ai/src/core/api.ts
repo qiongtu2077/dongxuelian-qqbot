@@ -15,7 +15,7 @@ const {
   resolveCapabilityRuntimeSteps,
 } = require('./ai-capability-config') as typeof import('./ai-capability-config')
 const { notifyCapabilityStepFailure } = require('./capability-failure-notifier') as typeof import('./capability-failure-notifier')
-const { ModelRequestError: CapabilityUpstreamError, resolveModelQueueFailure, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics') as typeof import('./request-diagnostics')
+const { ModelRequestError: CapabilityUpstreamError, readModelTransportFailure, resolveModelQueueFailure, assertModelResponseOk, getModelFailureReason, createDiagnosticRequestId, recordModelDiagnostic, readImageRequestDiagnostic } = require('./request-diagnostics') as typeof import('./request-diagnostics')
 const { resolveOneBotWsUrl } = require('./onebot-endpoint') as typeof import('./onebot-endpoint')
 const { resolveModelThinkingFields, supportsModelReasoningEffort } = require('./model-thinking') as typeof import('./model-thinking')
 // 公开纯参数构造器的稳定结构类型，避免导出内部模块的私有声明。
@@ -434,14 +434,18 @@ function requestDiagnosticSecrets(config: ApiConfig, messages: ChatMessage[]): s
   return [config.apiKey, ...messages.flatMap(message => typeof message.content === 'string' ? [message.content, ...message.content.split('\n').filter(Boolean)] : Array.isArray(message.content) ? message.content.flatMap(item => isRecord(item) && typeof item.text === 'string' ? [item.text] : []) : [])]
 }
 
-// 解析上游 JSON，失败时只报告稳定错误，不读取或回传正文。
-async function readUpstreamJson(response: Response): Promise<Record<string, unknown>> {
+// 保留已收到的 HTTP 状态，区分读正文超时、断流和 JSON 格式异常。
+async function readUpstreamJson(response: Response, signal: AbortSignal): Promise<Record<string, unknown>> {
   try {
     const value: unknown = await response.json()
     if (!isRecord(value)) throw new Error('not_object')
     return value
-  } catch {
-    throw new CapabilityUpstreamError('AI 上游返回了无法解析的结果', 'INVALID_RESPONSE', true)
+  } catch (error) {
+    const transport = readModelTransportFailure(error, 'response_body')
+    if (signal.aborted) throw new CapabilityUpstreamError('AI 上游响应读取超时', 'TIMEOUT', true, response.status,
+      { transport: transport || { phase: 'response_body', errors: [] } })
+    if (transport) throw new CapabilityUpstreamError('AI 上游响应读取失败', 'NETWORK_ERROR', true, response.status, { transport })
+    throw new CapabilityUpstreamError('AI 上游返回了无法解析的结果', 'INVALID_RESPONSE', true, response.status)
   }
 }
 
@@ -627,7 +631,7 @@ async function requestOpenAiChatAttempt(messages: ChatMessage[], config: ApiConf
     }),
   })
   await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages))
-  const data = await readUpstreamJson(response)
+  const data = await readUpstreamJson(response, signal)
   const choices = Array.isArray(data.choices) ? data.choices : []
   const first = isRecord(choices[0]) ? choices[0] : {}
   const message = isRecord(first.message) ? first.message : {}
@@ -663,7 +667,7 @@ async function requestAnthropicAttempt(messages: ChatMessage[], config: ApiConfi
     }),
   })
   await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages))
-  const data = await readUpstreamJson(response)
+  const data = await readUpstreamJson(response, signal)
   const blocks = Array.isArray(data.content) ? data.content.filter(isRecord) : []
   const text = blocks.filter(block => block.type === 'text').map(block => String(block.text || '')).join(' ').trim()
   const toolCalls = blocks.filter(block => block.type === 'tool_use').map(block => ({ id: String(block.id || ''), type: 'function', function: { name: String(block.name || ''), arguments: JSON.stringify(block.input || {}) } }))
@@ -691,7 +695,7 @@ async function requestGeminiAttempt(messages: ChatMessage[], config: ApiConfig, 
     }),
   })
   await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages))
-  const data = await readUpstreamJson(response)
+  const data = await readUpstreamJson(response, signal)
   const candidates = Array.isArray(data.candidates) ? data.candidates : []
   const candidate = isRecord(candidates[0]) ? candidates[0] : {}
   const content = isRecord(candidate.content) ? candidate.content : {}
@@ -874,10 +878,12 @@ async function executeChatCompletions(messages: ChatMessage[], config: ApiConfig
       // 节点请求已结束，通知与后继模型不能再被旧计时器取消。
       clearTimeout(timer)
       // 诊断回调失败不是供应商故障，不能触发备用模型或管理员上游告警。
-      if (externalSignal?.aborted || !protocolStarted || protocolCompleted) throw error
+      if (externalSignal?.aborted) throw externalSignal.reason
+      if (!protocolStarted || protocolCompleted) throw error
       const failure = error instanceof CapabilityUpstreamError
         ? error
-        : new CapabilityUpstreamError(controller.signal.aborted ? 'AI 上游请求超时' : 'AI 上游网络请求失败', controller.signal.aborted ? 'TIMEOUT' : 'NETWORK_ERROR', true)
+        : new CapabilityUpstreamError(controller.signal.aborted ? 'AI 上游请求超时' : 'AI 上游网络请求失败', controller.signal.aborted ? 'TIMEOUT' : 'NETWORK_ERROR', true, 0,
+          { transport: readModelTransportFailure(error, 'request') })
       lastFailure = failure
       stepFailures.set(index, failure)
       const readable = hasReadableTokenUsage(failure.details.usage)
@@ -888,7 +894,7 @@ async function executeChatCompletions(messages: ChatMessage[], config: ApiConfig
         ...imageDiagnostic,
         status: 'failure', elapsedMs: Date.now() - attemptStartedAt, attempt: attemptNumber, fallback: index > 0,
         code: failure.code, httpStatus: failure.status, reason, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode,
-        upstreamRequestId: failure.details.requestId, finishReason: failure.details.finishReason,
+        upstreamRequestId: failure.details.requestId, finishReason: failure.details.finishReason, transport: failure.details.transport,
         contentLength: failure.details.contentLength, reasoningLength: failure.details.reasoningLength, maxTokens: diagnosticMaxTokens, usageReadable: readable,
         ...(readable ? { inputTokens: failedUsage.input, outputTokens: failedUsage.output } : {}) })
       console.warn(`[ai-api] capability_step_failed capability=${capability} provider=${attempt.provider || 'unknown'} model=${attempt.model} code=${failure.code}`)
@@ -936,7 +942,7 @@ async function requestOpenAIResponsesWithSearch(messages: ChatMessage[], config:
         }),
       })
       await assertModelResponseOk(response, requestDiagnosticSecrets(config, messages))
-      const data = await readUpstreamJson(response)
+      const data = await readUpstreamJson(response, signal)
       turn?.assertActive()
       if (signal.aborted) throw signal.reason
       const usage = isRecord(data.usage) ? data.usage as UsageDetails : undefined
@@ -947,6 +953,9 @@ async function requestOpenAIResponsesWithSearch(messages: ChatMessage[], config:
         readable: hasReadableTokenUsage(usage),
       })
       return extractResponsesText(data)
+    } catch (error) {
+      turn?.signal.throwIfAborted()
+      throw error
     } finally { clearTimeout(timer) }
   })()
   return turn?.own(request) || request

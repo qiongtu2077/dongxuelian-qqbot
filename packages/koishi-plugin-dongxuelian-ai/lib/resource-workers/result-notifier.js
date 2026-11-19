@@ -270,7 +270,7 @@ function buildAgentTaskTextMessage(result, task = null) {
     });
     return `${safeReply || fallback}${suffix}`.slice(0, 4000);
 }
-// Extract session info from task.payload.agentWorker for retellAgentResult.
+// 从持久任务恢复转述需要的会话身份和原始引用材料。
 function extractSessionFromPayload(task) {
     const payload = task && typeof task.payload === 'object' && task.payload ? task.payload : {};
     const agentWorker = payload.agentWorker && typeof payload.agentWorker === 'object' ? payload.agentWorker : {};
@@ -279,6 +279,7 @@ function extractSessionFromPayload(task) {
     const userId = String(engineInput.userId || task?.userId || payload.userId || '');
     const userName = String(engineInput.userName || payload.userName || '');
     const userText = String(engineInput.userMessage || payload.userMessage || '');
+    const forwardMaterialNote = typeof engineInput.forwardMaterialNote === 'string' ? engineInput.forwardMaterialNote : undefined;
     const isDirect = /^private:/i.test(channelKey);
     const session = {
         guildId: isDirect ? undefined : channelKey,
@@ -287,7 +288,7 @@ function extractSessionFromPayload(task) {
         userId,
         username: userName,
     };
-    return { session, channelKey, userId, userName, userText };
+    return { session, channelKey, userId, userName, userText, forwardMaterialNote };
 }
 // Construct a sender for standalone QQ Agent worker results.
 function createAgentTaskSender(options = {}) {
@@ -313,7 +314,7 @@ function createAgentTaskSender(options = {}) {
         }
         // Try retellAgentResult for persona retelling when dependencies are available
         if (ctx && chatFn && retellAgentResultFn) {
-            const { session, channelKey, userId, userName, userText } = extractSessionFromPayload(task);
+            const { session, channelKey, userId, userName, userText, forwardMaterialNote } = extractSessionFromPayload(task);
             if (channelKey && userId && userText) {
                 const agentResult = {
                     reply: result.reply,
@@ -329,6 +330,7 @@ function createAgentTaskSender(options = {}) {
                         currentUserId: userId,
                         userName: userName || '用户',
                         userText,
+                        forwardMaterialNote,
                         chat: chatFn,
                     });
                     const finalText = String(retoldText || '').trim();

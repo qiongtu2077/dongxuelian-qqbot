@@ -12,10 +12,12 @@ const { hasAdminPermission, isJailbreakAttempt, sanitizeUserInput } = require('.
 const { logDebug } = require('../core/logging-config');
 const { submitAgentWorkerTask } = require('../agent/worker-submission');
 const { createAgentRunWorkerPayload } = require('../resource-workers/agent-payload');
+const { createChatPromptForwardSummaryMessage } = require('../chat/chat-prompt-builder');
 function getAutoRouteErrorMessage(error) {
     return error instanceof Error ? error.message : String(error?.message || error);
 }
-async function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserId, userName, userText, randomTriggered, recentUserMessages, searchContext, resolveBot, chat, agentEngine, enqueueAgentTask, configureAgentQueue, retellAgentResult, }) {
+// 显式工具请求直接排入后台，保留本条消息引用的文本记录。
+async function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserId, userName, userText, forwardSummaryText, randomTriggered, recentUserMessages, searchContext, resolveBot, chat, agentEngine, enqueueAgentTask, configureAgentQueue, retellAgentResult, }) {
     let route = heuristicRoute(userText, 'qq', { recentUserMessages, searchContext });
     if (isJailbreakAttempt(sanitizeUserInput(userText)))
         route = { useAgent: false, reason: 'jailbreak-chat-guard' };
@@ -26,8 +28,9 @@ async function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserI
     const agentConfig = getAgentConfig();
     configureAgentQueue(agentConfig.queue || {});
     try {
+        const forwardMaterial = createChatPromptForwardSummaryMessage(forwardSummaryText);
         const agentRunInput = {
-            userMessage: searchRunOptions.agentUserMessage || userText,
+            userMessage: forwardMaterial ? userText : searchRunOptions.agentUserMessage || userText,
             userName,
             userId: currentUserId,
             channelKey,
@@ -35,6 +38,7 @@ async function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserI
             agentMode: true,
             isAdmin: hasAdminPermission(liveSession),
             ...searchRunOptions,
+            ...(forwardMaterial ? { forwardMaterialNote: forwardMaterial.content } : {}),
         };
         (0, chat_turn_budget_1.assertChatTurnActive)();
         const submission = (0, chat_turn_budget_1.outsideChatTurn)(() => submitAgentWorkerTask({

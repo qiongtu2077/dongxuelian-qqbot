@@ -16,6 +16,7 @@ interface AgentRunWorkerInput {
   channelKey?: unknown
   channel?: unknown
   systemExtra?: unknown
+  forwardMaterialNote?: unknown
   history?: unknown
   forceTools?: unknown
   preExecuteTools?: unknown
@@ -66,6 +67,7 @@ const RUN_INPUT_FIELDS = [
   'channelKey',
   'channel',
   'systemExtra',
+  'forwardMaterialNote',
   'history',
   'forceTools',
   'preExecuteTools',

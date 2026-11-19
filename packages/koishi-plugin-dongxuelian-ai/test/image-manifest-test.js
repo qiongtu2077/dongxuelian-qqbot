@@ -12,6 +12,26 @@ function image(file, extra = {}) { return { type: 'image', data: { file, ...extr
 // 模拟普通图片附件消息段。
 function attachment(file, name, extra = {}) { return { type: 'file', data: { file, name, ...extra } } }
 
+// 模拟提问跨越上海午夜，图像仍在两小时有效期内。
+async function checkForwardDateContext(manifest, batch, requests, check) {
+  const targets = manifest.collectImageManifest({ _forwardImageMessages: [message('record-day', [image('p0'), image('p1')])] }, 'record-day', 'record-day')
+  const realNow = Date.now, start = realNow()
+  let clock = Date.parse('2026-11-19T23:55:00+08:00')
+  Date.now = () => clock + realNow() - start
+  try {
+    const before = requests.length
+    await batch.readExplicitImageEvidence(targets, '这是什么意思？')
+    const first = requests.at(-1)
+    check('转发视觉请求通过系统消息给出北京时间日期，用户消息携带两张原图',
+      first.inputs.length === 2 && first.messages[0].role === 'system' && first.messages[0].content.includes('2026-11-19') && first.messages[1].role === 'user')
+    await batch.readExplicitImageEvidence(targets, '这是什么意思？')
+    check('同日重复提问复用同一份转发识图结果', requests.length === before + 1)
+    clock += 10 * 60 * 1000
+    await batch.readExplicitImageEvidence(targets, '这是什么意思？')
+    check('跨日后带上新日期重新读取原图', requests.length === before + 2 && requests.at(-1).messages[0].content.includes('2026-11-20'))
+  } finally { Date.now = realNow }
+}
+
 // 通过共用入口验证清单、大小、附件协议、真实视觉覆盖、失败和清理。
 async function main() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'image-manifest-'))
@@ -139,6 +159,7 @@ async function main() {
     const pausedResult = await batch.readExplicitImageEvidence(manifest.collectImageManifest(message('pause', [image('p10')]), 'pause', 'pause'), '暂停测试')
     check('资源保护暂停后不开始新批次，并明确暂停原因', requests.length === pauseStart && pausedResult.results[0].state === 'cancelled' && pausedResult.notice.includes('资源保护暂停读取'))
     resourcePaused = false
+    await checkForwardDateContext(manifest, batch, requests, check)
     const files = fs.readdirSync(store.IMAGE_HISTORY_DIR).filter(x => x.endsWith('.json')).map(x => JSON.parse(fs.readFileSync(path.join(store.IMAGE_HISTORY_DIR, x), 'utf8')))
     check('成功失败取消都释放所有持久活动引用', files.every(data => Object.values(data.images).every(entry => !Object.keys(entry.activeOwners || {}).length)))
     console.log(JSON.stringify({ checks, modelRequests: requests.length }))

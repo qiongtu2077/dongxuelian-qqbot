@@ -14,6 +14,7 @@ const RUN_INPUT_FIELDS = [
     'channelKey',
     'channel',
     'systemExtra',
+    'forwardMaterialNote',
     'history',
     'forceTools',
     'preExecuteTools',

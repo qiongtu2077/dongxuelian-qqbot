@@ -55,7 +55,7 @@ declare function resolveChatPromptPersonaLore(personaName?: string, personaSkill
 declare function createChatPromptLoreMessage({ personaLore, skillsContentCache, cleanInput, shouldInjectLore, shouldInjectTerraLore, routeResult }?: LoreMessageOptions): ChatPromptMessage | null;
 declare function createChatPromptSearchRuleMessage(configForSearch?: SearchRuleOptions, searchCap?: SearchCapability): ChatPromptMessage | null;
 declare function createChatPromptRandomContextMessage(randomTriggered: boolean, forcedAbusive?: boolean): ChatPromptMessage | null;
-declare function createChatPromptForwardSummaryMessage(forwardSummaryText?: string): ChatPromptMessage | null;
+declare function createChatPromptForwardSummaryMessage(forwardSummaryText?: string, imageEvidence?: string): ChatPromptMessage | null;
 declare function createChatPromptShortFollowUpMessage(cleanInput: string, recentAssistant?: string, options?: ShortFollowUpOptions): ChatPromptMessage | null;
 declare function createChatPromptGenerationRequestMessage(cleanInput: string, generationRequestRe: RegExp): ChatPromptMessage | null;
 declare function createChatPromptRareContextMessage({ rareConfirmed, retaliationLevel, rareProvocation }?: RareContextOptions): ChatPromptMessage | null;

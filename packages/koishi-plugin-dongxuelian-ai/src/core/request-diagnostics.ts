@@ -10,10 +10,16 @@ const { randomUUID } = require('crypto') as typeof import('crypto')
 const { DATA_DIR } = require('./constants') as typeof import('./constants')
 const { redactSensitiveText } = require('./redactor') as typeof import('./redactor')
 
+interface TransportFailure {
+  phase: 'request' | 'response_body'
+  errors: Array<{ code: string; syscall?: string }>
+}
+
 interface FailureDetails {
   upstreamCode?: string; summary?: string; requestId?: string; reason?: string
   finishReason?: string; contentLength?: number; reasoningLength?: number
   usage?: Record<string, unknown>
+  transport?: TransportFailure
 }
 interface DiagnosticEvent {
   requestId: string; capability: string; purpose: string; provider: string; model: string
@@ -22,6 +28,7 @@ interface DiagnosticEvent {
   upstreamRequestId?: string; finishReason?: string; contentLength?: number; reasoningLength?: number
   maxTokens?: number; usageReadable?: boolean; inputTokens?: number; outputTokens?: number
   imageSource?: string; imageTarget?: string; imageDemandId?: string
+  transport?: TransportFailure
 }
 interface ImageRequestEvent {
   source: 'explicit-image' | 'random-image' | 'history-tool'
@@ -34,6 +41,8 @@ const RECENT_FILE = path.join(DIAGNOSTIC_ROOT, 'recent.json')
 
 // --- 错误提取与分类 --- //
 
+const TRANSPORT_ERROR_CODE = /^(?:E[A-Z0-9_]{2,47}|UND_ERR_[A-Z0-9_]{1,39}|CERT_[A-Z0-9_]{1,43}|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_[A-Z0-9_]{2,38})$/
+
 // 保存稳定分类和脱敏证据，Error.message 不包含上游原始响应。
 class ModelRequestError extends Error {
   // 构造供备用链和通知共同读取的稳定错误。
@@ -41,6 +50,20 @@ class ModelRequestError extends Error {
     super(message)
     this.name = 'CapabilityUpstreamError'
   }
+}
+
+// 读取 Node fetch 包裹的连接错误，只保留可识别的错误码和系统调用名。
+function readModelTransportFailure(error: unknown, phase: TransportFailure['phase']): TransportFailure | undefined {
+  const cause = error instanceof Error && 'cause' in error && error.cause instanceof Error ? error.cause : error
+  const attempts: unknown[] = cause instanceof Error && 'errors' in cause && Array.isArray(cause.errors) ? cause.errors : [cause]
+  const errors: TransportFailure['errors'] = []
+  for (const item of attempts.slice(0, 8)) {
+    if (!(item instanceof Error)) continue
+    const { code, syscall } = item as NodeJS.ErrnoException
+    if (typeof code !== 'string' || !TRANSPORT_ERROR_CODE.test(code)) continue
+    errors.push(typeof syscall === 'string' && /^[a-z_]{1,24}$/.test(syscall) ? { code, syscall } : { code })
+  }
+  return errors.length ? { phase, errors } : undefined
 }
 
 // 对上游摘要先移除确切凭据及原文，再限制长度，避免上游回显私聊进入日志。
@@ -189,8 +212,12 @@ function recordModelDiagnostic(event: DiagnosticEvent): void {
     if (!fs.existsSync(file) || fs.statSync(file).size < 5 * 1024 * 1024) fs.appendFileSync(file, JSON.stringify(payload) + '\n', 'utf8')
     const key = event.capability + ':' + event.provider + ':' + event.model
     const previous = recent[key] || {}
-    recent[key] = { ...previous, ...payload,
-      ...(event.status === 'success' ? { lastSuccessAt: payload.createdAt } : { lastFailureAt: payload.createdAt, lastFailureReason: event.reason }) }
+    // 当前事件的错误、用量和传输信息仅归本次调用，跨事件只延续历史摘要。
+    recent[key] = { ...payload,
+      lastSuccessAt: event.status === 'success' ? payload.createdAt : previous.lastSuccessAt,
+      lastFailureAt: event.status === 'failure' ? payload.createdAt : previous.lastFailureAt,
+      lastFailureReason: event.status === 'failure' ? event.reason : previous.lastFailureReason,
+    }
     const entries = Object.entries(recent).sort((a, b) => String(b[1].createdAt).localeCompare(String(a[1].createdAt)) || Number(b[1].sequence || 0) - Number(a[1].sequence || 0)).slice(0, 128)
     const temporary = RECENT_FILE + '.tmp'
     fs.writeFileSync(temporary, JSON.stringify(Object.fromEntries(entries)), 'utf8')
@@ -218,4 +245,4 @@ function formatRecentModelDiagnostic(): string {
   } catch { return '最近文字调用：暂无记录' }
 }
 
-export = { ModelRequestError, isModelQuotaFailure, resolveModelQueueFailure, sanitizeDiagnosticText, assertModelResponseOk, getModelFailureReason, getFailedModelUsage, formatModelHttpStatus, createDiagnosticRequestId, buildModelFailureNotice, recordModelDiagnostic, formatRecentModelDiagnostic, readImageRequestDiagnostic, recordImageRequestEvent }
+export = { ModelRequestError, readModelTransportFailure, isModelQuotaFailure, resolveModelQueueFailure, sanitizeDiagnosticText, assertModelResponseOk, getModelFailureReason, getFailedModelUsage, formatModelHttpStatus, createDiagnosticRequestId, buildModelFailureNotice, recordModelDiagnostic, formatRecentModelDiagnostic, readImageRequestDiagnostic, recordImageRequestEvent }

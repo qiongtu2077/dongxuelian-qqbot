@@ -23,6 +23,7 @@ interface HeavyToolRequest {
 interface ChatResultObject {
     text?: string;
     heavyToolsRequested?: HeavyToolRequest[];
+    forwardMaterialNote?: string;
 }
 interface AgentToolResult {
     name?: string;
@@ -47,6 +48,7 @@ interface RetellToolBlockedOptions {
     randomTriggered?: boolean;
     chat: ChatFn;
     reason?: string;
+    forwardMaterialNote?: string;
 }
 interface RetellAgentResultOptions {
     ctx: ContextLike;
@@ -58,6 +60,7 @@ interface RetellAgentResultOptions {
     randomTriggered?: boolean;
     chat: ChatFn;
     emptyText?: string;
+    forwardMaterialNote?: string;
 }
 interface AgentEngineLike {
     run(options: Record<string, unknown>): Promise<AgentResultLike>;
@@ -76,8 +79,8 @@ interface HandleChatResultOptions extends RetellAgentResultOptions {
     configureAgentQueue: (options: Record<string, unknown>) => void;
 }
 declare function normalizeChatResultText(chatResult: unknown, fallback?: string): string;
-declare function retellToolBlockedReply(chatResult: unknown, { ctx, session, userText, randomTriggered, chat, reason, }: RetellToolBlockedOptions): Promise<string>;
-declare function retellAgentResult(agentResult: AgentResultLike, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, chat, emptyText, }: RetellAgentResultOptions): Promise<string>;
+declare function retellToolBlockedReply(chatResult: unknown, { ctx, session, userText, randomTriggered, chat, reason, forwardMaterialNote, }: RetellToolBlockedOptions): Promise<string>;
+declare function retellAgentResult(agentResult: AgentResultLike, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, chat, emptyText, forwardMaterialNote, }: RetellAgentResultOptions): Promise<string>;
 declare function handleChatResult(chatResult: unknown, { ctx, session, channelKey, currentUserId, userName, userText, randomTriggered, isAdmin, resolveBot, searchContext, chat, agentEngine, enqueueAgentTask, configureAgentQueue, }: HandleChatResultOptions): Promise<string>;
 declare const _default: {
     normalizeChatResultText: typeof normalizeChatResultText;

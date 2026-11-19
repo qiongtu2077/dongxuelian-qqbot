@@ -1,3 +1,10 @@
+interface TransportFailure {
+    phase: 'request' | 'response_body';
+    errors: Array<{
+        code: string;
+        syscall?: string;
+    }>;
+}
 interface FailureDetails {
     upstreamCode?: string;
     summary?: string;
@@ -7,6 +14,7 @@ interface FailureDetails {
     contentLength?: number;
     reasoningLength?: number;
     usage?: Record<string, unknown>;
+    transport?: TransportFailure;
 }
 interface DiagnosticEvent {
     requestId: string;
@@ -34,6 +42,7 @@ interface DiagnosticEvent {
     imageSource?: string;
     imageTarget?: string;
     imageDemandId?: string;
+    transport?: TransportFailure;
 }
 interface ImageRequestEvent {
     source: 'explicit-image' | 'random-image' | 'history-tool';
@@ -50,6 +59,7 @@ declare class ModelRequestError extends Error {
     details: FailureDetails;
     constructor(message: string, code: string, retryable: boolean, status?: number, details?: FailureDetails);
 }
+declare function readModelTransportFailure(error: unknown, phase: TransportFailure['phase']): TransportFailure | undefined;
 declare function sanitizeDiagnosticText(value: unknown, secrets?: string[], limit?: number): string;
 declare function isModelQuotaFailure(error: unknown): error is ModelRequestError;
 declare function resolveModelQueueFailure(failures: ModelRequestError[], expectedSteps: number): ModelRequestError;
@@ -84,6 +94,7 @@ declare function recordModelDiagnostic(event: DiagnosticEvent): void;
 declare function formatRecentModelDiagnostic(): string;
 declare const _default: {
     ModelRequestError: typeof ModelRequestError;
+    readModelTransportFailure: typeof readModelTransportFailure;
     isModelQuotaFailure: typeof isModelQuotaFailure;
     resolveModelQueueFailure: typeof resolveModelQueueFailure;
     sanitizeDiagnosticText: typeof sanitizeDiagnosticText;

@@ -1,9 +1,10 @@
 const fs = require('node:fs')
 const path = require('node:path')
-const { WebSocketServer } = require('ws')
+const { withForwardServer } = require('../fake/forward-server')
 const { withScenario } = require('./_setup')
 const { AI_ROOT } = require('../fake/file')
 const { mockFetch } = require('../fake/fetch')
+const { seedCapabilityConfig } = require('../helpers/ai-capability-fixture')
 
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=', 'base64')
 
@@ -64,29 +65,20 @@ async function run(t) {
   })
 
   // --- 真实中间件与 OneBot 传输 --- //
-  for (const protocol of ['napcat', 'sl']) {
-    await withScenario({}, async ({ harness, makeSession, run, data }) => {
-      const records = [node(protocol, [{ type: 'text', data: { text: '记录中的文字' } }]), node(protocol, Array.from({ length: 12 }, (_, index) => photo(index)))]
+  for (const { protocol, missingImage } of [{ protocol: 'napcat' }, { protocol: 'sl' }, { protocol: 'sl', missingImage: true }]) {
+    await withScenario({}, async ({ makeSession, run, data }) => {
+      seedCapabilityConfig(data, {
+        text: [{ provider: 'deepseek', model: 'deepseek-flash' }],
+        vision: [{ provider: 'dashscope', model: 'qwen3.8-max-0902' }],
+      })
+      const imageCount = missingImage ? 2 : 12
+      const records = [node(protocol, [{ type: 'text', data: { text: '记录中的文字' } }]), node(protocol, Array.from({ length: imageCount }, (_, index) => photo(index)))]
       const imageFiles = new Map()
-      for (let index = 0; index < 12; index++) {
+      for (let index = 0; index < (missingImage ? 1 : imageCount); index++) {
         const file = data.pathFor(`original-${index}.png`)
         fs.writeFileSync(file, Buffer.concat([PNG, Buffer.from([index])]))
         imageFiles.set(photo(index).data.file, file)
       }
-      const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
-      await new Promise(resolve => server.once('listening', resolve))
-      const previousEndpoint = process.env.DONGXUELIAN_ONEBOT_WS_URL
-      process.env.DONGXUELIAN_ONEBOT_WS_URL = `ws://127.0.0.1:${server.address().port}/onebot/v11/ws`
-      const reads = []
-      const forwards = []
-      server.on('connection', socket => socket.on('message', raw => {
-        const request = JSON.parse(String(raw))
-        let payload
-        if (request.action === 'get_forward_msg') { forwards.push(request.params.id); payload = { messages: records } }
-        else if (request.action === 'get_image') { reads.push(request.params.file); payload = { file: imageFiles.get(request.params.file) } }
-        else throw new Error('unexpected forward test action: ' + request.action)
-        socket.send(JSON.stringify({ status: 'ok', retcode: 0, data: payload, echo: request.echo }))
-      }))
       const mocked = mockFetch([
         { json: { choices: [{ message: { content: '已读取消息记录前十张原图，各图内容均已确认。' } }] } },
         { json: { choices: [{ message: { content: '记录文字和前十张图均已读完。' } }] } },
@@ -94,22 +86,30 @@ async function run(t) {
       const originalFetch = global.fetch
       global.fetch = mocked.fetch
       try {
-        const session = makeSession({ content: '<at id="90000"/> 总结消息记录里的文字和图片', quote: { messageId: 'record-source', content: '<forward id="root"/>' } })
-        await run(session, { flushTicks: 120 })
-        await session.waitForSend(message => String(message).includes('均已读完'))
-        const vision = mocked.calls.filter(call => call.requestBody?.messages?.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url')))
-        const inputs = vision[0]?.requestBody.messages[0].content || []
-        t.check(`scenario ${protocol} quoted forward middleware reads ten original images before answering`, vision.length === 1 && inputs.filter(item => item.type === 'image_url').length === 10, JSON.stringify({ calls: mocked.calls.length, visionCalls: vision.length }))
-        t.check(`scenario ${protocol} never fetches record images eleven and twelve`, reads.length === 10 && !reads.includes(photo(10).data.file) && !reads.includes(photo(11).data.file), reads.join(','))
-        t.check(`scenario ${protocol} middleware fetches quoted record once`, forwards.join(',') === 'root', forwards.join(','))
-        const finalRequest = mocked.calls.at(-1)?.requestBody?.messages || []
-        t.check(`scenario ${protocol} final answer receives record text and fresh vision evidence`, finalRequest.some(message => String(message.content).includes('记录中的文字')) && finalRequest.some(message => String(message.content).includes('视觉批次')), JSON.stringify(finalRequest))
+        await withForwardServer(records, imageFiles, async ({ reads, forwards }) => {
+          const session = makeSession({ content: '<at id="90000"/> 总结消息记录里的文字和图片', quote: { messageId: 'record-source', content: '<forward id="root"/>' } })
+          await run(session, { flushTicks: 120 })
+          if (missingImage) {
+            await session.waitForSend(message => String(message).includes('未能读取：消息记录第2张'))
+            const calls = mocked.calls.map(call => call.requestBody)
+            t.check('scenario incomplete record tries both images and reports which failed', reads.join(',') === [photo(0).data.file, photo(1).data.file].join(',')
+              && session.sent.length === 1 && String(session.sent[0]).includes('未能读取：消息记录第2张'))
+            t.check('scenario incomplete record stops after the configured vision model reads one image', calls.length === 1
+              && calls[0].model === 'qwen3.8-max-0902' && calls[0].messages.find(m => m.role === 'user')?.content.filter(item => item.type === 'image_url').length === 1)
+            return
+          }
+          await session.waitForSend(message => String(message).includes('均已读完'))
+          const vision = mocked.calls.filter(call => call.requestBody?.messages?.some(message => Array.isArray(message.content) && message.content.some(part => part.type === 'image_url')))
+          const inputs = vision[0]?.requestBody.messages.find(message => message.role === 'user')?.content || []
+          t.check(`scenario ${protocol} quoted forward middleware reads ten original images before answering`, vision.length === 1 && inputs.filter(item => item.type === 'image_url').length === 10, JSON.stringify({ calls: mocked.calls.length, visionCalls: vision.length }))
+          t.check(`scenario ${protocol} never fetches record images eleven and twelve`, reads.length === 10 && !reads.includes(photo(10).data.file) && !reads.includes(photo(11).data.file), reads.join(','))
+          t.check(`scenario ${protocol} middleware fetches quoted record once`, forwards.join(',') === 'root', forwards.join(','))
+          t.check(`scenario ${protocol} uses vision before text`, mocked.calls.map(call => call.requestBody.model).join(',') === 'qwen3.8-max-0902,deepseek-flash')
+          const finalRequest = mocked.calls.at(-1)?.requestBody?.messages || []
+          t.check(`scenario ${protocol} final answer receives record text and fresh vision evidence`, finalRequest.some(message => String(message.content).includes('记录中的文字')) && finalRequest.some(message => String(message.content).includes('视觉批次')), JSON.stringify(finalRequest))
+        })
       } finally {
         global.fetch = originalFetch
-        if (previousEndpoint === undefined) delete process.env.DONGXUELIAN_ONEBOT_WS_URL
-        else process.env.DONGXUELIAN_ONEBOT_WS_URL = previousEndpoint
-        for (const socket of server.clients) socket.terminate()
-        await new Promise(resolve => server.close(resolve))
       }
     })
   }

@@ -744,7 +744,9 @@ function apply(ctx) {
             triggerAt: Date.now(),
         });
         const maxDepth = inGuild ? GROUP_CHAT_QUEUE_CAPACITY : 2;
-        if (isFileQuickReadIntent(userText) && !isVisionSession(session)) {
+        // 需识图或转发读取失败时，由本轮 chat 处理材料或返回准确的读取状态。
+        const needsMaterialHandling = isVisionSession(session) || entryTurn.forwardUnavailable;
+        if (isFileQuickReadIntent(userText) && !needsMaterialHandling) {
             const liveSession = withCurrentBot(session, resolveBot());
             const reply = await resolveFileQuickReadReply(channelKey);
             await safeSendReplyWithFreshness(ctx, liveSession, reply, randomTriggered, resolveBot, randomSendOptions);
@@ -757,13 +759,14 @@ function apply(ctx) {
             try {
                 const recentUserMessages = getRecentUserMessages(liveSession, 4);
                 const searchContext = buildPrivateSearchContext(liveSession, getRecentUserMessageRecords(liveSession, 8), { currentText: userText });
-                const autoRouteResult = explicitBotInteraction && isVisionSession(liveSession) ? { handled: false, reply: '' } : await handleAgentAutoRoute({
+                const autoRouteResult = explicitBotInteraction && needsMaterialHandling ? { handled: false, reply: '' } : await handleAgentAutoRoute({
                     ctx,
                     liveSession,
                     channelKey,
                     currentUserId,
                     userName,
                     userText,
+                    forwardSummaryText,
                     randomTriggered,
                     recentUserMessages,
                     searchContext: searchContext,

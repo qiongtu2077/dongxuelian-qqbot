@@ -7,6 +7,7 @@ interface AgentRunWorkerInput {
     channelKey?: unknown;
     channel?: unknown;
     systemExtra?: unknown;
+    forwardMaterialNote?: unknown;
     history?: unknown;
     forceTools?: unknown;
     preExecuteTools?: unknown;

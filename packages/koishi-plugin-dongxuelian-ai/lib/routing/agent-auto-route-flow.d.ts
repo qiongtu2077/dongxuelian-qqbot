@@ -42,6 +42,7 @@ interface HandleAgentAutoRouteInput {
     currentUserId: string;
     userName: string;
     userText: string;
+    forwardSummaryText?: string;
     randomTriggered?: boolean;
     recentUserMessages?: string[];
     searchContext?: Record<string, unknown>;
@@ -56,7 +57,7 @@ interface HandleAgentAutoRouteResult {
     handled: boolean;
     reply?: string;
 }
-declare function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserId, userName, userText, randomTriggered, recentUserMessages, searchContext, resolveBot, chat, agentEngine, enqueueAgentTask, configureAgentQueue, retellAgentResult, }: HandleAgentAutoRouteInput): Promise<HandleAgentAutoRouteResult>;
+declare function handleAgentAutoRoute({ ctx, liveSession, channelKey, currentUserId, userName, userText, forwardSummaryText, randomTriggered, recentUserMessages, searchContext, resolveBot, chat, agentEngine, enqueueAgentTask, configureAgentQueue, retellAgentResult, }: HandleAgentAutoRouteInput): Promise<HandleAgentAutoRouteResult>;
 declare const _default: {
     handleAgentAutoRoute: typeof handleAgentAutoRoute;
 };
