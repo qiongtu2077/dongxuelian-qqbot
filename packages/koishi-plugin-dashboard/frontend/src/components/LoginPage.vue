@@ -1,13 +1,12 @@
 <template>
   <div class="login-page">
     <LoginBackdrop />
-    <div class="login-spacer"></div>
     <div class="login-sidebar themed-scrollbar">
       <div class="login-sidebar-inner">
-        <div class="gate-kicker">LianBoard</div>
-        <h1 class="gate-title">莲莲 Bot 控制台</h1>
+        <div class="login-brand"><span aria-hidden="true">莲</span> LianBoard</div>
+        <h1 class="gate-title">登录控制台</h1>
         <template v-if="!electronDeployer">
-        <p class="gate-copy">请输入访问密码以继续</p>
+        <p class="gate-copy">使用访问密码进入莲莲控制台。</p>
         <div v-if="notice" class="gate-error" style="color:var(--success)">{{ notice }}</div>
 
         <PasswordField
@@ -22,7 +21,8 @@
           {{ loading ? '验证中...' : '登录' }}
         </button>
 
-        <div v-if="error" class="gate-error">{{ error }}</div>
+        <button v-if="allowSource" class="btn btn-ghost" type="button" @click="$emit('source-login')">重新验证当前来源</button>
+        <div v-if="error" class="gate-error" role="alert">{{ error }}</div>
 
         <div style="text-align:center;margin-top:14px">
           <a href="#" style="color:var(--text3);font-size:12px;text-decoration:none" @click.prevent="showReset = !showReset">忘记密码?</a>
@@ -65,6 +65,7 @@ export default {
   components: { LoginBackdrop, PasswordField },
   props: {
     notice: { type: String, default: '' },
+    allowSource: { type: Boolean, default: false },
   },
   setup(props, { emit }) {
     const electronDeployer = isElectronDeployerEnv()
@@ -80,6 +81,7 @@ export default {
       if (electronDeployer) doLogin()
     })
 
+    // 校验口令后通知外壳开始会话。
     async function doLogin() {
       if (!password.value.trim() && !electronDeployer) return
       loading.value = true

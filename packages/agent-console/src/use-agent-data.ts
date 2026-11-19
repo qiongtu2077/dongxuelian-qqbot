@@ -34,6 +34,7 @@ export function useAgentData(tab: TabId) {
   const activeTab = useRef(tab)
   const reads = useRef(new Map<Dataset, InFlightRead>())
   const renderedEpoch = epoch.current
+  const [dismissedAdmin, setDismissedAdmin] = useState(false)
 
   /** Cancels reads and clears prior account data when authorization changes. */
   function clearWorkspace(next: AuthState): void {
@@ -43,6 +44,7 @@ export function useAgentData(tab: TabId) {
     session.current = getAgentReadSessionKey()
     permission.current = next
     setAuth(next)
+    setDismissedAdmin(false)
     setData({})
     setErrors({})
     setLoadingKeys([])
@@ -120,11 +122,15 @@ export function useAgentData(tab: TabId) {
     mounted.current = true
     reconnect()
     const storageChanged = () => { if (session.current !== getAgentReadSessionKey()) reconnect() }
+    // 再次聚焦时复核实际权限，防止撤销来源后继续显示旧工作区。
+    const checkPermission = () => { void read('config') }
+    window.addEventListener('focus', checkPermission)
     window.addEventListener('storage', storageChanged)
     return () => {
       mounted.current = false
       for (const entry of reads.current.values()) entry.controller.abort()
       reads.current.clear()
+      window.removeEventListener('focus', checkPermission)
       window.removeEventListener('storage', storageChanged)
     }
   }, [])
@@ -173,7 +179,7 @@ export function useAgentData(tab: TabId) {
 
   const visible = pageReads[tab] ?? []
   return {
-    auth, reconnect, refresh, chatSettled, refreshAfterWrite, setConfig, setPersona,
+    auth, dismissedAdmin, dismissAdmin: () => setDismissedAdmin(true), reconnect, refresh, chatSettled, refreshAfterWrite, setConfig, setPersona,
     loading: loadingKeys.some(key => key === 'config' || visible.includes(key)),
     error: errors.config || visible.map(key => errors[key]).find(Boolean) || '',
     config: data.config ?? null, personas: data.personas?.personas ?? data.config?.personas ?? [],

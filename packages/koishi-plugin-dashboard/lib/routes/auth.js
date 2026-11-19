@@ -1,7 +1,8 @@
 'use strict';
+const trusted_access_1 = require("../trusted-access");
 const fs = require('fs');
 const { json, log, collectBody, getRemoteAddress, writeFileSyncSafe, } = require('../utils');
-const { isLocalAuthBypass, isLoginRateLimited, recordLoginFailure, clearLoginFails, getAccessPasswordRecord, getAdminPassword, createToken, createAdminToken, validateToken, requireAdmin, getResetToken, generateResetToken, resetDashboardCredentials, rotateSessionSecret, safeCompare, verifyPassword, hashPassword, removeLegacyAccessPasswordAfterUpgrade, } = require('../auth');
+const { isLocalAuthBypass, isLoginRateLimited, recordLoginFailure, clearLoginFails, getAccessPasswordRecord, getAdminPassword, createToken, createAdminToken, validateToken, validateAdminToken, requireAdmin, getResetToken, generateResetToken, resetDashboardCredentials, rotateSessionSecret, safeCompare, verifyPassword, hashPassword, removeLegacyAccessPasswordAfterUpgrade, } = require('../auth');
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE } = require('../paths');
 function parseBody(body) {
     const parsed = JSON.parse(body);
@@ -162,7 +163,7 @@ function handleResetPassword(req, res) {
 function authMiddleware(req, res, pathname) {
     const isPublicGalleryImage = pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET';
     const isPublicReleaseStatus = pathname === '/dashboard/api/release-status' && req.method === 'GET';
-    if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isPublicReleaseStatus && !isLocalAuthBypass(req)) {
+    if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isPublicReleaseStatus && !isLocalAuthBypass(req) && !(0, trusted_access_1.hasTrustedDashboardAccess)(req, pathname)) {
         const authHeader = String(req.headers['authorization'] || '');
         const token = authHeader.replace(/^Bearer\s+/i, '');
         if (!validateToken(token)) {
@@ -173,7 +174,19 @@ function authMiddleware(req, res, pathname) {
     }
     return true;
 }
+/** 返回实际请求已经具有的权限，不签发凭据，不泄露配置或客户地址。 */
+function handleSession(req, res) {
+    res.setHeader('Cache-Control', 'private, no-store');
+    const local = isLocalAuthBypass(req);
+    const source = (0, trusted_access_1.hasTrustedDashboardAccess)(req, '/dashboard/api/auth/session');
+    const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    const access = !!(local || source || validateToken(token));
+    const admin = access && !!(local || source || validateAdminToken(req.headers['x-admin-token']));
+    const mode = local ? 'local' : source ? 'source' : access ? 'password' : 'anonymous';
+    json(res, { ok: true, access, admin, mode });
+}
 const routes = {
+    'GET /dashboard/api/auth/session': handleSession,
     'POST /dashboard/api/login': handleLogin,
     'POST /dashboard/api/admin/verify': handleAdminVerify,
     'PUT /dashboard/api/auth/password': handleChangePassword,

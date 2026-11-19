@@ -28,6 +28,7 @@ import type {
   PendingToolsResponse,
 } from './types'
 import { followAgentTask } from './tasks'
+import { sourcePaused } from '../../../koishi-plugin-dashboard/frontend/src/shared/session'
 
 // --- Authenticated transport ---
 
@@ -60,12 +61,13 @@ function getAdminToken() {
 
 /** Identifies the effective session for in-flight reads without exposing credentials in the UI. */
 export function getAgentReadSessionKey() {
-  return JSON.stringify([localStorage.getItem(ACCESS_TOKEN_KEY), getAdminToken()])
+  return JSON.stringify([localStorage.getItem(ACCESS_TOKEN_KEY), getAdminToken(), sourcePaused()])
 }
 
 function headers(admin = true) {
   const result: Record<string, string> = { 'Content-Type': 'application/json' }
   const token = localStorage.getItem(ACCESS_TOKEN_KEY)
+  if (sourcePaused()) result['X-Dashboard-Password-Only'] = '1'
   if (token) result.Authorization = 'Bearer ' + token
   const adminToken = admin ? getAdminToken() : ''
   if (adminToken) result['X-Admin-Token'] = adminToken

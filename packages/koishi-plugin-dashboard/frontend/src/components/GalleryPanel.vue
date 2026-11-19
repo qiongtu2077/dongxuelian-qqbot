@@ -33,7 +33,7 @@
     </div>
 
     <div v-else class="gallery-grid" :style="galleryStyle">
-      <article v-for="(image, index) in images" :key="image.id" :class="['gallery-card', foilCardClass(image), { 'is-bulk': bulkDeleteMode, selected: isSelected(image.id) }]" @click="onCardClick(image, index)" @pointermove="moveCard" @pointerleave="resetCard" @pointercancel="resetCard">
+      <article role="button" tabindex="0" :aria-label="image.name" @keydown.enter.prevent="onCardClick(image, index)" @keydown.space.prevent="onCardClick(image, index)" v-for="(image, index) in images" :key="image.id" :class="['gallery-card', foilCardClass(image), { 'is-bulk': bulkDeleteMode, selected: isSelected(image.id) }]" @click="onCardClick(image, index)" @pointermove="moveCard" @pointerleave="resetCard" @pointercancel="resetCard">
         <div class="gallery-card__rotator">
           <div class="gallery-card__front">
             <img :src="image.url" :alt="image.name" loading="lazy" @error="onImageError(image)" />
@@ -46,7 +46,7 @@
       </article>
     </div>
 
-    <div v-if="previewImage" class="gallery-preview-backdrop" @click.self="closePreview" @contextmenu.prevent="closePreview">
+    <ConsoleDialog v-if="previewImage" label="图片预览" panel-class="gallery-preview-dialog" @dismiss="closePreview">
       <section class="gallery-preview-shell" aria-label="图片预览" @contextmenu.prevent="closePreview">
         <button class="gallery-preview-close" type="button" aria-label="关闭预览" title="关闭预览" @click="closePreview">×</button>
         <div class="gallery-preview-stage">
@@ -65,12 +65,13 @@
           </aside>
         </div>
       </section>
-    </div>
+    </ConsoleDialog>
   </div>
 </template>
 
 <script lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
+import ConsoleDialog from './ConsoleDialog.vue'
 import { deleteGalleryImage, fetchGalleryImages, isAdminRequired, updateGalleryImageStyle, uploadGalleryImage } from '../api'
 import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
@@ -235,6 +236,7 @@ function preloadGalleryImage(url: string): Promise<boolean> {
 
 export default {
   name: 'GalleryPanel',
+  components: { ConsoleDialog },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const images = ref<GalleryImage[]>([])
@@ -407,12 +409,7 @@ export default {
       const card = eventElement(event)
       if (card) resetCardTarget(card, 500)
     }
-    function onKeydown(event: KeyboardEvent) {
-      if (event.key === 'Escape' && previewImage.value) closePreview()
-    }
-
-    onMounted(() => { loadImages(); window.addEventListener('keydown', onKeydown) })
-    onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+    onMounted(loadImages)
     return { images, loading, uploading, deletingId, message, fileInput, aspectMode, aspectOptions, galleryStyle, bulkDeleteMode, selectedCount, previewImage, previewCardRef, foilOptions, currentFoilStyle, updatingStyle, foilCardClass, setPreviewFoilStyle, openUpload, onFileChange, onImageError, toggleBulkDelete, isSelected, clearSelection, deleteSelectedImages, onCardClick, closePreview, moveCard, resetCard, previewPointerMove, previewPointerLeave }
   },
 }

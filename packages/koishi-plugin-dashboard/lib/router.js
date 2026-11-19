@@ -33,6 +33,7 @@ for (const mod of [galleryRoutes, authRoutes, configRoutes, agentRoutes, setting
             regexRoutes.push(item);
 }
 const preAuthKeys = new Set([
+    'GET /dashboard/api/auth/session',
     'POST /dashboard/api/login',
     'POST /dashboard/api/auth/reset-password',
 ]);

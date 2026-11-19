@@ -528,6 +528,22 @@ npm run build
 
 ---
 
+### 从自己的 Windows 电脑免密打开控制台
+
+如果这台电脑已能通过密钥 SSH 登录 Linux 服务器，可以给它开一个只监听本机的浏览器入口。Dashboard 会逐请求核验 SSH 私有套接字，授权主控制台和 Agent 工作台。部署预览、发布确认和 Agent 操作审批继续生效。
+
+1. 在服务器的应用数据目录创建 `dashboard-trusted-access.json`，用服务用户或 root 持有文件，权限设为 `0600`。首次启用 SSH 模式后重启 Dashboard，使它创建私有目录 `dashboard-tunnel/` 和 `console.sock`。
+2. 在 Windows 仓库根目录运行 `.\scripts\open-dashboard-tunnel.ps1`。默认读取本地部署配置的服务器和应用目录，打开 `http://127.0.0.1:15150/dashboard/`。重复运行会复用同一隧道。也可用 `-Server user@host -AppDir /opt/koishi-app` 显式指定目标。SSH 服务须允许 Unix 套接字转发。
+3. 「退出登录」在该标签页暂停来源授权。登录页的重新验证按钮可恢复。服务器将配置改为 `{"version":1,"enabled":false}` 或移除文件后，下一次请求即恢复口令门禁。
+
+SSH 模式配置示例
+
+```json
+{"version":1,"enabled":true,"mode":"ssh","address":"127.0.0.1","origin":"http://127.0.0.1:15150"}
+```
+
+已有加密入口的部署也支持 `direct` 与 `proxy`。前者要求实际 TLS 对端等于 `address`，后者额外要求 `proxy` 是能独占后端连接的唯一可信反代地址。两者的 `origin` 都填浏览器实际使用的完整 HTTPS 来源，`address` 填已核实的设备独享地址。反代覆盖 Host、X-Real-IP 和 X-Forwarded-Proto，移除 Forwarded 与 X-Forwarded-For。保持默认关闭即可沿用密码登录。凭据变更、第三方管理入口和桌面启动票据使用各自的身份校验。
+
 ## 部署方式三：Dashboard 远程 Linux 更新部署
 
 这个方式适合已有服务器，也是唯一远程生产更新入口。它使用“当前 Dashboard 后端所在机器”的代码构建冻结发布物，不从 GitHub 拉取代码；浏览器所在电脑不是发布源。
@@ -916,7 +932,7 @@ KOISHI_DIR=<YOUR_APP_DIR> DONGXUELIAN_AI_DATA_DIR=<YOUR_DATA_DIR> sh scripts/sea
 
 ## 常用指令速查
 
-Dashboard 里也有「指令速查」Tab，可按功能查找命令。
+Dashboard 的「功能与指令」可同时搜索功能说明和分组命令。终端控制顶部可查看机器人、当前供应商和模型。
 
 ### 帮助菜单
 

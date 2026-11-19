@@ -19,7 +19,7 @@ async function installApiMock(page) {
     let parsedBody = null
     try { parsedBody = request.postData() ? JSON.parse(request.postData()) : null } catch { /* non-critical: mock handlers tolerate non-JSON bodies */ }
     try {
-      const response = apiMock(method, pathname, { searchParams: url.searchParams, body: parsedBody })
+      const response = apiMock(method, pathname, { searchParams: url.searchParams, body: parsedBody, access: !!request.headers().authorization, admin: !!request.headers()['x-admin-token'] })
       const isWrite = method !== 'GET'
       if (isWrite) await new Promise(resolve => setTimeout(resolve, 80))
       await request.respond(response)
@@ -79,23 +79,11 @@ async function waitForVisibleSelector(page, selector, timeout = 8000) {
 
 /** Clicks the visible element whose text matches the requested label. */
 async function clickText(page, text, selector = 'button,a') {
-  await page.waitForFunction((value, sel) => {
-    return [...document.querySelectorAll(sel)].some(el => {
-      const rect = el.getBoundingClientRect()
-      return rect.width > 0 && rect.height > 0 && el.textContent.includes(value)
-    })
-  }, { timeout: 8000 }, text, selector)
-  const rect = await page.evaluate((value, sel) => {
-    const el = [...document.querySelectorAll(sel)].find(item => {
-      const box = item.getBoundingClientRect()
-      return box.width > 0 && box.height > 0 && item.textContent.includes(value)
-    })
-    el.scrollIntoView({ block: 'center', inline: 'center' })
-    const scrolledBox = el.getBoundingClientRect()
-    return { x: scrolledBox.left + scrolledBox.width / 2, y: scrolledBox.top + scrolledBox.height / 2 }
-  }, text, selector)
-  await new Promise(resolve => setTimeout(resolve, 80))
-  await page.mouse.click(rect.x, rect.y)
+  const handle = await page.waitForFunction((value, sel) =>
+    [...document.querySelectorAll(sel)].find(el =>
+      el.getClientRects().length && !el.disabled && el.textContent.includes(value)), { timeout: 8000 }, text, selector)
+  try { await handle.asElement().asLocator().setTimeout(8000).click() }
+  finally { await handle.dispose() }
 }
 
 /** Clicks the first visible element matching a selector. */
@@ -115,22 +103,30 @@ async function clickVisibleSelector(page, selector) {
   await page.mouse.click(rect.x, rect.y)
 }
 
+/** 等待 Vue 收到断点切换，再读取抽屉的真实展开状态。 */
+async function waitForNavBreakpoint(page) {
+  await page.waitForFunction(() => {
+    const bar = document.querySelector('.dashboard-sidebar')
+    return bar && bar.hasAttribute('data-mobile') === matchMedia('(max-width: 760px)').matches
+  })
+}
+
 /** Expands the Dashboard sidebar when it is collapsed. */
 async function ensureSidebarExpanded(page) {
-  const hasExpandedNav = await page.$('.sidebar-nav .sidebar-item')
-  if (hasExpandedNav) return
+  await waitForNavBreakpoint(page)
+  if (await page.$eval('.sidebar-toggle', button => button.getAttribute('aria-expanded') === 'true')) return
   await page.waitForSelector('.sidebar-toggle', { timeout: 8000 })
   await page.click('.sidebar-toggle')
-  await page.waitForSelector('.sidebar-nav .sidebar-item', { timeout: 8000 })
+  await page.waitForSelector('.sidebar-toggle[aria-expanded="true"]', { timeout: 8000 })
 }
 
 /** Collapses the Dashboard sidebar when it is expanded. */
 async function ensureSidebarCollapsed(page) {
-  const hasExpandedNav = await page.$('.sidebar-nav .sidebar-item')
-  if (!hasExpandedNav) return
+  await waitForNavBreakpoint(page)
+  if (await page.$eval('.sidebar-toggle', button => button.getAttribute('aria-expanded') === 'false')) return
   await page.waitForSelector('.sidebar-toggle', { timeout: 8000 })
   await page.click('.sidebar-toggle')
-  await page.waitForFunction(() => !document.querySelector('.sidebar-nav .sidebar-item'), { timeout: 8000 })
+  await page.waitForSelector('.sidebar-toggle[aria-expanded="false"]', { timeout: 8000 })
 }
 
 /** Opens a Dashboard sidebar tab by its label. */
@@ -185,22 +181,13 @@ async function clickSidebarTabExpectNavigation(page, label, pathname) {
 /** Clicks a named button within a card identified by its heading. */
 async function clickButtonInCard(page, cardHeading, buttonText) {
   await page.waitForFunction((heading, text) => {
-    const cards = [...document.querySelectorAll('.card')]
-    return cards.some(card =>
-      card.innerText.includes(heading) &&
-      [...card.querySelectorAll('button')].some(button => button.textContent.includes(text))
-    )
-  }, { timeout: 8000 }, cardHeading, buttonText)
-  const clicked = await page.evaluate((heading, text) => {
-    const card = [...document.querySelectorAll('.card')].find(item => item.innerText.includes(heading))
-    if (!card) return false
-    const button = [...card.querySelectorAll('button')].find(item => item.textContent.includes(text))
-    if (!button) return false
+    const button = [...document.querySelectorAll('.card button')].find(item =>
+      item.textContent.includes(text) && item.closest('.card')?.innerText.includes(heading))
+    if (!button || button.disabled || !button.getClientRects().length) return false
     button.scrollIntoView({ block: 'center', inline: 'center' })
     button.click()
     return true
-  }, cardHeading, buttonText)
-  if (!clicked) throw new Error(`button not found: ${cardHeading} / ${buttonText}`)
+  }, { timeout: 8000 }, cardHeading, buttonText)
 }
 
 /** Clicks a named button in the block containing the expected text. */

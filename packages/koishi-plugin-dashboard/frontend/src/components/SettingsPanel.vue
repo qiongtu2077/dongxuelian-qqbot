@@ -1,5 +1,5 @@
 <template>
-  <div v-if="!isElectronDeployer">
+  <div v-if="!isElectronDeployer" class="security-forms">
     <div class="card">
       <h2>访问密码</h2>
       <div style="color:var(--text2);font-size:13px;margin-bottom:8px">登录 Dashboard 所需的密码</div>

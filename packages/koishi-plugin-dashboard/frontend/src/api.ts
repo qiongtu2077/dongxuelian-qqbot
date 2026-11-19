@@ -1,3 +1,4 @@
+import { sourcePaused } from './shared/session'
 const BASE = '/dashboard/api'
 const SERVER_TOKEN_KEY = 'dashboard_server_token'
 const LEGACY_ADMIN_TOKEN_KEY = 'dashboard_admin_token'
@@ -54,6 +55,7 @@ function clearDashboardSession(reason = '登录已失效，请重新登录') {
 
 function headers(admin = false): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (sourcePaused()) h['X-Dashboard-Password-Only'] = '1'
   const token = localStorage.getItem('dashboard_token')
   if (token) h['Authorization'] = 'Bearer ' + token
   if (admin) {
@@ -159,6 +161,17 @@ async function postPlain<T = unknown>(path: string, data: unknown): Promise<ApiR
     body: JSON.stringify(data),
   })
   return { ok: res.ok, data: await res.json() }
+}
+
+export interface DashboardSession {
+  access: boolean
+  admin: boolean
+  mode: 'source' | 'local' | 'password' | 'anonymous'
+}
+
+/** 自检只读取权限，退出抑制通过当前标签页的请求头生效。 */
+export async function readDashboardSession(signal?: AbortSignal) {
+  return get<DashboardSession>('/auth/session', true, 5000, signal)
 }
 
 export async function login(password: string): Promise<ApiResult<ApiMessageData>> { return postPlain<ApiMessageData>('/login', { password }) }

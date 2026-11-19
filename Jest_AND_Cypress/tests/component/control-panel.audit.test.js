@@ -4,6 +4,7 @@ import * as dashboardApi from '../../../packages/koishi-plugin-dashboard/fronten
 
 jest.mock('../../../packages/koishi-plugin-dashboard/frontend/src/api', () => ({
   botStatus: jest.fn(),
+  fetchStatus: jest.fn(),
   startBot: jest.fn(),
   stopBot: jest.fn(),
   fetchMaintenance: jest.fn(),
@@ -19,6 +20,7 @@ jest.mock('../../../packages/koishi-plugin-dashboard/frontend/src/api', () => ({
 
 // 为组件挂载阶段提供只读接口响应。
 function arrangeControlResponses() {
+  dashboardApi.fetchStatus.mockResolvedValue({ ok: true, data: { provider: 'example', model: 'sample-text' } })
   dashboardApi.botStatus.mockResolvedValue({ ok: true, data: { running: false, workers: 0 } })
   dashboardApi.fetchMaintenance.mockResolvedValue({ ok: true, data: { enabled: false } })
   dashboardApi.fetchSSHInfo.mockResolvedValue({ ok: true, data: { host: '', user: 'root' } })
@@ -31,6 +33,21 @@ describe('ControlPanel 当前按钮行为审查', () => {
   beforeEach(() => {
     jest.clearAllMocks()
     arrangeControlResponses()
+  })
+
+  test('系统状态嵌入终端，模型请求独立于引擎状态且只发一次', async () => {
+    const wrapper = mount(ControlPanel, { global: { provide: { showAdminDialog: jest.fn() } } })
+    await flushPromises()
+    expect(wrapper.get('#system-status').text()).toContain('sample-text')
+    expect(dashboardApi.fetchStatus).toHaveBeenCalledTimes(1)
+    expect(dashboardApi.botStatus).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+    dashboardApi.fetchStatus.mockRejectedValueOnce(new Error('offline'))
+    const fallback = mount(ControlPanel, { global: { provide: { showAdminDialog: jest.fn() } } })
+    await flushPromises()
+    expect(fallback.get('#system-status').text()).toContain('暂不可用')
+    expect(fallback.findAll('button').find(item => item.text().includes('启动引擎')).element.disabled).toBe(false)
+    fallback.unmount()
   })
 
   test('删除诊断启动入口且保留唯一正常启动按钮', async () => {

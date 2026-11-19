@@ -1,6 +1,7 @@
 'use strict'
 
 import type { IncomingMessage, ServerResponse } from 'http'
+import { hasTrustedDashboardAccess } from '../trusted-access'
 
 const fs = require('fs') as typeof import('fs')
 const {
@@ -20,6 +21,7 @@ const {
   createToken,
   createAdminToken,
   validateToken,
+  validateAdminToken,
   requireAdmin,
   getResetToken,
   generateResetToken,
@@ -190,7 +192,7 @@ function handleResetPassword(req: IncomingMessage, res: ServerResponse): void {
 function authMiddleware(req: IncomingMessage, res: ServerResponse, pathname: string): boolean {
   const isPublicGalleryImage = pathname.startsWith('/dashboard/api/gallery/image/') && req.method === 'GET'
   const isPublicReleaseStatus = pathname === '/dashboard/api/release-status' && req.method === 'GET'
-  if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isPublicReleaseStatus && !isLocalAuthBypass(req)) {
+  if (pathname.startsWith('/dashboard/api/') && !isPublicGalleryImage && !isPublicReleaseStatus && !isLocalAuthBypass(req) && !hasTrustedDashboardAccess(req, pathname)) {
     const authHeader = String(req.headers['authorization'] || '')
     const token = authHeader.replace(/^Bearer\s+/i, '')
     if (!validateToken(token)) {
@@ -202,7 +204,20 @@ function authMiddleware(req: IncomingMessage, res: ServerResponse, pathname: str
   return true
 }
 
+/** 返回实际请求已经具有的权限，不签发凭据，不泄露配置或客户地址。 */
+function handleSession(req: IncomingMessage, res: ServerResponse): void {
+  res.setHeader('Cache-Control', 'private, no-store')
+  const local = isLocalAuthBypass(req)
+  const source = hasTrustedDashboardAccess(req, '/dashboard/api/auth/session')
+  const token = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+  const access = !!(local || source || validateToken(token))
+  const admin = access && !!(local || source || validateAdminToken(req.headers['x-admin-token']))
+  const mode = local ? 'local' : source ? 'source' : access ? 'password' : 'anonymous'
+  json(res, { ok: true, access, admin, mode })
+}
+
 const routes: Record<string, RouteHandler> = {
+  'GET /dashboard/api/auth/session': handleSession,
   'POST /dashboard/api/login': handleLogin,
   'POST /dashboard/api/admin/verify': handleAdminVerify,
   'PUT /dashboard/api/auth/password': handleChangePassword,

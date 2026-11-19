@@ -3,6 +3,7 @@ const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
 const crypto = require('crypto') as typeof import('crypto')
 import type { IncomingMessage, ServerResponse } from 'http'
+import { hasTrustedDashboardAccess, trustedOrigin } from './trusted-access'
 const bcrypt = require('bcryptjs') as BcryptLike
 const { json, log, getRemoteAddress, isLoopbackAddress, getErrorMessage } = require('./utils') as typeof import('./utils')
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE, RESET_TOKEN_FILE, SESSION_SECRET_FILE, PASSWORD, ADMIN_PASSWORD, isGlobalLocalMode } = require('./paths')
@@ -271,6 +272,8 @@ function isSameOriginRequest(req: IncomingMessage): boolean {
   if (!host) return false
   try {
     const parsed = new URL(origin)
+    const canonical = trustedOrigin(req)
+    if (canonical) return origin === canonical
     const socket = req.socket as MaybeEncryptedSocket
     const connection = req.connection as MaybeEncryptedSocket
     const protocol = socket?.encrypted || connection?.encrypted ? 'https:' : 'http:'
@@ -314,7 +317,7 @@ function isLocalAuthBypass(req: IncomingMessage | null | undefined): boolean {
 
 // Requires a valid admin token unless local trusted bypass is active.
 function requireAdmin(req: IncomingMessage, res: ServerResponse): boolean {
-  if (isLocalAuthBypass(req)) return true
+  if (isLocalAuthBypass(req) || hasTrustedDashboardAccess(req, new URL(req.url || '/', 'http://localhost').pathname)) return true
   const token = (req.headers['x-admin-token'] as string || '').trim()
   if (!token || !validateAdminToken(token)) {
     json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403)
@@ -323,16 +326,8 @@ function requireAdmin(req: IncomingMessage, res: ServerResponse): boolean {
   return true
 }
 
-// Requires a valid admin token for destructive admin-only operations.
-function requireStrictAdmin(req: IncomingMessage, res: ServerResponse): boolean {
-  if (isLocalAuthBypass(req)) return true
-  const token = (req.headers['x-admin-token'] as string || '').trim()
-  if (!token || !validateAdminToken(token)) {
-    json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403)
-    return false
-  }
-  return true
-}
+// 部署和其他严格管理员入口复用同一道门禁，保留已有调用名。
+const requireStrictAdmin = requireAdmin
 
 // Checks whether an IP is currently login/admin locked out.
 function isLoginRateLimited(ip: string): boolean {

@@ -17,7 +17,7 @@ const {
   getOptionalErrorMessage: getLegacyErrorMessage,
 } = require('../utils') as typeof import('../utils')
 const { KOISHI_DIR, DATA_DIR, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, PORT, toProjectRel } = require('../paths') as typeof import('../paths')
-const { requireAdmin } = require('../auth') as typeof import('../auth')
+const { requireAdmin, requireStrictAdmin } = require('../auth') as typeof import('../auth')
 const { getCommandInfo, getLocalToolCommand, checkPortState } = require('../tools') as typeof import('../tools')
 const { detectNapcatInstallation, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort } = require('../napcat') as typeof import('../napcat')
 const { buildFrontendDist } = require('../frontend') as typeof import('../frontend')
@@ -286,14 +286,6 @@ function runSafeDeployCommands(task: RemoteDeployTask, commands: Array<{ stage: 
     })
   }
   runNext()
-}
-
-function requireStrictAdmin(req: IncomingMessage, res: ServerResponse): boolean {
-  const { isLocalAuthBypass, validateAdminToken } = require('../auth') as typeof import('../auth')
-  if (isLocalAuthBypass(req)) return true
-  const token = String(req.headers['x-admin-token'] || '').trim()
-  if (!token || !validateAdminToken(token)) { json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403); return false }
-  return true
 }
 
 function stopKoishiProcesses(): unknown {

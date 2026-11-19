@@ -264,6 +264,7 @@ async function testTaskLifecycle(followAgentTask) {
 async function main() {
   const restoreLoader = installTypeScriptLoader()
   const calls = []
+  global.sessionStorage = createLocalStorage()
   global.localStorage = createLocalStorage()
   try {
     const client = require(CLIENT_PATH)
@@ -292,6 +293,7 @@ async function main() {
   } finally {
     restoreLoader()
     delete global.fetch
+    delete global.sessionStorage
     delete global.localStorage
   }
 }

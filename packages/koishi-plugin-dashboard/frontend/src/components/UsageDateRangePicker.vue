@@ -148,12 +148,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .date-field { min-width: 0; display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; }
 .date-field.active { border-color: var(--accent); background: var(--accentDim); }
 .date-field span { font-size: 12px; color: var(--text3); }
-.date-field input { min-width: 0; max-width: 100%; width: 100%; color: var(--text); color-scheme: dark; background: transparent; border: 0; }
-:global([data-theme="light"] .range-popover input[type="date"]),
-:global([data-theme="forest-green"] .range-popover input[type="date"]),
-:global([data-theme="monet-purple"] .range-popover input[type="date"]),
-:global([data-theme="sakura-pink"] .range-popover input[type="date"]),
-:global([data-theme="ocean-cyan"] .range-popover input[type="date"]) { color-scheme: light; }
+.date-field input { min-width: 0; max-width: 100%; width: 100%; color: var(--text); color-scheme: inherit; background: transparent; border: 0; }
 .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
 .actions button { flex: 1; }
 .range-error { color: var(--danger); font-size: 12px; }
@@ -165,7 +160,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); ou
 .weekday { text-align: center; color: var(--text3); font-size: 12px; padding: 5px 0; }
 .calendar-grid .outside { color: var(--text3); opacity: .45; }
 .calendar-grid .inside { color: var(--text2); background: var(--accentDim); }
-.calendar-grid .endpoint { color: var(--btnText, #111); background: var(--accent); font-weight: 800; opacity: 1; }
+.calendar-grid .endpoint { color: var(--on-accent); background: var(--accent); font-weight: 800; opacity: 1; }
 @media (max-width: 540px) {
   .range-editor { grid-template-columns: 1fr; }
   .date-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }

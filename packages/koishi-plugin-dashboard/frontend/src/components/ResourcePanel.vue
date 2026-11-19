@@ -2,11 +2,10 @@
   <div class="resource-panel">
     <div class="resource-toolbar">
       <div>
-        <h2>资源中心</h2>
         <div class="resource-subline">资源总览更新于 {{ lastRefreshLabel }}；页面会自动更新</div>
       </div>
       <div class="resource-actions">
-        <button class="btn btn-sm" title="立即读取最新总览、任务、事件和内存数据；页面本身也会自动更新" :disabled="loading" @click="refreshAll">立即刷新</button>
+        <button class="btn btn-sm btn-primary" title="立即读取最新总览、任务、事件和内存数据；页面本身也会自动更新" :disabled="loading" @click="refreshAll">立即刷新</button>
         <button class="btn btn-sm" @click="toggleMaintenance()">{{ maintenanceLabel }}</button>
       </div>
     </div>
@@ -368,8 +367,7 @@
         <div v-else-if="!events.length" class="resource-empty">暂无事件</div>
       </div>
     </section>
-    <div v-if="cancelFailure" class="admin-modal-backdrop" @keydown.esc="cancelFailure = null">
-      <div class="admin-modal-card resource-cancel-dialog" role="alertdialog" aria-modal="true" aria-labelledby="resource-cancel-title" aria-describedby="resource-cancel-reason">
+    <ConsoleDialog v-if="cancelFailure" label="取消任务失败" panel-class="admin-modal-card resource-cancel-dialog" alert @dismiss="cancelFailure = null">
         <h2 id="resource-cancel-title">取消任务失败</h2>
         <strong>{{ cancelFailure.taskName }}</strong>
         <p id="resource-cancel-reason">{{ cancelFailure.reason }}</p>
@@ -379,12 +377,12 @@
           <pre>{{ cancelFailure.rawError }}</pre>
         </details>
         <div class="gate-actions"><button ref="cancelFailureClose" class="btn" @click="cancelFailure = null">知道了</button></div>
-      </div>
-    </div>
+    </ConsoleDialog>
   </div>
 </template>
 
 <script lang="ts">
+import ConsoleDialog from './ConsoleDialog.vue'
 import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import {
   cancelResourceTask,
@@ -408,7 +406,7 @@ type ActiveRead = { key: string; controller: AbortController; promise: Promise<v
 
 export default {
   name: 'ResourcePanel',
-  components: { ResourceDiagnosticsPanel, ReportAnalysisDetail },
+  components: { ConsoleDialog, ResourceDiagnosticsPanel, ReportAnalysisDetail },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
     const { groupNames, groupLabel, refreshGroupNames } = useGroupNames()
@@ -1251,8 +1249,8 @@ export default {
 }
 
 .readable-ok { color: var(--success) !important; }
-.readable-info { color: var(--accent) !important; }
-.readable-warn { color: var(--accent) !important; }
+.readable-info { color: var(--info) !important; }
+.readable-warn { color: var(--warning) !important; }
 .readable-danger { color: var(--danger) !important; }
 .readable-off { color: var(--text3) !important; }
 
@@ -1679,5 +1677,43 @@ export default {
     align-items: flex-start;
     flex-direction: column;
   }
+}
+/* --- 总览、实时走势与移动任务行 --- */
+.resource-grid { grid-template-columns: minmax(0, 1.65fr) minmax(240px, 1fr); }
+.resource-grid > .card { margin:0; }
+.resource-summary,.resource-disk-card { grid-column:1/-1; }
+.resource-kpis { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.resource-kpi { background:var(--surface); border-color:var(--border); }
+.resource-summary-main { display:grid; grid-template-columns:minmax(0,1fr) minmax(180px,.6fr); gap:8px 18px; }
+.resource-summary-main > h2,.resource-kpis { grid-column:1/-1; }
+.resource-mode-switch,.resource-running { margin:0; min-width:0; }
+.memory-chart-card { grid-column:1; grid-row:2; min-height:0; }
+.resource-worker-card { grid-column:2; grid-row:2; }
+.resource-media-card,.resource-precompute-card { grid-column:auto; }
+.resource-toolbar { align-items:center; }
+.resource-table th { background:var(--surface); }
+@media(max-width:1000px) {
+  .resource-grid { grid-template-columns:minmax(0,1fr); }
+  .resource-grid > .card { grid-column:auto; grid-row:auto; }
+  .resource-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media(max-width:760px) {
+  .resource-toolbar { align-items:flex-start; }
+  .resource-summary-main { display:block; }
+  .resource-mode-switch { margin-bottom:12px; }
+  .resource-table-wrap { overflow:visible; }
+  .resource-table,.resource-table tbody { display:block; min-width:0; }
+  .resource-table thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+  .resource-table .resource-task-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 10px; padding:12px 0; border-top:1px solid var(--border); }
+  .resource-table td { min-width:0; display:block; padding:0; border:0; }
+  .resource-task-row > td:first-child { grid-column:2;grid-row:1; text-align:right; }
+  .resource-task-row > td:nth-child(2) { grid-row:2; color:var(--text2); }
+  .resource-task-row > .resource-task-content { grid-column:1;grid-row:1; }
+  .resource-task-row > .resource-task-time { grid-row:2; text-align:right; white-space:normal; }
+  .resource-task-row > td:last-child,.resource-task-detail-row { grid-column:1/-1; display:block; }
+  .resource-task-meta,.disk-summary,.disk-list { grid-template-columns:minmax(0,1fr); }
+  .resource-events { max-height:320px; }
+  .resource-task-actions { margin-top:3px; }
+  .resource-task-actions .btn { min-height:44px; }
 }
 </style>

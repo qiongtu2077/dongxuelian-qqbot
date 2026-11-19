@@ -1,52 +1,48 @@
 <template>
-  <div>
-    <div class="card">
-      <h2>指令速查</h2>
-      <input v-model="search" placeholder="搜索指令..." style="width:100%" />
+  <section aria-labelledby="command-directory">
+    <h2 id="command-directory" class="section-heading" tabindex="-1">指令速查</h2>
+    <p v-if="loading" class="empty">正在读取指令…</p>
+    <p v-else-if="failed" class="msg err" role="alert">指令列表暂不可用 <button class="btn btn-sm" @click="loadCommands">重试</button></p>
+    <p v-else-if="!filtered.length" class="empty">无匹配指令</p>
+    <div v-else class="command-groups">
+      <section v-for="group in filtered" :key="group.category" class="card">
+        <h3>{{ group.category }}</h3>
+        <dl class="command-definitions">
+          <div v-for="item in group.commands" :key="item.cmd"><dt><code>{{ item.cmd }}</code></dt><dd>{{ item.desc }}</dd></div>
+        </dl>
+      </section>
     </div>
-
-    <div v-for="group in filtered" :key="group.category" class="card">
-      <h2>{{ group.category }}</h2>
-      <div v-for="c in group.commands" :key="c.cmd" class="grp">
-        <div class="grp-name" style="font-family:monospace;color:var(--accent)">{{ c.cmd }}</div>
-        <div class="grp-desc">{{ c.desc }}</div>
-      </div>
-    </div>
-
-    <div v-if="!filtered.length" class="card" style="color:var(--text3);text-align:center">
-      无匹配结果
-    </div>
-  </div>
+  </section>
 </template>
 
-<script lang="ts">
-import { ref, computed, onMounted } from 'vue'
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
 import { fetchCommands } from '../api'
 import type { CommandGroup } from '../types'
 
-export default {
-  name: 'CommandList',
-  setup() {
-    const groups = ref<CommandGroup[]>([])
-    const search = ref('')
+const props = defineProps<{ query: string }>()
+const groups = ref<CommandGroup[]>([])
+const loading = ref(true)
+const failed = ref(false)
+const filtered = computed(() => {
+  const term = props.query.trim().toLowerCase()
+  if (!term) return groups.value
+  return groups.value.map(group => ({
+    category: group.category,
+    commands: group.commands.filter(item => item.cmd.toLowerCase().includes(term) || item.desc.toLowerCase().includes(term))
+  })).filter(group => group.commands.length)
+})
 
-    const filtered = computed(() => {
-      const q = search.value.trim().toLowerCase()
-      if (!q) return groups.value
-      return groups.value.map(g => ({
-        category: g.category,
-        commands: g.commands.filter(c =>
-          c.cmd.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q)
-        ),
-      })).filter(g => g.commands.length > 0)
-    })
-
-    onMounted(async () => {
-      const res = await fetchCommands()
-      if (res.ok && res.data) groups.value = res.data
-    })
-
-    return { groups, search, filtered }
-  }
+/** 各组保持服务端顺序，显式失败可单独重试。 */
+async function loadCommands() {
+  loading.value = true
+  try {
+    const response = await fetchCommands()
+    failed.value = !response.ok || !response.data
+    if (response.ok && response.data) groups.value = response.data
+  } catch { failed.value = true }
+  finally { loading.value = false }
 }
+
+onMounted(loadCommands)
 </script>

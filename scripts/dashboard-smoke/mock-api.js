@@ -314,6 +314,7 @@ function apiMock(method, pathname, body) {
   const ok = data => jsonResponse(data)
   const writeOk = message => ok({ ok: true, message })
 
+  if (method === 'GET' && pathname === '/auth/session') return ok({ ok: true, access: !!body.access, admin: !!body.admin, mode: body.access ? 'password' : 'anonymous' })
   if (method === 'GET' && pathname === '/status') return ok({ provider: 'deepseek', model: 'deepseek-chat' })
   if (method === 'GET' && pathname === '/providers') return ok({
     deepseek: { name: 'DeepSeek', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] },

@@ -22,6 +22,7 @@ async function main() {
 
   const vite = LIVE_URL ? null : startVite()
   let browser = null
+  let testPage = null
   const consoleErrors = []
   const responseErrors = []
   let expectedCancelConflicts = 0
@@ -33,6 +34,7 @@ async function main() {
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     })
     const page = await browser.newPage()
+    testPage = page
     page.on('response', response => {
       const status = response.status()
       if (status < 400) return
@@ -68,9 +70,17 @@ async function main() {
     console.log(LIVE_URL ? 'dashboard live click smoke passed' : 'dashboard click smoke passed')
   } catch (error) {
     if (browser) {
-      const pages = await browser.pages()
-      const page = pages[pages.length - 1]
+      const page = testPage
       if (page) {
+        const layout = await page.evaluate(() => ({
+          width: window.innerWidth, documentWidth: document.documentElement.scrollWidth,
+          dialog: document.querySelector('dialog[open]')?.getAttribute('aria-label'),
+          title: document.querySelector('main h1')?.textContent,
+          picker: document.querySelector('.range-popover')?.getBoundingClientRect().toJSON(),
+          overflow: [...document.querySelectorAll('main *')].filter(element => element.getBoundingClientRect().right > innerWidth + 1)
+            .slice(0, 14).map(element => element.tagName + '.' + element.className),
+        }))
+        console.error('Browser layout at failure:', JSON.stringify(layout))
         const out = path.join(ROOT, 'tmp', 'dashboard-click-smoke-failure.png')
         fs.mkdirSync(path.dirname(out), { recursive: true })
         await page.screenshot({ path: out, fullPage: true }).catch(() => {})

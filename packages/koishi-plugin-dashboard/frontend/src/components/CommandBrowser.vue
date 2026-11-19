@@ -1,95 +1,75 @@
 <template>
-  <div>
-    <div class="card">
-      <h2>功能介绍</h2>
-      <p style="color:var(--text2);font-size:14px;margin-bottom:12px">Bot 的各个功能模块，点击跳转查看详情</p>
-      <input v-model="search" placeholder="搜索功能..." style="width:100%" />
+  <div class="directory-page">
+    <div class="directory-tools">
+      <label class="search-field"><span>搜索功能与指令</span><input v-model="search" type="search" placeholder="输入功能名、命令或关键词" /></label>
+      <button type="button" class="btn btn-ghost" @click="focusSection('command-directory')">跳到指令列表</button>
     </div>
-
-    <div v-if="search && !filtered.length" class="card" style="color:var(--text3);text-align:center">
-      无匹配结果
-    </div>
-
-    <div v-for="f in filtered" :key="f.id" :id="'feat-' + f.id" class="card feature-card" :style="{borderLeft: '3px solid ' + (activeId === f.id ? 'var(--accent)' : 'var(--border)')}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <h2 style="color:var(--accent);margin-bottom:4px">{{ f.title }}</h2>
-        <span v-if="activeId === f.id" style="font-size:12px;color:var(--accent)">▼ 展开中</span>
-      </div>
-      <div style="color:var(--text2);font-size:14px;margin-bottom:12px">{{ f.summary }}</div>
-
-      <div v-if="activeId === f.id" style="animation:detailSlideIn .2s ease both">
-        <div class="detail-box">
-          <div class="detail-label">功能介绍</div>
-          <div class="detail-text">{{ f.detail }}</div>
-        </div>
-        <div class="detail-box">
-          <div class="detail-label">使用方法</div>
-          <pre class="usage">{{ f.usage }}</pre>
-        </div>
-        <div v-if="f.related && f.related.length" class="detail-box">
-          <div class="detail-label">关联功能</div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <span v-for="rid in f.related" :key="rid" class="tag" style="cursor:pointer" @click="scrollTo(rid)">{{ getTitle(rid) }}</span>
+    <section aria-labelledby="feature-directory">
+      <h2 id="feature-directory" class="section-heading" tabindex="-1">功能介绍</h2>
+      <p v-if="loading" class="empty">正在读取功能…</p>
+      <p v-else-if="failed" class="msg err" role="alert">功能目录暂不可用 <button class="btn btn-sm" @click="loadFeatures">重试</button></p>
+      <p v-else-if="!filtered.length" class="empty">无匹配功能</p>
+      <div v-else class="feature-grid">
+        <article v-for="f in filtered" :id="'feat-' + f.id" :key="f.id" class="card feature-card" :class="{ expanded: activeId === f.id }">
+          <h3>{{ f.title }}</h3><p class="feature-summary">{{ f.summary }}</p>
+          <button type="button" class="btn btn-sm btn-ghost" :aria-expanded="activeId === f.id" @click="activeId = activeId === f.id ? '' : f.id">{{ activeId === f.id ? '收起介绍' : '展开介绍' }}</button>
+          <div v-if="activeId === f.id" class="feature-details">
+            <p>{{ f.detail }}</p>
+            <template v-if="f.usage"><h4>使用方法</h4><pre class="usage">{{ f.usage }}</pre></template>
+            <template v-if="f.related?.length"><h4>关联功能</h4><div class="related-features">
+              <button v-for="id in f.related" :key="id" class="btn btn-sm" @click="openRelated(id)">{{ features.find(item => item.id === id)?.title || id }}</button>
+            </div></template>
           </div>
-        </div>
+        </article>
       </div>
-
-      <button v-if="activeId !== f.id" class="btn btn-sm" style="margin-top:8px" @click="activeId = f.id">展开介绍</button>
-    </div>
+    </section>
+    <CommandList :query="search" />
   </div>
 </template>
 
-<script lang="ts">
-import { ref, computed, onMounted } from 'vue'
+<script setup lang="ts">
+import { computed, nextTick, onMounted, ref } from 'vue'
 import { fetchFeatures } from '../api'
 import type { FeatureInfo } from '../types'
+import CommandList from './CommandList.vue'
 
-export default {
-  name: 'CommandBrowser',
-  setup() {
-    const features = ref<FeatureInfo[]>([])
-    const search = ref('')
-    const activeId = ref<string | null>(null)
+const features = ref<FeatureInfo[]>([])
+const search = ref('')
+const activeId = ref('')
+const loading = ref(true)
+const failed = ref(false)
+const filtered = computed(() => {
+  const term = search.value.trim().toLowerCase()
+  return features.value.filter(item => [item.title, item.summary, item.detail].some(text => text.toLowerCase().includes(term)))
+})
 
-    const filtered = computed(() => {
-      const q = search.value.trim().toLowerCase()
-      if (!q) return features.value
-      return features.value.filter(f =>
-        f.title.toLowerCase().includes(q) ||
-        f.summary.toLowerCase().includes(q) ||
-        f.detail.toLowerCase().includes(q)
-      )
-    })
-
-    function getTitle(id: string) {
-      const f = features.value.find(x => x.id === id)
-      return f ? f.title : id
-    }
-
-    function scrollTo(id: string) {
-      search.value = ''
-      activeId.value = id
-      setTimeout(() => {
-        const el = document.getElementById('feat-' + id)
-        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
-      }, 100)
-    }
-
-    onMounted(async () => {
-      const res = await fetchFeatures()
-      if (res.ok && res.data) features.value = res.data
-    })
-
-    return { features, search, filtered, activeId, getTitle, scrollTo }
-  }
+/** 只重试功能来源，指令列表独立加载及筛选。 */
+async function loadFeatures() {
+  loading.value = true
+  try {
+    const response = await fetchFeatures()
+    failed.value = !response.ok || !response.data
+    if (response.ok && response.data) features.value = response.data
+  } catch { failed.value = true }
+  finally { loading.value = false }
 }
-</script>
 
-<style>
-.feature-card { transition: border-color .2s }
-.detail-box { margin-top: 12px; padding: 12px 16px; background: var(--input); border-radius: 8px }
-.detail-label { font-size: 12px; font-weight: 700; color: var(--text3); text-transform: uppercase; margin-bottom: 6px }
-.detail-text { font-size: 14px; line-height: 1.7; color: var(--text) }
-.usage { font-size: 13px; line-height: 1.8; color: var(--accent); font-family: monospace; white-space: pre-wrap; margin: 0 }
-@keyframes detailSlideIn { from { opacity: 0; transform: translateY(-4px) } to { opacity: 1; transform: translateY(0) } }
-</style>
+/** 导航到标题，并为键盘用户同步焦点。 */
+function focusSection(id: string) {
+  const target = document.getElementById(id)
+  target?.focus({ preventScroll: true })
+  target?.scrollIntoView({ block: 'start' })
+}
+
+/** 清掉可能隐藏关联卡片的筛选，再展开并定位原编号。 */
+async function openRelated(id: string) {
+  search.value = ''
+  activeId.value = id
+  await nextTick()
+  const target = document.getElementById('feat-' + id)
+  target?.querySelector('button')?.focus({ preventScroll: true })
+  target?.scrollIntoView({ block: 'start' })
+}
+
+onMounted(loadFeatures)
+</script>

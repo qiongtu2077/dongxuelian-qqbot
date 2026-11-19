@@ -105,7 +105,7 @@ async function verifyDeployPanel(page) {
   await clickText(page, '生成部署预览')
   await waitForText(page, '预览已冻结')
   await waitForText(page, 'new-release')
-  await clickSidebarTab(page, '功能地图')
+  await clickSidebarTab(page, '功能与指令')
   await waitForText(page, '功能介绍')
 }
 
@@ -429,7 +429,7 @@ async function verifyMobileSidebar(page) {
   await waitForText(page, '功能介绍')
   await ensureSidebarExpanded(page)
   await waitForVisibleSelector(page, '.sidebar-scrim')
-  await clickSidebarTab(page, '指令速查')
+  await clickSidebarTab(page, '功能与指令')
   await waitForText(page, '/help')
   await page.waitForFunction(() => !document.querySelector('.sidebar-nav .sidebar-item'), { timeout: 8000 })
   await ensureSidebarExpanded(page)
@@ -462,7 +462,7 @@ async function verifyProtocolSwitch(page) {
   }
   page.on('request', trackProtocolRequest)
   try {
-    for (const label of ['功能地图', '莲莲图集']) {
+    for (const label of ['功能与指令', '莲莲图集']) {
       await clickSidebarTab(page, label)
       if (await page.$('.protocol-switcher')) throw new Error(`Protocol controls must be absent from ${label}`)
     }
@@ -546,7 +546,7 @@ async function runClicks(page) {
   await verifyControlPanel(page)
   await verifyProtocolSwitch(page)
 
-  await clickSidebarTab(page, '指令速查')
+  await clickSidebarTab(page, '功能与指令')
   await waitForText(page, '/help')
 
   await clickSidebarTab(page, 'AI模型与API配置')
@@ -661,7 +661,7 @@ async function runClicks(page) {
   await clickSidebarTab(page, '日志中心')
   await waitForText(page, 'mock log line')
 
-  await clickSidebarTab(page, '系统状态')
+  await clickSidebarTab(page, '终端控制')
   await waitForText(page, '当前供应商')
   await waitForText(page, 'deepseek')
 

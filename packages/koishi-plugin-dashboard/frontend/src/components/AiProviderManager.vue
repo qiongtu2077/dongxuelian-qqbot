@@ -1,6 +1,6 @@
 <template>
   <section class="card connections" aria-labelledby="connections-title">
-    <div class="section-head"><div><p class="step-index">01</p><h3 id="connections-title">已导入的 API Key</h3><p>统一保存，文字、识图、语音识别和语音合成共用，无需重复导入。</p></div><button class="primary" :disabled="!!busyId" @click="openImport()">＋ 导入 API Key</button></div>
+    <div class="section-head"><div><h3 id="connections-title">已导入的 API Key</h3><p>统一保存，文字、识图、语音识别和语音合成共用，无需重复导入。</p></div><button class="primary" :disabled="!!busyId" @click="openImport()">＋ 导入 API Key</button></div>
     <div class="table-scroll"><table><thead><tr><th>供应商 / 名称</th><th>API Key</th><th>已配置能力 / 检测结果</th><th>模型</th><th>操作</th></tr></thead><tbody>
       <tr v-for="provider in connected" :key="provider.id">
         <td><strong>{{ provider.name }}</strong><small>{{ provider.note || (provider.custom ? '自定义供应商' : '内置供应商') }}</small></td>
@@ -20,7 +20,7 @@
     <p class="help">每个模型分别统计文字、识图、语音识别和语音合成，共 4 项能力。未检测表示尚无结果；检测失败可在「管理模型」中查看原因；已确认表示检测通过或已被内置能力目录收录。</p>
 
     <dialog ref="importDialog" aria-labelledby="import-key-title" @close="keyDraft = ''">
-      <form @submit.prevent="submitImport"><header><div><p class="step-index">NEW CONNECTION</p><h3 id="import-key-title">{{ editingId ? '替换 API Key' : '导入 API Key' }}</h3><p>导入一次，四项能力共用。</p></div><button type="button" class="close" aria-label="关闭导入窗口" @click="importDialog?.close()">×</button></header>
+      <form @submit.prevent="submitImport"><header><div><h3 id="import-key-title">{{ editingId ? '替换 API Key' : '导入 API Key' }}</h3><p>导入一次，四项能力共用。</p></div><button type="button" class="close" aria-label="关闭导入窗口" @click="importDialog?.close()">×</button></header>
       <div class="dialog-body"><label class="field">供应商<select v-model="selectedId" :disabled="!!editingId || !!busyId"><option value="custom-new">自定义 OpenAI-compatible 供应商</option><option v-for="provider in catalog" :key="provider.id" :value="provider.id">{{ provider.name }}{{ config.providers[provider.id]?.key.configured ? '（已导入）' : '' }}</option></select></label>
         <template v-if="isCustom"><div class="form-grid"><label class="field">连接名称<input v-model="customName" required maxlength="96" placeholder="例如：MistEO" :disabled="!!busyId" /></label><label class="field">备注（可选）<input v-model="customNote" maxlength="256" :disabled="!!busyId" /></label></div><label class="field">请求地址<input v-model="customURL" required type="url" maxlength="2048" placeholder="https://example.com/v1" :disabled="!!busyId" /></label><p class="help">填写 API 基础地址（如 /v1），不要填 /chat/completions。支持 HTTP 和 HTTPS；HTTP 明文传输密钥和内容。</p></template>
         <p v-if="selectedProvider && !selectedProvider.discoveryAvailable" class="help">{{ selectedProvider.discoveryReason }}；将保存 Key 并使用已验证的参考模型目录，调用权限由实际请求验证。</p>
@@ -31,7 +31,7 @@
     </dialog>
 
     <dialog ref="modelsDialog" class="wide" aria-labelledby="managed-models-title">
-      <header><div><p class="step-index">MODEL CAPABILITIES</p><h3 id="managed-models-title">{{ providerName(modelsId) }} · 管理模型</h3><p>四项能力复用已保存的 Key。</p></div><button class="close" aria-label="关闭模型窗口" @click="modelsDialog?.close()">×</button></header>
+      <header><div><h3 id="managed-models-title">{{ providerName(modelsId) }} · 管理模型</h3><p>四项能力复用已保存的 Key。</p></div><button class="close" aria-label="关闭模型窗口" @click="modelsDialog?.close()">×</button></header>
       <div class="dialog-body">
         <div class="tip">未检测：尚无结果；检测失败：本次请求未能确认能力，请查看下方原因；已确认：检测通过或已被内置能力目录收录。检测失败会保留已有配置能力；新模型需确认能力后才能加入优先级。</div>
         <p class="detection-summary" aria-live="polite">{{ capabilitySummaryText(managedSummary) }}</p>
@@ -46,7 +46,7 @@
       <footer><button @click="modelsDialog?.close()">关闭</button><button v-if="catalog.find(item => item.id === modelsId)?.custom" class="primary" :disabled="!!busyId" @click="scanModels(modelsId)">重新检测全部能力</button><button v-if="scanning" @click="stopScan = true">停止检测</button></footer>
     </dialog>
 
-    <dialog ref="deleteDialog" aria-labelledby="delete-key-title"><header><div><p class="step-index">REMOVE CONNECTION</p><h3 id="delete-key-title">删除 API Key？</h3></div><button class="close" aria-label="关闭删除窗口" @click="deleteDialog?.close()">×</button></header><div class="dialog-body"><p>将移除「{{ providerName(deleteId) }}」在本系统保存的 Key 和模型，四项能力均停止使用此连接。</p><div class="tip"><p v-for="cap in capabilityIds" :key="cap">{{ labels[cap] }}：移除 {{ config.priorities[cap].filter(step => step.provider === deleteId).length }} 个已保存优先级步骤<span v-if="config.priorities[cap].some(step => step.provider === deleteId) && !config.priorities[cap].some(step => step.provider !== deleteId)" class="danger"> · 删除后未配置模型</span></p></div><p class="help">不会注销供应商平台的 Key。历史用量保留，可重新导入连接。</p><p v-if="error" class="notice error" role="alert">{{ error }}</p></div><footer><button @click="deleteDialog?.close()">取消</button><button class="danger-button" :disabled="!!busyId" @click="confirmDelete">确认删除</button></footer></dialog>
+    <dialog ref="deleteDialog" aria-labelledby="delete-key-title"><header><div><h3 id="delete-key-title">删除 API Key？</h3></div><button class="close" aria-label="关闭删除窗口" @click="deleteDialog?.close()">×</button></header><div class="dialog-body"><p>将移除「{{ providerName(deleteId) }}」在本系统保存的 Key 和模型，四项能力均停止使用此连接。</p><div class="tip"><p v-for="cap in capabilityIds" :key="cap">{{ labels[cap] }}：移除 {{ config.priorities[cap].filter(step => step.provider === deleteId).length }} 个已保存优先级步骤<span v-if="config.priorities[cap].some(step => step.provider === deleteId) && !config.priorities[cap].some(step => step.provider !== deleteId)" class="danger"> · 删除后未配置模型</span></p></div><p class="help">不会注销供应商平台的 Key。历史用量保留，可重新导入连接。</p><p v-if="error" class="notice error" role="alert">{{ error }}</p></div><footer><button @click="deleteDialog?.close()">取消</button><button class="danger-button" :disabled="!!busyId" @click="confirmDelete">确认删除</button></footer></dialog>
   </section>
 </template>
 
@@ -166,4 +166,14 @@ dialog { margin:auto; width:min(640px,calc(100vw - 32px));max-height:calc(100dvh
 .provider-results { min-width:250px;max-width:340px;white-space:normal; }.check-counts { display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:6px;font-size:12px; }.confirmed { color:var(--success); }.failed { color:var(--danger); }.unverified { color:var(--text3); }.provider-results .failure-reason { color:var(--danger);line-height:1.6;overflow-wrap:anywhere; }
 .detection-summary { font-size:13px;line-height:1.8;color:var(--text2); }.failure-list { margin:0 0 18px;padding:12px 16px 12px 32px;background:color-mix(in srgb,var(--danger) 7%,var(--card));border:1px solid color-mix(in srgb,var(--danger) 25%,var(--border));border-radius:8px;color:var(--danger);font-size:12px;line-height:1.8;overflow-wrap:anywhere; }.failure-list li + li { margin-top:7px; }.capability-results { min-width:780px;table-layout:fixed; }.capability-result,.model-name { white-space:normal;overflow-wrap:anywhere;vertical-align:top; }.capability-result small { color:var(--text2);font-size:12px;line-height:1.7;margin-top:8px; }.notice.warning { color:var(--accent);background:var(--accentDim); }
 @media(max-width:760px) { .connections{padding:18px}.section-head{flex-direction:column}.form-grid{grid-template-columns:1fr;gap:0}th,td{padding:12px}.dialog-body,header{padding:18px}footer{padding:15px 18px} }
+/* 手机连接卡保留全部性能状态和各项操作。 */
+@media(max-width:760px) {
+  .connections > .table-scroll { overflow:visible; }
+  .connections > .table-scroll table,.connections > .table-scroll tbody { display:block; min-width:0; width:100%; }
+  .connections > .table-scroll thead { position:absolute; width:1px; height:1px; clip-path:inset(50%); overflow:hidden; }
+  .connections > .table-scroll tr { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px; padding:12px 0; border-top:1px solid var(--border); }
+  .connections > .table-scroll td { display:block; border:0; padding:2px 0; min-width:0; }
+  .connections > .table-scroll td:nth-child(n+3) { grid-column:1/-1; }
+  .dialog-body .table-scroll { max-width:100%; overflow:auto; }
+}
 </style>

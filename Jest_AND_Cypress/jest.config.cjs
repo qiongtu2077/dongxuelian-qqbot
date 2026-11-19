@@ -3,6 +3,7 @@ const path = require('path')
 module.exports = {
   rootDir: __dirname,
   testEnvironment: 'jsdom',
+  setupFilesAfterEnv: ['<rootDir>/tests/dialog-setup.js'],
   testMatch: ['<rootDir>/tests/**/*.test.js'],
   moduleFileExtensions: ['js', 'json', 'ts', 'vue'],
   transform: {

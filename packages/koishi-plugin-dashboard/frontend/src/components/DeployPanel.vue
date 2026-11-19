@@ -2,7 +2,6 @@
   <div>
     <div v-if="locked" class="card deploy-hero">
       <div>
-        <div class="gate-kicker">Setup</div>
         <h2>先完成部署，再进入控制台</h2>
         <p>新用户可以在这里完成 Windows 本地部署，或把当前项目部署到 Linux 服务器。你也可以跳过本页进入控制台，但这不会检查或证明机器人已经部署成功。</p>
       </div>
@@ -198,18 +197,15 @@
       <div v-if="localMsg" class="msg" :class="localMsg.type">{{ localMsg.text }}</div>
     </div>
 
-    <div v-if="localAlert" class="modal-backdrop local-alert-backdrop" @click.self="closeLocalAlert">
-      <div class="admin-modal-card local-alert-card" role="dialog" aria-modal="true" aria-labelledby="local-alert-title">
+    <ConsoleDialog v-if="localAlert" label="提示" panel-class="admin-modal-card local-alert-card" @dismiss="closeLocalAlert">
         <h2 id="local-alert-title" class="admin-modal-title">提示</h2>
         <p class="local-alert-text">{{ localAlert }}</p>
         <div class="gate-actions">
           <button class="btn" type="button" autofocus @click="closeLocalAlert">确定</button>
         </div>
-      </div>
-    </div>
+    </ConsoleDialog>
 
-    <div v-if="canRunWindowsLocalDeploy && uninstallPreview" class="modal-backdrop uninstall-backdrop">
-      <div class="uninstall-modal themed-scrollbar">
+    <ConsoleDialog v-if="canRunWindowsLocalDeploy && uninstallPreview" label="一键卸载确认" panel-class="uninstall-modal themed-scrollbar" @dismiss="closeUninstallPreview">
         <div class="modal-head">
           <div>
             <h2 class="modal-title">一键卸载确认</h2>
@@ -277,8 +273,7 @@
           <button class="btn btn-sm btn-danger-solid" type="button" @click="confirmLocalUninstallFlow" :disabled="uninstalling || !uninstallConfirmed">{{ uninstalling ? '卸载中...' : '确认一键卸载' }}</button>
           <button class="btn btn-sm btn-ghost" type="button" @click="closeUninstallPreview" :disabled="uninstalling">取消</button>
         </div>
-      </div>
-    </div>
+    </ConsoleDialog>
 
     <div v-if="mode === 'remote'" class="card">
       <h2>远程 Linux 部署</h2>
@@ -334,6 +329,7 @@
 
 <script lang="ts">
 import { computed, inject, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import ConsoleDialog from './ConsoleDialog.vue'
 import { getDongxuelianDeployerBridge, isElectronDeployerEnv } from '../electron-deployer'
 import { checkLocalEnv, confirmLocalUninstall, deleteLocalConfig, deployLocal, downloadNapcat, downloadNapcatWindows, fetchDeployConfig, getDeployProgress, installPortableNode, koishiDeployStatus, localReadyCheck, napcatDeployStatus, npmInstallStatus, previewDeploy, previewLocalConfigDelete, previewLocalUninstall, rebuildFrontend, rebuildFrontendStatus, repairNpmProxyAndInstall, runDeploy, startKoishiLocal, startNapcat, startNpmInstall, updateDeployConfig, uploadDeploy } from '../api'
 import type { ApiResult, MessageState, SelectOption, ShowAdminDialog } from '../types'
@@ -543,7 +539,7 @@ interface RemoteDeployPreviewData {
 
 export default {
   name: 'DeployPanel',
-  components: { SelectBox },
+  components: { SelectBox, ConsoleDialog },
   props: { locked: { type: Boolean, default: false } },
   emits: ['unlocked'],
   setup() {

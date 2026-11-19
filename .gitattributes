@@ -10,3 +10,10 @@ packages/koishi-plugin-dashboard/frontend/src/*.vue text eol=lf
 packages/koishi-plugin-dashboard/frontend/src/**/*.vue text eol=lf
 packages/koishi-plugin-dashboard/frontend/src/*.css text eol=lf
 packages/koishi-plugin-dashboard/frontend/src/**/*.css text eol=lf
+
+# Keep the two shipped Vite entry points and their styles byte-identical in Windows release archives and Linux builds.
+packages/koishi-plugin-dashboard/frontend/dist/index.html text eol=lf
+packages/koishi-plugin-dashboard/frontend/dist/assets/*.css text eol=lf
+packages/agent-console/index.html text eol=lf
+packages/agent-console/dist/index.html text eol=lf
+packages/agent-console/dist/assets/*.css text eol=lf

@@ -1,0 +1,39 @@
+/* 控制台共享语义色。基础五色来自同一份主题清单。 */
+:root {
+  --bg: #15152c; --card: #202542; --text: #ecebff; --accent: #abacff; --on-accent: #16152b;
+  --surface: color-mix(in srgb, var(--card) 55%, var(--bg));
+  --input: var(--bg);
+  --raised: color-mix(in srgb, var(--text) 6%, var(--card));
+  --border: color-mix(in srgb, var(--text) 20%, var(--card));
+  --control-border: color-mix(in srgb, var(--text) 60%, var(--card));
+  --text2: color-mix(in srgb, var(--text) 82%, var(--card));
+  --text3: color-mix(in srgb, var(--text) 68%, var(--card));
+  --focus: var(--accent);
+  --text1: var(--text); --text-secondary: var(--text2); --font-body: var(--font-ui);
+  --accent2: var(--accent); --accentDim: color-mix(in srgb, var(--accent) 13%, var(--card));
+  --hover: var(--accentDim); --hoverLight: var(--raised);
+  --shadow: rgb(7 11 28 / 16%); --scrim: rgb(7 11 28 / 58%);
+  --success: #83dbbd; --warning: #f0bf83; --danger: #ff9faf; --info: #96c4ff; --error: var(--danger);
+  --grid: var(--border); --tabBg: var(--surface); --tabColor: var(--text2); --tabBorder: var(--control-border); --tabActive: var(--accent);
+  --code-bg: var(--bg); --code-text: var(--text); --code-border: var(--border); --code-accent: var(--info); --code-inset: none;
+  --radius-sm: 6px; --radius-md: 8px; --radius-lg: 12px; --radius-xl: 15px;
+  --dashboard-sidebar-width: 224px;
+  --font-ui: Inter, "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  color-scheme: dark;
+}
+:root[data-appearance="light"] {
+  color-scheme: light;
+  --success: #186048; --warning: #7b4810; --danger: #a02c43; --info: #235b95;
+}
+:where(button, a, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 3px;
+}
+:where(input, select, textarea, button) { font: inherit; }
+:where(h1,h2,h3,p,dt,dd,code) { overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}
+@media (forced-colors: active) {
+  :where(button, input, select, textarea) { border: 1px solid ButtonText; }
+  [aria-current="page"], [aria-pressed="true"] { outline: 2px solid Highlight; }
+}

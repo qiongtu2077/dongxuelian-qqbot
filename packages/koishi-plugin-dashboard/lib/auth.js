@@ -2,6 +2,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const trusted_access_1 = require("./trusted-access");
 const bcrypt = require('bcryptjs');
 const { json, log, getRemoteAddress, isLoopbackAddress, getErrorMessage } = require('./utils');
 const { ADMIN_PWD_FILE, ACCESS_PWD_FILE, LEGACY_ACCESS_PWD_FILE, RESET_TOKEN_FILE, SESSION_SECRET_FILE, PASSWORD, ADMIN_PASSWORD, isGlobalLocalMode } = require('./paths');
@@ -235,6 +236,9 @@ function isSameOriginRequest(req) {
         return false;
     try {
         const parsed = new URL(origin);
+        const canonical = (0, trusted_access_1.trustedOrigin)(req);
+        if (canonical)
+            return origin === canonical;
         const socket = req.socket;
         const connection = req.connection;
         const protocol = socket?.encrypted || connection?.encrypted ? 'https:' : 'http:';
@@ -278,7 +282,7 @@ function isLocalAuthBypass(req) {
 }
 // Requires a valid admin token unless local trusted bypass is active.
 function requireAdmin(req, res) {
-    if (isLocalAuthBypass(req))
+    if (isLocalAuthBypass(req) || (0, trusted_access_1.hasTrustedDashboardAccess)(req, new URL(req.url || '/', 'http://localhost').pathname))
         return true;
     const token = (req.headers['x-admin-token'] || '').trim();
     if (!token || !validateAdminToken(token)) {
@@ -287,17 +291,8 @@ function requireAdmin(req, res) {
     }
     return true;
 }
-// Requires a valid admin token for destructive admin-only operations.
-function requireStrictAdmin(req, res) {
-    if (isLocalAuthBypass(req))
-        return true;
-    const token = (req.headers['x-admin-token'] || '').trim();
-    if (!token || !validateAdminToken(token)) {
-        json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403);
-        return false;
-    }
-    return true;
-}
+// 部署和其他严格管理员入口复用同一道门禁，保留已有调用名。
+const requireStrictAdmin = requireAdmin;
 // Checks whether an IP is currently login/admin locked out.
 function isLoginRateLimited(ip) {
     trimLoginFailMap();

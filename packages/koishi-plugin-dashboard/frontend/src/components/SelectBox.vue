@@ -96,41 +96,8 @@ export default {
 
 .sb-wrap.disabled { opacity: .6; }
 
-.sb-trigger {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  min-height: 38px;
-  padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--border) 58%, rgba(255,255,255,.1));
-  border-radius: var(--radius-md, 10px);
-  background:
-    linear-gradient(135deg, rgba(255,255,255,.055), rgba(255,255,255,.01) 52%, rgba(255,255,255,.025)),
-    color-mix(in srgb, var(--input) 78%, transparent);
-  color: var(--text);
-  font: inherit;
-  font-size: 14px;
-  text-align: left;
-  cursor: pointer;
-  box-shadow:
-    inset 0 1px 0 rgba(255,255,255,.11),
-    0 10px 26px rgba(0,0,0,.08);
-  backdrop-filter: blur(10px) saturate(1.25);
-  -webkit-backdrop-filter: blur(10px) saturate(1.25);
-  transition: border-color .18s, box-shadow .18s, background .22s, transform .18s;
-}
-
-.sb-trigger:hover,
-.sb-wrap:focus-within .sb-trigger {
-  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
-  box-shadow:
-    0 0 0 3px var(--accentDim),
-    0 14px 34px rgba(0,0,0,.12),
-    inset 0 1px 0 rgba(255,255,255,.15);
-}
-
+.sb-trigger { display:flex; align-items:center; justify-content:space-between; gap:10px; width:100%; min-height:38px; padding:8px 11px; border:1px solid var(--control-border); border-radius:var(--radius-md); background:var(--input); color:var(--text); font:inherit; text-align:left; cursor:pointer; }
+.sb-trigger:hover,.sb-wrap:focus-within .sb-trigger { border-color:var(--focus); outline:2px solid var(--focus); outline-offset:1px; }
 .sb-trigger:disabled { cursor: not-allowed; }
 .sb-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-trigger .placeholder { color: var(--text3); }
@@ -146,29 +113,7 @@ export default {
   transform: rotate(180deg);
 }
 
-.sb-menu {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 0;
-  right: 0;
-  z-index: 1000;
-  display: grid;
-  gap: 4px;
-  max-height: 280px;
-  overflow-y: auto;
-  padding: 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
-  border-radius: calc(var(--radius-md, 10px) + 2px);
-  background:
-    linear-gradient(145deg, color-mix(in srgb, var(--card) 94%, rgba(255,255,255,.08)), color-mix(in srgb, var(--surface) 88%, rgba(0,0,0,.12))),
-    var(--card);
-  box-shadow:
-    0 22px 58px rgba(0,0,0,.28),
-    inset 0 1px 0 rgba(255,255,255,.16);
-  backdrop-filter: blur(22px) saturate(1.35);
-  -webkit-backdrop-filter: blur(22px) saturate(1.35);
-}
-
+.sb-menu { position:absolute; top:calc(100% + 5px); inset-inline:0; z-index:1000; display:grid; gap:3px; padding:5px; max-height:280px; overflow-y:auto; border:1px solid var(--control-border); border-radius:9px; background:var(--card); box-shadow:0 12px 28px var(--shadow); }
 .sb-opt {
   display: block;
   width: 100%;

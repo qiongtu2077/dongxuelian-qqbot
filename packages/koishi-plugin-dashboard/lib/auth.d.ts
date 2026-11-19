@@ -34,7 +34,6 @@ declare function applyCorsHeaders(req: IncomingMessage, res: ServerResponse): vo
 declare function rejectCrossSiteRequest(req: IncomingMessage, res: ServerResponse): boolean;
 declare function isLocalAuthBypass(req: IncomingMessage | null | undefined): boolean;
 declare function requireAdmin(req: IncomingMessage, res: ServerResponse): boolean;
-declare function requireStrictAdmin(req: IncomingMessage, res: ServerResponse): boolean;
 declare function isLoginRateLimited(ip: string): boolean;
 declare function recordLoginFailure(ip: string): void;
 declare function clearLoginFails(ip: string): void;
@@ -66,7 +65,7 @@ declare const _default: {
     rejectCrossSiteRequest: typeof rejectCrossSiteRequest;
     isLocalAuthBypass: typeof isLocalAuthBypass;
     requireAdmin: typeof requireAdmin;
-    requireStrictAdmin: typeof requireStrictAdmin;
+    requireStrictAdmin: typeof requireAdmin;
     isLoginRateLimited: typeof isLoginRateLimited;
     recordLoginFailure: typeof recordLoginFailure;
     clearLoginFails: typeof clearLoginFails;

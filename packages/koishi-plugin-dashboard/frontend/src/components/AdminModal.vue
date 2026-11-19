@@ -1,7 +1,5 @@
 <template>
-  <Transition name="fade">
-    <div v-if="visible" class="admin-modal-backdrop" @click.self="cancel">
-      <div class="admin-modal-card">
+  <ConsoleDialog v-if="visible" :label="message" panel-class="admin-modal-card" @dismiss="cancel">
         <h2 class="admin-modal-title">{{ message }}</h2>
         <PasswordField
           v-model="password"
@@ -15,9 +13,7 @@
           <button class="btn btn-ghost" @click="cancel" :disabled="loading">取消</button>
         </div>
         <div v-if="error" class="gate-error">{{ error }}</div>
-      </div>
-    </div>
-  </Transition>
+  </ConsoleDialog>
 </template>
 
 <script lang="ts">
@@ -25,10 +21,11 @@ import { ref, watch } from 'vue'
 import { verifyAdmin, setAdminToken } from '../api'
 import { errorMessage } from '../types'
 import PasswordField from './PasswordField.vue'
+import ConsoleDialog from './ConsoleDialog.vue'
 
 export default {
   name: 'AdminModal',
-  components: { PasswordField },
+  components: { PasswordField, ConsoleDialog },
   props: {
     visible: { type: Boolean, default: false },
     message: { type: String, default: '请输入管理员密码' },
@@ -43,12 +40,17 @@ export default {
       if (v) { password.value = ''; error.value = '' }
     })
 
+    // 只消费当前弹窗发出的验证结果。
+    let generation = 0
+    watch(() => props.visible, () => { generation++; loading.value = false })
     async function submit() {
+      const current = generation
       if (!password.value.trim()) return
       loading.value = true
       error.value = ''
       try {
         const res = await verifyAdmin(password.value.trim())
+        if (current !== generation || !props.visible) return
         if (res.ok && res.data?.token) {
           setAdminToken(res.data.token)
           emit('verified')

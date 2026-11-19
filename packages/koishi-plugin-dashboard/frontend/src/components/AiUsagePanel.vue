@@ -1,7 +1,7 @@
 <template>
   <section class="card usage-panel" aria-labelledby="usage-title">
     <div class="section-head">
-      <div><p class="step-index">03</p><h3 id="usage-title">模型用量</h3><p>统计 {{ capabilityLabel }} 的用量；无能力标识的历史记录不会归入统计。</p></div>
+      <div><h3 id="usage-title">模型用量</h3><p>统计 {{ capabilityLabel }} 的用量；无能力标识的历史记录不会归入统计。</p></div>
       <div class="usage-actions">
         <UsageDateRangePicker :preset="preset" :range="displayRange" @apply="applyRange" />
         <button class="refresh-btn" type="button" :disabled="loading" @click="loadUsage">{{ loading ? '加载中…' : '刷新用量' }}</button>

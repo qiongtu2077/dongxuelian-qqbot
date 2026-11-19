@@ -6,7 +6,7 @@ const crypto = require('crypto');
 const { exec, execSync } = require('child_process');
 const { json, collectBody, log, shellQuote, isInsidePath, copyRecursiveSync, getOptionalErrorMessage: getLegacyErrorMessage, } = require('../utils');
 const { KOISHI_DIR, DATA_DIR, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, PORT, toProjectRel } = require('../paths');
-const { requireAdmin } = require('../auth');
+const { requireAdmin, requireStrictAdmin } = require('../auth');
 const { getCommandInfo, getLocalToolCommand, checkPortState } = require('../tools');
 const { detectNapcatInstallation, resolveNapcatWebuiListenPort, resolveNapcatOnebotListenPort } = require('../napcat');
 const { buildFrontendDist } = require('../frontend');
@@ -199,17 +199,6 @@ function runSafeDeployCommands(task, commands, onComplete) {
         });
     };
     runNext();
-}
-function requireStrictAdmin(req, res) {
-    const { isLocalAuthBypass, validateAdminToken } = require('../auth');
-    if (isLocalAuthBypass(req))
-        return true;
-    const token = String(req.headers['x-admin-token'] || '').trim();
-    if (!token || !validateAdminToken(token)) {
-        json(res, { ok: false, message: '需要管理员密码验证', code: 'ADMIN_REQUIRED' }, 403);
-        return false;
-    }
-    return true;
 }
 function stopKoishiProcesses() {
     const { stopKoishiProcesses: doStop } = require('./bot');

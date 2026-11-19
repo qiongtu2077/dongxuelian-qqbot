@@ -2,8 +2,7 @@
   <section class="ai-model-api" aria-labelledby="ai-model-api-title">
     <header class="card page-head">
       <div>
-        <p class="eyebrow">AI RUNTIME</p>
-        <h2 id="ai-model-api-title">AI模型与API配置</h2>
+        <h2 id="ai-model-api-title">模型配置概览</h2>
         <p>四项能力独立保存、独立调用、独立统计。模型进入优先级后才会实际使用。</p>
       </div>
       <button class="secondary-btn" type="button" :disabled="loading" @click="loadSharedConfig">刷新配置</button>
@@ -20,7 +19,6 @@
       <section class="card section-card" aria-labelledby="priority-title">
         <div class="section-head">
           <div>
-            <p class="step-index">02</p>
             <h3 id="priority-title">模型优先级调整</h3>
             <p>运行时严格从第 1 项开始，只在规定故障条件下依次降级。</p>
           </div>

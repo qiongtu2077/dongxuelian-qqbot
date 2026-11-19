@@ -3,6 +3,7 @@
     <input
       :value="modelValue"
       :type="visible ? 'text' : 'password'"
+      :aria-label="placeholder"
       :placeholder="placeholder"
       :autocomplete="autocomplete"
       :autofocus="autofocus"

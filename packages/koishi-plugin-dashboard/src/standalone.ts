@@ -4,6 +4,7 @@
  * Runs independently from the Koishi lifecycle on DASHBOARD_PORT.
  */
 import type { IncomingMessage, ServerResponse } from 'http'
+import { startSshListener } from './lib/ssh-listener'
 
 const fs = require('fs') as typeof import('fs')
 const path = require('path') as typeof import('path')
@@ -104,7 +105,8 @@ const CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'self'",
 ].join('; ')
 
-const server = http.createServer(async (req, res) => {
+/** 统一处理两个监听器的请求，认证及业务路由共用相同边界。 */
+async function handleDashboardRequest(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(String(req.url), `http://${req.headers.host || 'localhost'}`)
   const pathname = url.pathname
 
@@ -197,7 +199,9 @@ const server = http.createServer(async (req, res) => {
   if (!pathname.startsWith('/dashboard/api/') && serveStaticFile(DIST_DIR, path.join(DIST_DIR, 'index.html'))) return
   res.writeHead(404)
   res.end('Not Found')
-})
+}
+
+const server = http.createServer(handleDashboardRequest)
 
 export = {
   isLoopbackAddress,
@@ -209,6 +213,8 @@ export = {
 
 if (require.main === module) {
   installSlDesktop(server)
+  const tunnel = startSshListener(handleDashboardRequest)
+  if (tunnel) installSlDesktop(tunnel)
   ensureInitialCredentials()
   if (shouldGenerateResetTokenOnStartup() && !getResetToken()) generateResetToken()
 
@@ -231,6 +237,13 @@ if (require.main === module) {
     }
   })
 
-  process.on('SIGINT', () => { log('shutting down'); server.close(); process.exit(0) })
-  process.on('SIGTERM', () => { log('shutting down'); server.close(); process.exit(0) })
+  // 关闭监听器时 Node 同时移除自己拥有的 Unix socket。
+  function shutdown() {
+    log('shutting down')
+    tunnel?.close()
+    server.close()
+    process.exit(0)
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
 }

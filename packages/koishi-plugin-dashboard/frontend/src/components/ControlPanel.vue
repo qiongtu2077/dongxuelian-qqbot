@@ -1,6 +1,7 @@
 <template>
-  <div>
-    <div class="card" style="display:flex;justify-content:space-between;align-items:center">
+  <div class="terminal-layout">
+    <div class="terminal-summary">
+    <section class="card terminal-node">
       <div>
         <h2 style="margin:0 0 8px 0">Bot 运行节点</h2>
         <div style="font-size:13px;color:var(--text3)">
@@ -14,6 +15,8 @@
           {{ status.running ? 'Online - 运行中' : 'Offline - 已停止' }}
         </span>
       </div>
+    </section>
+    <StatusPanel />
     </div>
 
     <div class="card">
@@ -76,7 +79,7 @@
           <div v-if="napcatRestartMsg" style="margin-top:8px;font-size:13px" :style="{color: napcatRestartMsg.type === 'ok' ? 'var(--success)' : 'var(--error)'}">{{ napcatRestartMsg.text }}</div>
         </div>
 
-        <div style="background:rgba(244,114,182,0.1);border-left:4px solid var(--danger);border-radius:0 8px 8px 0;padding:12px 16px;font-size:13px;color:#fca5a5;margin-bottom:24px">
+        <div style="background:color-mix(in srgb,var(--danger) 9%,var(--card));border-left:4px solid var(--danger);border-radius:0 8px 8px 0;padding:12px 16px;font-size:13px;color:var(--danger);margin-bottom:24px">
           ⚠ 必须在 WebUI 中扫码登录新账号并确保在线，才能执行下一步覆盖操作。
         </div>
 
@@ -135,6 +138,7 @@ import type { MessageState, ShowAdminDialog } from '../types'
 import { asRecord, errorMessage, messageFromData } from '../types'
 import ParticipationControls from './ParticipationControls.vue'
 import SnowLumaLogin from './SnowLumaLogin.vue'
+import StatusPanel from './StatusPanel.vue'
 import { selectedProtocol, viewedProtocol, protocolBusy } from '../services/protocol-state'
 
 interface BotStatusData {
@@ -146,7 +150,7 @@ interface BotStatusData {
 
 export default {
   name: 'ControlPanel',
-  components: { ParticipationControls, SnowLumaLogin },
+  components: { ParticipationControls, SnowLumaLogin, StatusPanel },
   setup() {
     const showAdminDialog = inject<ShowAdminDialog>('showAdminDialog')
 

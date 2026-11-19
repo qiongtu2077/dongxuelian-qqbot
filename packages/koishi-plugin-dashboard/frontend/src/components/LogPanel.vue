@@ -281,8 +281,8 @@ export default {
 .toolbar-actions { display: flex; gap: 8px; align-items: center; }
 .meta { display: flex; gap: 8px; align-items: center; color: var(--text3); font-size: 13px; }
 .meta-dot { color: var(--accent); font-weight: 800; }
-.controls-grid { display: grid; grid-template-columns: 160px 180px minmax(220px, 1fr); gap: 12px; align-items: end; }
-.field { display: flex; flex-direction: column; gap: 6px; color: var(--text2); font-size: 13px; }
+.controls-grid { display: grid; grid-template-columns: minmax(100px, 160px) minmax(110px, 180px) minmax(140px, 1fr); gap: 12px; align-items: end; }
+.field { min-width: 0; display: flex; flex-direction: column; gap: 6px; color: var(--text2); font-size: 13px; }
 .field :deep(.sb-wrap), .field input { width: 100%; }
 .filter-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .level-toggle, .check-pill {
@@ -310,10 +310,10 @@ export default {
   font-size: 12px;
 }
 .log-line { display: grid; grid-template-columns: 34px minmax(20ch, 22ch) minmax(13ch, 16ch) minmax(0, 1fr); gap: 10px; align-items: start; padding: 8px 10px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid transparent; }
-.level-mark { font-weight: 900; text-align: center; border-radius: 4px; color: #11110d; background: var(--accent); }
-.level-w .level-mark { background: #f59e0b; }
-.level-e .level-mark { background: var(--danger); color: #fff; }
-.level-d .level-mark { background: var(--info); color: #041318; }
+.level-mark { font-weight: 900; text-align: center; border-radius: 4px; color: var(--on-accent); background: var(--accent); }
+.level-w .level-mark { background: var(--warning); color: var(--card); }
+.level-e .level-mark { background: var(--danger); color: var(--card); }
+.level-d .level-mark { background: var(--info); color: var(--card); }
 .log-time, .log-module, .log-text { min-width: 0; }
 .log-time { color: var(--text3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .log-module { color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-weight: 800; }

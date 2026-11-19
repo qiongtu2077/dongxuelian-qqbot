@@ -194,7 +194,7 @@
         <input v-model="loreFormName" placeholder="世界观标识（如：my-lore）" style="width:100%" :disabled="!!loreEditing" />
         <input v-model="loreFormDesc" placeholder="一句话描述" style="width:100%" />
         <input v-model="loreFormKeywords" placeholder="触发关键词，逗号分隔" style="width:100%" />
-        <div style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:8px">
+        <div class="persona-budget-fields">
           <SelectBox v-model="loreFormScope" :options="loreScopeOptions" />
           <input v-model.number="loreFormMaxChars" type="number" min="200" max="12000" step="100" placeholder="预算字符数" style="width:100%" />
           <input v-model.number="loreFormPriority" type="number" min="-100" max="100" step="1" placeholder="优先级" style="width:100%" />

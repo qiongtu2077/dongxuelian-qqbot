@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 "use strict";
+const ssh_listener_1 = require("./lib/ssh-listener");
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
@@ -43,7 +44,8 @@ const CONTENT_SECURITY_POLICY = [
     "base-uri 'self'",
     "frame-ancestors 'self'",
 ].join('; ');
-const server = http.createServer(async (req, res) => {
+/** 统一处理两个监听器的请求，认证及业务路由共用相同边界。 */
+async function handleDashboardRequest(req, res) {
     const url = new URL(String(req.url), `http://${req.headers.host || 'localhost'}`);
     const pathname = url.pathname;
     applyCorsHeaders(req, res);
@@ -144,9 +146,13 @@ const server = http.createServer(async (req, res) => {
         return;
     res.writeHead(404);
     res.end('Not Found');
-});
+}
+const server = http.createServer(handleDashboardRequest);
 if (require.main === module) {
     installSlDesktop(server);
+    const tunnel = (0, ssh_listener_1.startSshListener)(handleDashboardRequest);
+    if (tunnel)
+        installSlDesktop(tunnel);
     ensureInitialCredentials();
     if (shouldGenerateResetTokenOnStartup() && !getResetToken())
         generateResetToken();
@@ -170,8 +176,15 @@ if (require.main === module) {
             log(`admin password file ready: ${path.basename(ADMIN_PWD_FILE)}`);
         }
     });
-    process.on('SIGINT', () => { log('shutting down'); server.close(); process.exit(0); });
-    process.on('SIGTERM', () => { log('shutting down'); server.close(); process.exit(0); });
+    // 关闭监听器时 Node 同时移除自己拥有的 Unix socket。
+    function shutdown() {
+        log('shutting down');
+        tunnel?.close();
+        server.close();
+        process.exit(0);
+    }
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
 }
 module.exports = {
     isLoopbackAddress,

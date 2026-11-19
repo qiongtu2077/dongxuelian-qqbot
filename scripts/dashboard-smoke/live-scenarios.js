@@ -48,12 +48,12 @@ async function runLiveClicks(page) {
   await waitForText(page, '界面风格')
   await clickText(page, '昼白')
 
-  await clickSidebarTab(page, '指令速查')
+  await clickSidebarTab(page, '功能与指令')
   await waitForText(page, '指令速查')
 
   await clickSidebarTab(page, 'AI模型与API配置')
   await verifyAdminIfVisible(page)
-  await waitForText(page, 'AI 供应商导入')
+  await waitForText(page, '已导入的 API Key')
   await waitForText(page, '模型优先级调整')
   await waitForText(page, '模型用量')
   await page.waitForFunction(() => {
@@ -83,8 +83,8 @@ async function runLiveClicks(page) {
   await waitForText(page, '日志中心')
   await clickButtonByLabel(page, '刷新').catch(() => {})
 
-  await clickSidebarTab(page, '系统状态')
-  await waitForText(page, '当前状态')
+  await clickSidebarTab(page, '终端控制')
+  await waitForText(page, '当前供应商')
 
   await verifyResourcePanel(page, { allowWrites: false, expectMockData: false })
 

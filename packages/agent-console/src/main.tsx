@@ -23,7 +23,12 @@ import type {
   AgentWorkspaceFilePreview,
   PendingToolListItem,
 } from './api/types'
+import { applyTheme, THEME_KEY } from '../../koishi-plugin-dashboard/frontend/src/shared/theme'
+import '../../koishi-plugin-dashboard/frontend/src/shared/theme.css'
 import './styles.css'
+
+applyTheme('light')
+window.addEventListener('storage', event => { if (event.key === THEME_KEY || event.key === null) applyTheme('light') })
 
 type SelectOption = {
   value: string
@@ -130,7 +135,14 @@ function AdminGate({ onVerified }: { onVerified: () => void }) {
   )
 }
 
-function AdminDialog({ onVerified }: { onVerified: () => void }) {
+/** 在真实管理员验证到期时打开原生模态窗口。 */
+function AdminDialog({ onVerified, onCancel }: { onVerified: () => void; onCancel: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const element = dialog.current
+    element?.showModal()
+    return () => element?.close()
+  }, [])
   const [password, setPassword] = useState('')
   const [message, setMessage] = useState('')
   async function submit(event: React.FormEvent) {
@@ -145,25 +157,27 @@ function AdminDialog({ onVerified }: { onVerified: () => void }) {
     }
   }
   return (
-    <div className="admin-dialog-backdrop" onClick={() => {}}>
-      <div className="admin-dialog-card" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
+    <dialog className="admin-dialog-card" ref={dialog} aria-labelledby="agent-admin-title" onCancel={event => { event.preventDefault(); onCancel() }}>
         <div className="brand-mark">莲</div>
-        <h2>管理员密码已过期</h2>
+        <h2 id="agent-admin-title">管理员密码已过期</h2>
         <p>请重新输入管理员密码以继续操作。</p>
         <form onSubmit={submit}>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="管理员密码" autoFocus />
           <button type="submit">验证</button>
         </form>
         {message && <span className="form-error">{message}</span>}
-      </div>
-    </div>
+        <button type="button" className="secondary" onClick={onCancel}>取消</button>
+    </dialog>
   )
 }
 
+/** 同一导航树在桌面展开，在手机使用可关闭的分组菜单。 */
 function Sidebar({ active, setActive, version }: { active: TabId; setActive: (id: TabId) => void; version: string }) {
   const groups = useMemo(() => Array.from(new Set(tabs.map(tab => tab.group))), [])
+  const [expanded, setExpanded] = useState(false)
+  const toggle = useRef<HTMLButtonElement>(null)
   return (
-    <aside className="sidebar">
+    <aside className={expanded ? "sidebar menu-open" : "sidebar"} onKeyDown={event => { if (event.key === "Escape" && expanded) { setExpanded(false); toggle.current?.focus() } }}>
       <div className="sidebar-brand">
         <div className="brand-mark">莲</div>
         <div>
@@ -171,28 +185,30 @@ function Sidebar({ active, setActive, version }: { active: TabId; setActive: (id
           <span>v{version || '1.1.5'}</span>
         </div>
       </div>
-      <div className="agent-select">当前智能体人格可在“人格”页切换</div>
+      <button ref={toggle} className="mobile-nav-trigger secondary" aria-controls="agent-navigation" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>{expanded ? "收起导航" : "功能导航"}</button>
+      <div id="agent-navigation">
       {groups.map(group => (
         <nav key={group} className="nav-group" aria-label={group}>
           <p>{group}</p>
           {tabs.filter(tab => tab.group === group).map(tab => (
-            <button key={tab.id} className={active === tab.id ? 'active' : ''} onClick={() => setActive(tab.id)}>
+            <button key={tab.id} className={active === tab.id ? 'active' : ''} aria-current={active === tab.id ? 'page' : undefined} onClick={() => { setActive(tab.id); setExpanded(false); if (expanded) toggle.current?.focus() }}>
               <span className="nav-dot" />
               {tab.label}
             </button>
           ))}
         </nav>
       ))}
+      </div>
     </aside>
   )
 }
 
-function Topbar({ onRefresh, loading, canExport }: { onRefresh: () => void; loading: boolean; canExport: boolean }) {
+/** 展示当前工作台栏目及其真实操作。 */
+function Topbar({ label, onRefresh, loading, canExport }: { label: string; onRefresh: () => void; loading: boolean; canExport: boolean }) {
   return (
     <header className="topbar">
       <div>
-        <strong>Agent Console</strong>
-        <span>独立控制台</span>
+        <h1>{label}</h1>
       </div>
       <div className="top-actions">
         <a href="/dashboard/" title="返回 Dashboard">Dashboard</a>
@@ -730,16 +746,16 @@ function App() {
   const data = useAgentData(active)
   if (data.auth === 'access') return <AccessGate />
   const hadAdminToken = !!(localStorage.getItem('dashboard_server_token') || localStorage.getItem('dashboard_admin_token'))
-  if (data.auth === 'admin' && !hadAdminToken) return <AdminGate onVerified={data.reconnect} />
+  if (data.auth === 'admin' && (!hadAdminToken || data.dismissedAdmin)) return <AdminGate onVerified={data.reconnect} />
   const version = data.config?.config?.version || '1.1.5'
   /** Reloads shared runtime config after a configuration write. */
   function refreshConfig() { data.refreshAfterWrite(['config']) }
   return (
     <div className="shell">
-      {data.auth === 'admin' && <AdminDialog onVerified={data.reconnect} />}
+      {data.auth === 'admin' && <AdminDialog onVerified={data.reconnect} onCancel={data.dismissAdmin} />}
       <Sidebar active={active} setActive={setActive} version={String(version)} />
       <main className="workspace">
-        <Topbar onRefresh={data.refresh} loading={data.loading} canExport={data.auth === 'ready'} />
+        <Topbar label={tabs.find(tab => tab.id === active)!.label} onRefresh={data.refresh} loading={data.loading} canExport={data.auth === 'ready'} />
         {data.error && <div className="error-banner">{data.error}</div>}
         {data.auth === 'ready' && <>
         {active === 'chat' && <ChatPage onSettled={data.chatSettled} persona={data.persona} />}
