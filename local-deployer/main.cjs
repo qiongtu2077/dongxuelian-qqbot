@@ -195,16 +195,12 @@ async function validateResourceLayout(paths) {
   return false
 }
 
+/** 启动可单独重启的 Dashboard 后台，并跟踪它的 PID 与就绪状态。 */
 function startDashboard(paths) {
   rotateDashboardLog()
   const standalone = paths.standalonePath
   const logPath = getDashboardLogPath()
-  let logStream = null
-  if (logPath) {
-    try { logStream = fs.createWriteStream(logPath, { flags: 'a' }) } catch {}
-  }
-  const stdioOpt = logStream ? ['ignore', logStream, logStream] : 'ignore'
-  dashboardProcess = spawn(process.execPath, [standalone], {
+  dashboardProcess = runtime.spawnDashboard(process.execPath, standalone, {
     cwd: paths.resourceRoot,
     env: {
       ...process.env,
@@ -218,9 +214,8 @@ function startDashboard(paths) {
       DONGXUELIAN_AI_DATA_DIR: path.join(paths.workspaceRoot, 'data'),
       DASHBOARD_PORT,
     },
-    stdio: stdioOpt,
     windowsHide: true,
-  })
+  }, logPath)
   dashboardStartedAt = Date.now()
   const child = dashboardProcess
   writeDashboardPid(child.pid)
@@ -245,7 +240,6 @@ function startDashboard(paths) {
     if (dashboardProcess === child) dashboardProcess = null
     removeDashboardPidFile()
     try { child.removeAllListeners() } catch {}
-    if (logStream) { try { logStream.end() } catch {} }
     const failed = typeof code === 'number' && code !== 0
     if (!failed || isAppQuitting) return
     if (abortFn) { abortFn(); abortFn = null }

@@ -2,7 +2,7 @@
 
 const fs = require('fs')
 const path = require('path')
-const { execFileSync } = require('child_process')
+const { execFileSync, spawn } = require('child_process')
 
 const DEFAULT_DASHBOARD_PORT = '5150'
 const DASHBOARD_PID_MAX_AGE_MS = 7 * 24 * 3600 * 1000
@@ -142,6 +142,26 @@ function showMessageBoxSafe(dialogModule, owner, options) {
     return Promise.resolve(promise).catch(() => ({ response: fallbackResponse }))
   } catch {
     return Promise.resolve({ response: fallbackResponse })
+  }
+}
+
+// --- Dashboard 子进程和日志 --- #
+
+/** 将可继承的日志描述符交给 Dashboard，启动后立即释放父进程副本。 */
+function spawnDashboard(executable, entryFile, options, logPath) {
+  let logFd
+  let stdio = 'ignore'
+  try {
+    if (logPath) {
+      try {
+        logFd = fs.openSync(logPath, 'a')
+        // Windows 也可能成功打开目录，只将普通文件交给子进程。
+        if (fs.fstatSync(logFd).isFile()) stdio = ['ignore', logFd, logFd]
+      } catch { /* 日志不可写时仍允许启动。 */ }
+    }
+    return spawn(executable, [entryFile], { ...options, stdio })
+  } finally {
+    if (logFd !== undefined) fs.closeSync(logFd)
   }
 }
 
@@ -305,6 +325,7 @@ function cleanupStaleDashboardPid(options = {}) {
 module.exports = {
   DEFAULT_DASHBOARD_PORT,
   DASHBOARD_PID_MAX_AGE_MS,
+  spawnDashboard,
   WORKSPACE_DIR_NAME,
   resolveResourceRoot,
   resolveExecutableDir,

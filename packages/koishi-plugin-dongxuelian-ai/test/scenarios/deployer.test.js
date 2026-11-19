@@ -1,9 +1,11 @@
+/** 在临时目录验证部署器的启动、日志、路径和凭据边界。 */
 async function run(t) {
   t.section('scenario: dashboard deployer security')
 
   const fs = require('fs')
   const path = require('path')
   const os = require('os')
+  const { once } = require('node:events')
 
   const standalonePath = path.resolve(__dirname, '../../../koishi-plugin-dashboard/standalone.js')
   const dashboardDir = path.dirname(standalonePath)
@@ -40,6 +42,25 @@ async function run(t) {
       userDataPath: userDataDir,
     })
     try {
+      // 与 Electron 主进程使用同一个启动函数，首次和再次启动都应继承有效日志句柄。
+      const entry = path.join(exeDir, 'test-dashboard.cjs')
+      const log = path.join(userDataDir, 'dashboard.log')
+      fs.writeFileSync(entry, "process.stdout.write('out\\n'); process.stderr.write('err\\n')")
+      fs.writeFileSync(log, 'previous\n')
+      const starts = [
+        ['first launch', log],
+        ['restart', log],
+        ['log path is a directory', documentsDir],
+        ['log directory is missing', path.join(userDataDir, 'missing', 'dashboard.log')],
+      ]
+      for (const [label, dest] of starts) {
+        const child = runtime.spawnDashboard(process.execPath, entry, { cwd: exeDir, windowsHide: true }, dest)
+        const [code] = await once(child, 'close')
+        t.check('Dashboard starts when ' + label, code === 0)
+      }
+      const lines = fs.readFileSync(log, 'utf8').trim().split(/\r?\n/)
+      t.check('Dashboard preserves previous logs and both child output streams', lines[0] === 'previous' &&
+        lines.filter(line => line === 'out').length === 2 && lines.filter(line => line === 'err').length === 2)
       t.checkEqual('deployer packaged portable workspace defaults beside exe', portablePaths.workspaceRoot, path.join(exeDir, 'LianLianBOT'))
       t.checkEqual('deployer packaged installer workspace defaults under documents', installedPaths.workspaceRoot, path.join(documentsDir, 'LianLianBOT'))
       t.checkEqual('deployer packaged runtime state uses electron userData', portablePaths.runtimeStateRoot, path.resolve(userDataDir))
