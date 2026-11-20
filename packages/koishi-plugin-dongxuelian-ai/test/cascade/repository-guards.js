@@ -197,7 +197,8 @@ async function runRepositoryGuards(context) {
   check('dashboard persona diagnostics API is read-only sanitized', !dashboardConfigRoutesSrc.includes('body: doc.body') && !dashboardConfigRoutesSrc.includes('frontmatterText') && dashboardConfigRoutesSrc.includes('toPublicPersonaDiagnostic'))
   check('dashboard persona panel displays diagnostics warnings', dashboardApiSrc.includes('fetchPersonaDiagnostics') && dashboardPersonaPanelSrc.includes('人格诊断') && dashboardPersonaPanelSrc.includes('personaDiagnosticItems') && dashboardPersonaModelSrc.includes("diagnostic.level === 'info'"))
   const dashboardAgentPanelSrc = read(path.join(PKG_ROOT, 'koishi-plugin-dashboard', 'frontend', 'src', 'components', 'AgentPanel.vue'))
-  check('dashboard sidebar includes agent panel tab', dashboardAppSrc.includes("id: 'agent'") && dashboardAppSrc.includes('AgentPanel'))
+  check('dashboard sidebar opens the standalone agent console',
+    dashboardAppSrc.includes("id: 'agent'") && dashboardAppSrc.includes("window.location.assign('/agent/')"))
   check('dashboard agent panel manages tools and skills', dashboardAgentPanelSrc.includes('fetchAgentConfig') && dashboardAgentPanelSrc.includes('Skill 索引') && dashboardAgentPanelSrc.includes('read_agent_skill'))
   check('dashboard agent panel exposes skill selection', dashboardAgentPanelSrc.includes('config.enabledSkills') && dashboardAgentPanelSrc.includes(':value="skill.name"'))
   check('dashboard agent panel exposes read roots', dashboardAgentPanelSrc.includes('文件读取根目录') && dashboardAgentPanelSrc.includes('config.readFileRoots'))
