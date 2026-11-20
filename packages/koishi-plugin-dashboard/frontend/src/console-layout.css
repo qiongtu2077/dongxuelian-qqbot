@@ -7,9 +7,23 @@ h1 { font-size: clamp(26px, 3vw, 34px); line-height: 1.22; letter-spacing: -.035
 h2 { margin-bottom: 10px; font-size: 17px; line-height: 1.45; }
 h3 { font-size: 15px; }
 code,pre,time { font-variant-numeric: tabular-nums; }
-.dashboard-shell { min-height: 100dvh; padding-left: var(--dashboard-sidebar-width); }
-.dashboard-shell.rail-collapsed { padding-left: 64px; }
-.dashboard-shell .app { width: 100%; max-width: 1440px; margin: 0; padding: 25px clamp(16px, 2.4vw, 38px) 40px; min-width: 0; }
+.dashboard-shell {
+  --dashboard-rail-width: 64px;
+  min-height: 100dvh;
+  padding-inline-start: var(--dashboard-sidebar-width);
+}
+.dashboard-shell.rail-collapsed {
+  /* 收起菜单时将腾出的宽度平分到正文两侧，标题与面板一起平移。 */
+  --rail-gutter: calc((var(--dashboard-sidebar-width) - var(--dashboard-rail-width)) / 2);
+  padding-inline: calc(var(--dashboard-rail-width) + var(--rail-gutter)) var(--rail-gutter);
+}
+.dashboard-shell .app {
+  width: 100%;
+  max-width: 1440px;
+  min-width: 0;
+  margin: 0 auto;
+  padding: 25px clamp(24px, 4vw, 56px) 40px;
+}
 .app-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; min-height: 48px; margin-bottom: 24px; }
 .active-view-label:focus:not(:focus-visible) { outline: none; }
 .sidebar-scrim { position: fixed; inset: 0 0 0 min(var(--dashboard-sidebar-width), calc(100vw - 52px)); z-index: 11; width: auto; border: none; background: var(--scrim); }
@@ -88,7 +102,7 @@ dialog { color:var(--text); }
 @media (min-width:761px) and (max-width:1100px) { :root { --dashboard-sidebar-width:180px; } }
 @media (max-width:760px) {
   html { scrollbar-gutter:auto; }
-  .dashboard-shell,.dashboard-shell.rail-collapsed { padding-left:0; }
+  .dashboard-shell,.dashboard-shell.rail-collapsed { padding-inline:0; }
   .dashboard-shell .app { padding:12px 14px 32px; }
   .app-head { padding-left:47px; align-items:center; flex-direction:row; min-height:42px; margin-bottom:16px; }
   h1 { font-size:25px; }

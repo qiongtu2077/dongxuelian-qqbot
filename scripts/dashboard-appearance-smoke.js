@@ -149,6 +149,40 @@ async function checkWidths(page) {
   }
 }
 
+/** 在截图对应的中宽窗口和宽屏核对部署标题、面板及菜单收放的位置。 */
+async function checkDeployAlignment(page) {
+  await page.evaluate(() => localStorage.setItem('dashboard_theme', 'dark-gold'))
+  for (const width of [845, 1920]) {
+    await page.setViewport({ width, height: 900 })
+    await dashboard(page, 'deploy')
+    await page.waitForSelector('.local-wizard-card')
+    const positions = []
+    for (const expanded of [true, false, true]) {
+      const toggle = '.sidebar-toggle[aria-expanded="' + expanded + '"]'
+      if (!await page.$(toggle)) await page.click('.sidebar-toggle')
+      await page.waitForSelector(toggle)
+      const position = await page.evaluate(() => {
+        const title = document.querySelector('.active-view-label').getBoundingClientRect()
+        const panel = document.querySelector('.local-wizard-card').parentElement.getBoundingClientRect()
+        const rail = document.querySelector('.dashboard-sidebar').getBoundingClientRect()
+        // 使用文档实际可排版的右边界，排除滚动条保留的空间。
+        const right = document.querySelector('.dashboard-shell').getBoundingClientRect().right
+        return { title: title.left, left: panel.left, width: panel.width, before: panel.left - rail.right, after: right - panel.right }
+      })
+      assert.ok(Math.abs(position.title - position.left) <= 1, width + 'px: 标题与面板左缘应对齐')
+      assert.ok(Math.abs(position.before - position.after) <= 1, width + 'px: 面板两侧可用留白应相等')
+      if (width === 845 && positions.length < 2) {
+        await measure(page, expanded ? 'deploy-menu-open' : 'deploy-menu-collapsed', true)
+      }
+      positions.push(position)
+    }
+    const [open, closed, reopened] = positions
+    assert.ok(Math.abs(open.width - closed.width) <= 1, width + 'px: 收放菜单时面板应保持宽度')
+    assert.ok(closed.left < open.left && Math.abs(reopened.left - open.left) <= 1, width + 'px: 收起左移，展开回到原位')
+    console.log('部署面板 %dpx，收起后整体左移 %dpx', width, Math.round(open.left - closed.left))
+  }
+}
+
 /** 核对旧缓存定位、退出与重新核验，以及桌面模式的菜单条件。 */
 async function checkSession(page,state) {
   for (const [tab,anchor] of [['status','system-status'],['commands','command-directory']]) {
@@ -187,11 +221,12 @@ async function main() {
     await page.goto(origin+'/fixture')
     const report={}
     for (const theme of themes) report[theme]=await captureTheme(page,state,theme)
+    await checkDeployAlignment(page)
     await checkWidths(page)
     await checkSession(page,state)
     assert.deepEqual(errors,[])
     fs.writeFileSync(path.join(output,'contrast.json'),JSON.stringify(report,null,2))
-    console.log('Dashboard and Agent appearance passed: 9 themes, 45 screenshots, 6 widths; menu, focus, images and session verified')
+    console.log('Dashboard and Agent appearance passed: 9 themes, 47 screenshots, six responsive widths and two desktop menu alignment checks')
   } finally { await browser.close() }
 }
 main().catch(e=>{console.error(e);process.exitCode=1})

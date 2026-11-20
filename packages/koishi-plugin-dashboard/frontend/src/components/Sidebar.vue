@@ -68,7 +68,7 @@ function handleKeys(event: KeyboardEvent) {
 
 <style scoped>
 .dashboard-sidebar { position:fixed; inset:0 auto 0 0; z-index:12; display:flex; flex-direction:column; width:var(--dashboard-sidebar-width); background:var(--surface); border-right:1px solid var(--border); }
-.dashboard-sidebar.collapsed { width:64px; }
+.dashboard-sidebar.collapsed { width:var(--dashboard-rail-width); }
 .sidebar-head { display:flex; align-items:center; gap:10px; min-height:76px; padding:12px 14px; }
 .brand-mark { flex:0 0 34px; height:34px; display:grid; place-items:center; border-radius:10px; background:var(--accent); color:var(--on-accent); font-size:17px; font-weight:750; }
 .sidebar-brand { flex:1; min-width:0; }
