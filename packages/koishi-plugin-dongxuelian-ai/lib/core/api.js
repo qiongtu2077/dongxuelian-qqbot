@@ -25,8 +25,6 @@ const REQUEST_TIMEOUT_CAP = parseApiPositiveInt(process.env.AI_REQUEST_TIMEOUT_C
 // 辅助判断按节点预留输出额度；恢复与首轮共用本节点期限。
 const JUDGMENT_BUDGET = { initial: 256, recovery: 512, total: 1024, timeoutMs: 8000 };
 const RETALIATION_BUDGET = { initial: 1024, recovery: 2048, total: 3072, timeoutMs: 8000 };
-// 明确文字发问的最后一个节点可在原有时限内扩大一次输出额度。
-const CHAT_REPLY_BUDGET = { initial: 1500, recovery: 3000, total: 4500 };
 function isRecord(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -655,9 +653,9 @@ async function executeChatCompletions(messages, config, extraBody, tools) {
     const canExtendTextFallback = turn && isTextChat && extraBody._extendTextFallback && !extraBody._timeBudget;
     const imageRequest = readImageRequestDiagnostic(extraBody._imageRequest);
     const imageDiagnostic = imageRequest ? { imageSource: imageRequest.source, imageTarget: imageRequest.target, imageDemandId: imageRequest.demandId } : {};
-    const auxiliaryBudget = purpose === 'retaliation_score' ? RETALIATION_BUDGET
+    // 只有辅助判断按专用预算重试同一节点，普通聊天只按模型优先级向后切换。
+    const budget = purpose === 'retaliation_score' ? RETALIATION_BUDGET
         : purpose === 'topic_switch' || purpose === 'identity_judge' ? JUDGMENT_BUDGET : null;
-    const canRecoverChatReply = canExtendTextFallback && extraBody._isProtocolOnlyReply && filtered.max_tokens === undefined;
     const requestId = createDiagnosticRequestId();
     let deadline = Infinity, budgetStepIndex = -1;
     let remainingOutput = 0, recoveryUsed = false, recoveryNext = false, attemptNumber = 0;
@@ -675,11 +673,10 @@ async function executeChatCompletions(messages, config, extraBody, tools) {
         if (Date.now() >= turnDeadline)
             throw new Error('chat_request_deadline');
         const attempt = attempts[index];
-        const budget = auxiliaryBudget || (canRecoverChatReply && index === attempts.length - 1 ? CHAT_REPLY_BUDGET : null);
         // 每个备用节点独立计时和分配输出预算；同节点截断恢复继续共享本节点预算。
         if (index !== budgetStepIndex) {
             budgetStepIndex = index;
-            deadline = auxiliaryBudget ? Date.now() + auxiliaryBudget.timeoutMs : Infinity;
+            deadline = budget ? Date.now() + budget.timeoutMs : Infinity;
             remainingOutput = budget?.total || 0;
             recoveryUsed = false;
             recoveryNext = false;
@@ -703,8 +700,6 @@ async function executeChatCompletions(messages, config, extraBody, tools) {
             : timeBudget ? Infinity : index > 0 ? 10000 : REQUEST_TIMEOUT;
         const timeout = Math.min(deadline - Date.now(), allocation, configuredTimeout);
         const attemptStartedAt = Date.now();
-        if (budget === CHAT_REPLY_BUDGET && !recoveryUsed)
-            deadline = attemptStartedAt + timeout;
         attemptNumber += 1;
         const controller = new AbortController();
         turn?.event('model_attempt', { requestId, purpose, provider: attempt.provider, model: attempt.model,

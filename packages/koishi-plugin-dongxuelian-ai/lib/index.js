@@ -830,7 +830,7 @@ function apply(ctx) {
                 if (code === 'OUTPUT_TRUNCATED' || code === 'EMPTY_RESPONSE') {
                     if (randomTriggered)
                         return;
-                    msg = '这次回复没生成完整，请再问一次。';
+                    msg = '东雪莲无法连接';
                 }
                 else if (/fallback/i.test(m))
                     msg = '我寄了';

@@ -130,48 +130,32 @@ async function runChatCase(t, label, fetchQueue, assertions, options = {}) {
 
 // 回放 11 月 20 日的主节点网络失败和备用节点只生成判定标记开头的响应。
 async function runTruncatedMarkerCases(t) {
-  const clipped = { delayMs: 20, json: {
+  const clipped = { json: {
     choices: [{ finish_reason: 'length', message: { content: '<r', reasoning_content: '私'.repeat(5303) } }],
     usage: { prompt_tokens: 8928, completion_tokens: 1500 },
   } }
-  const recoveredText = '那段剧情我也记得'
-  const recovered = { json: { choices: [{ finish_reason: 'stop', message: {
-    content: '<rare_provocation>N</rare_provocation>' + recoveredText,
-  } }] } }
-  const exhausted = { json: { choices: [{ finish_reason: 'length', message: { content: '<rare_provocation>Y</rare' } }],
-    usage: { completion_tokens: 3000 } } }
+  const empty = { json: { choices: [{ finish_reason: 'stop', message: { content: '' } }] } }
   const options = {
     input: '今天才看到推上一个东雪莲的抗日神剧（）',
     setup: (_session, { data }) => data.writeJson('ai-capability-config.json', createCapabilityConfig({ text: [
       { provider: 'opencode', model: 'deepseek-flash' }, { provider: 'glm', model: 'glm-5.3-prime' },
     ] })),
   }
-  for (const [label, lastResponse, expected] of [
-    ['recovered', recovered, recoveredText], ['exhausted', exhausted, '回复没生成完整'],
+  for (const [label, lastResponse, failureCode] of [
+    ['truncated marker', clipped, 'OUTPUT_TRUNCATED'], ['empty reply', empty, 'EMPTY_RESPONSE'],
   ]) {
-    await runChatCase(t, 'truncated rare marker ' + label, [
-      { error: new Error('fetch failed') }, clipped, lastResponse,
+    await runChatCase(t, 'no visible text on final model: ' + label, [
+      { error: new Error('fetch failed') }, lastResponse,
     ], async (result, _mocked, session, calls, data) => {
-      checkSentIncludes(t, 'truncated marker sends the recovery result: ' + label, result, expected)
-      checkSentExcludes(t, 'truncated marker never reaches QQ: ' + label, result, '<r')
-      const replies = require('../../lib/conversation').getConversationHistory(session)
-        .filter(message => message.role === 'assistant').map(message => message.content)
-      t.check('truncated marker never enters assistant history: ' + label, replies.every(reply => !reply.includes('<r')))
-      if (label === 'recovered') t.check('recovered answer enters history', replies.includes(recoveredText))
-      t.checkEqual('one recovery stays on the final node: ' + label, calls.map(call => call.requestBody.model).join(','),
-        'deepseek-flash,glm-5.3-prime,glm-5.3-prime')
-      t.checkEqual('only recovery gets extra output tokens: ' + label, calls.map(call => call.requestBody.max_tokens).join(','), '1500,1500,3000')
-      const attempts = result.logs.filter(log => log.msg.startsWith('chat_turn ')).map(log => JSON.parse(log.msg.slice(10)))
-        .filter(event => event.event === 'model_attempt' && event.purpose === 'chat')
-      t.check('recovery shares request and remaining node time: ' + label, attempts.length === 3
-        && attempts[2].requestId === attempts[1].requestId && attempts[2].allocatedMs < attempts[1].allocatedMs
-        && attempts[2].deadline === attempts[1].deadline)
-      const events = require('node:fs').readdirSync(data.pathFor('ai-call-diagnostics')).filter(name => name.endsWith('.jsonl'))
-        .flatMap(name => data.readText('ai-call-diagnostics/' + name).trim().split('\n').map(JSON.parse))
-      const failure = events.find(event => event.attempt === 2 && event.purpose === 'chat')
-      t.check('truncated marker is diagnosed with actual usage: ' + label, failure?.status === 'failure'
-        && failure.code === 'OUTPUT_TRUNCATED' && failure.finishReason === 'length' && failure.contentLength === 2
-        && failure.reasoningLength === 5303 && failure.outputTokens === 1500)
+      t.checkEqual('final model failure sends one exact notice: ' + label, result.sent.join('\n'), `<quote id="${session.messageId}"/>东雪莲无法连接`)
+      const history = require('../../lib/conversation').getConversationHistory(session)
+      t.check('failed reply stays out of assistant history: ' + label, !history.some(message => message.role === 'assistant'))
+      t.checkEqual('each text model is called once: ' + label, calls.map(call => call.requestBody.model).join(','), 'deepseek-flash,glm-5.3-prime')
+      t.checkEqual('both text attempts keep their output limit: ' + label, calls.map(call => call.requestBody.max_tokens).join(','), '1500,1500')
+      const failure = Object.values(data.readJson('ai-call-diagnostics/recent.json')).find(event => event.model === 'glm-5.3-prime')
+      t.check('final model failure is diagnosed: ' + label, failure?.status === 'failure' && failure.code === failureCode)
+      if (lastResponse === clipped) t.check('truncated marker retains actual usage', failure?.finishReason === 'length'
+        && failure.contentLength === 2 && failure.reasoningLength === 5303 && failure.outputTokens === 1500)
     }, options)
   }
   // 前面还有可用节点时直接切换；可见短答即使刚好到达长度上限也应送达。
