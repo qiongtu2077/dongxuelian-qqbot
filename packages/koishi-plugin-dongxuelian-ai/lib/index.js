@@ -827,7 +827,12 @@ function apply(ctx) {
                 if (quotaReply)
                     return safeSendReplyWithFreshness(ctx, liveSession, quotaReply, randomTriggered, resolveBot, randomSendOptions);
                 let msg = '东雪莲暂时无法连接。';
-                if (/fallback/i.test(m))
+                if (code === 'OUTPUT_TRUNCATED' || code === 'EMPTY_RESPONSE') {
+                    if (randomTriggered)
+                        return;
+                    msg = '这次回复没生成完整，请再问一次。';
+                }
+                else if (/fallback/i.test(m))
                     msg = '我寄了';
                 else if (/Empty model/i.test(m))
                     msg = '我摆了，懒得回';

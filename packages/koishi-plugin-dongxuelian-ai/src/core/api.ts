@@ -35,6 +35,8 @@ const REQUEST_TIMEOUT_CAP = parseApiPositiveInt(process.env.AI_REQUEST_TIMEOUT_C
 // 辅助判断按节点预留输出额度；恢复与首轮共用本节点期限。
 const JUDGMENT_BUDGET = { initial: 256, recovery: 512, total: 1024, timeoutMs: 8000 } as const
 const RETALIATION_BUDGET = { initial: 1024, recovery: 2048, total: 3072, timeoutMs: 8000 } as const
+// 明确文字发问的最后一个节点可在原有时限内扩大一次输出额度。
+const CHAT_REPLY_BUDGET = { initial: 1500, recovery: 3000, total: 4500 } as const
 
 interface ChatMessage {
   role?: string
@@ -57,6 +59,7 @@ interface ApiConfig {
 interface RequestExtraBody {
   _timeBudget?: import('./model-request-context').ModelTimeBudget
   _extendTextFallback?: boolean
+  _isProtocolOnlyReply?: (text: string, finishReason?: string) => boolean
   _purpose?: 'chat' | 'topic_switch' | 'identity_judge' | 'retaliation_score'
   _imageRequest?: { source: 'explicit-image' | 'random-image' | 'history-tool'; target: string; demandId: string }
   reasoning_effort?: 'low' | 'high' | 'max'
@@ -783,11 +786,12 @@ async function executeChatCompletions(messages: ChatMessage[], config: ApiConfig
   const canExtendTextFallback = turn && isTextChat && extraBody._extendTextFallback && !extraBody._timeBudget
   const imageRequest = readImageRequestDiagnostic(extraBody._imageRequest)
   const imageDiagnostic = imageRequest ? { imageSource: imageRequest.source, imageTarget: imageRequest.target, imageDemandId: imageRequest.demandId } : {}
-  const budget = purpose === 'retaliation_score' ? RETALIATION_BUDGET
+  const auxiliaryBudget = purpose === 'retaliation_score' ? RETALIATION_BUDGET
     : purpose === 'topic_switch' || purpose === 'identity_judge' ? JUDGMENT_BUDGET : null
+  const canRecoverChatReply = canExtendTextFallback && extraBody._isProtocolOnlyReply && filtered.max_tokens === undefined
   const requestId = createDiagnosticRequestId()
   let deadline = Infinity, budgetStepIndex = -1
-  let remainingOutput = budget?.total || 0, recoveryUsed = false, recoveryNext = false, attemptNumber = 0
+  let remainingOutput = 0, recoveryUsed = false, recoveryNext = false, attemptNumber = 0
   let lastFailure: InstanceType<typeof CapabilityUpstreamError> | null = null
   const stepFailures = new Map<number, InstanceType<typeof CapabilityUpstreamError>>()
 
@@ -800,10 +804,11 @@ async function executeChatCompletions(messages: ChatMessage[], config: ApiConfig
     const turnDeadline = Math.min(timeBudget?.deadline ?? Infinity, turn ? turn.deadline - turn.sendWindow() : Infinity)
     if (Date.now() >= turnDeadline) throw new Error('chat_request_deadline')
     const attempt = attempts[index]
+    const budget = auxiliaryBudget || (canRecoverChatReply && index === attempts.length - 1 ? CHAT_REPLY_BUDGET : null)
     // 每个备用节点独立计时和分配输出预算；同节点截断恢复继续共享本节点预算。
     if (index !== budgetStepIndex) {
       budgetStepIndex = index
-      deadline = budget ? Date.now() + budget.timeoutMs : Infinity
+      deadline = auxiliaryBudget ? Date.now() + auxiliaryBudget.timeoutMs : Infinity
       remainingOutput = budget?.total || 0; recoveryUsed = false; recoveryNext = false
     }
     // 恢复排队期间也可能耗尽期限；不提交已过期请求，继续下一节点。
@@ -823,6 +828,7 @@ async function executeChatCompletions(messages: ChatMessage[], config: ApiConfig
       : timeBudget ? Infinity : index > 0 ? 10000 : REQUEST_TIMEOUT
     const timeout = Math.min(deadline - Date.now(), allocation, configuredTimeout)
     const attemptStartedAt = Date.now()
+    if (budget === CHAT_REPLY_BUDGET && !recoveryUsed) deadline = attemptStartedAt + timeout
     attemptNumber += 1
     const controller = new AbortController()
     turn?.event('model_attempt', { requestId, purpose, provider: attempt.provider, model: attempt.model,
@@ -853,6 +859,11 @@ async function executeChatCompletions(messages: ChatMessage[], config: ApiConfig
       // 非协作网络即使迟到成功也不能继续保存或发送；真实 await 保持队列所有权。
       turn?.assertActive()
       if (controller.signal.aborted || Date.now() >= turnDeadline) throw new Error('chat_request_deadline')
+      // 聊天方识别没有可见正文的协议片段；保留已消耗的用量并走节点失败分支。
+      if (response.result.type === 'text' && extraBody._isProtocolOnlyReply?.(response.result.content, response.finishReason)) {
+        throw new CapabilityUpstreamError('AI 上游没有返回可见答案', response.finishReason === 'length' ? 'OUTPUT_TRUNCATED' : 'EMPTY_RESPONSE', true, 200,
+          { finishReason: response.finishReason, contentLength: response.result.content.length, reasoningLength: response.result.reasoning.length, usage: response.usage })
+      }
       protocolCompleted = true
       clearTimeout(timer)
       recordTokenUsage(attempt.provider || 'unknown', getUsageTotal(response.usage), {

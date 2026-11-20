@@ -17,6 +17,7 @@ interface ApiConfig {
 interface RequestExtraBody {
     _timeBudget?: import('./model-request-context').ModelTimeBudget;
     _extendTextFallback?: boolean;
+    _isProtocolOnlyReply?: (text: string, finishReason?: string) => boolean;
     _purpose?: 'chat' | 'topic_switch' | 'identity_judge' | 'retaliation_score';
     _imageRequest?: {
         source: 'explicit-image' | 'random-image' | 'history-tool';

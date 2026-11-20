@@ -12,7 +12,7 @@ const chat_turn_budget_1 = require("./lifecycle/chat-turn-budget");
 const { TEST_MODE_FILE, HOSTILE_MODE_FILE, REQUEST_TIMEOUT, MAX_OUTPUT_CHARS_FRIENDLY, MAX_OUTPUT_CHARS_ABUSIVE, USER_PROFILE_DIR, POLITICAL_DETECT_FILE, JAILBREAK_OUTPUT_RE, JAPAN_SELF_IDENTIFY_RE, GENERATION_REQUEST_RE, SENSITIVE_KEYWORDS_RE, } = require('./core/constants');
 const { resolvePersona, loadPersonalSkill } = require('./persona/persona'); // 人格解析 + 技能文件加载
 const { calculateRetaliationScore } = require('./behavior/retaliation'); // 攻击性评分（决定回怼力度）
-const { RARE_PROVOCATION_PROMPT, parseRareProvocationDecision } = require('./behavior/rare-provocation');
+const { RARE_PROVOCATION_PROMPT, parseRareProvocationDecision, isIncompleteRareReply } = require('./behavior/rare-provocation');
 const { requestChatCompletions, // 通用 LLM 请求（含 fallback 链）
 requestOpenAIResponsesWithSearch, // OpenAI Responses API（联网搜索）
 isVisionModel, // 判断模型是否支持视觉
@@ -470,7 +470,8 @@ async function executeOwnedChatModelStage(input, imageTurn) {
                     extra._onRequestAttempt(step);
             },
         } : {};
-        const result = await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard, _extendTextFallback: extendTextFallback }, tools);
+        const result = await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard,
+            _extendTextFallback: extendTextFallback, _isProtocolOnlyReply: isIncompleteRareReply }, tools);
         (0, chat_turn_budget_1.assertChatTurnActive)();
         if (typeof result === 'string')
             return readTurnRareDecision(result);

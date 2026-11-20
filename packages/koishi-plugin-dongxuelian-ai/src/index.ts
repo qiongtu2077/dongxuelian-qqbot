@@ -1113,7 +1113,10 @@ function apply(ctx: IndexContext): void {
         const quotaReply = getModelQuotaReply(err)
         if (quotaReply) return safeSendReplyWithFreshness(ctx, liveSession, quotaReply, randomTriggered, resolveBot, randomSendOptions)
         let msg = '东雪莲暂时无法连接。'
-        if (/fallback/i.test(m)) msg = '我寄了'
+        if (code === 'OUTPUT_TRUNCATED' || code === 'EMPTY_RESPONSE') {
+          if (randomTriggered) return
+          msg = '这次回复没生成完整，请再问一次。'
+        } else if (/fallback/i.test(m)) msg = '我寄了'
         else if (/Empty model/i.test(m)) msg = '我摆了，懒得回'
         else if (/data_inspection|DataInspection|inappropriate content|content_filter|content policy|moderation|safety|审核|风控|ResponsibleAIPolicy|ResponsibleAI|blocked|censored/i.test(m)) {
           msg = /data_inspection|DataInspection|inappropriate content|图/i.test(m) ? '这个图不合适，不说了吧' : '这话我接不了，换一句吧。'

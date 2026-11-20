@@ -207,6 +207,21 @@ async function run(t) {
     })
   })
 
+  // 随机插话独立执行到队列释放，截断不追加 token，也不向群里发送错误提示。
+  await withScenario({ data: { randomWhitelist: ['10001'], randomRate: { 10001: 1 } } }, async ({ ready, makeSession, run, harness }) => {
+    await ready()
+    const mocked = mockFetch([{ json: { choices: [{ finish_reason: 'length', message: { content: '<r' } }] } }])
+    await withFetch(mocked, async () => {
+      const session = makeSession({ content: '先聊到这里吧', messageId: 'clipped-random' })
+      await run(session, { flushTicks: 120 })
+      const released = () => harness.logs.some(log => log.msg.includes('"event":"queue_release"') && log.msg.includes('"messageId":"clipped-random"'))
+      const deadline = performance.now() + 5000
+      while (!released() && performance.now() < deadline) await realSleep(10)
+      t.check('random marker-only response finishes silently', released() && session.sent.length === 0)
+      t.check('random truncation keeps its single small request', mocked.calls.length === 1 && mocked.calls[0].requestBody.max_tokens === 200)
+    })
+  })
+
   await withScenario({
     data: {
       randomWhitelist: ['10001'],

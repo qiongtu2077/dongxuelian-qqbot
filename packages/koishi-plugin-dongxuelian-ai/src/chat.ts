@@ -19,7 +19,7 @@ const {
 } = require('./core/constants') as typeof import('./core/constants')
 const { resolvePersona, loadPersonalSkill } = require('./persona/persona') as typeof import('./persona/persona') // 人格解析 + 技能文件加载
 const { calculateRetaliationScore } = require('./behavior/retaliation') as typeof import('./behavior/retaliation') // 攻击性评分（决定回怼力度）
-const { RARE_PROVOCATION_PROMPT, parseRareProvocationDecision } = require('./behavior/rare-provocation') as typeof import('./behavior/rare-provocation')
+const { RARE_PROVOCATION_PROMPT, parseRareProvocationDecision, isIncompleteRareReply } = require('./behavior/rare-provocation') as typeof import('./behavior/rare-provocation')
 const {
   requestChatCompletions,       // 通用 LLM 请求（含 fallback 链）
   requestOpenAIResponsesWithSearch, // OpenAI Responses API（联网搜索）
@@ -747,7 +747,8 @@ async function executeOwnedChatModelStage(input: ExecuteChatModelStageOptions, i
         if (typeof extra._onRequestAttempt === 'function') extra._onRequestAttempt(step)
       },
     } : {}
-    const result = await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard, _extendTextFallback: extendTextFallback }, tools) as ChatToolFlowReply
+    const result = await callOpenAI(turnMessages, !!randomTriggered, { ...extra, ...metadata, ...attemptGuard,
+      _extendTextFallback: extendTextFallback, _isProtocolOnlyReply: isIncompleteRareReply }, tools) as ChatToolFlowReply
     assertChatTurnActive()
     if (typeof result === 'string') return readTurnRareDecision(result)
     if (result.message?.content) result.message.content = readTurnRareDecision(result.message.content)

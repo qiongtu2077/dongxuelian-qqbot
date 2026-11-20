@@ -113,8 +113,18 @@ async function runRareChatCase(t, input, confirmed, { missingAudio = false, rand
 // 验证中文兜底、跨语言模型判定、真实音频发送及失败/概率回退。
 async function run(t) {
   t.section('scenario: rare semantic voice route')
-  const { parseRareProvocationDecision } = require('../../lib/behavior/rare-provocation')
+  const { parseRareProvocationDecision, isIncompleteRareReply } = require('../../lib/behavior/rare-provocation')
   const { isRareProvocation } = require('../../lib/core/utils')
+  for (const verdict of ['Y', 'N']) {
+    const marker = '<rare_provocation>' + verdict + '</rare_provocation>'
+    const prefixes = Array.from(marker, (_, index) => marker.slice(0, index + 1))
+    t.check('rare length stop before any visible text: ' + verdict, prefixes.every(prefix => isIncompleteRareReply(prefix, 'length')))
+    t.check('rare complete verdict and body are usable: ' + verdict, !isIncompleteRareReply(marker, 'stop')
+      && !isIncompleteRareReply(marker + '好', 'length'))
+  }
+  t.check('unfinished marker without finish metadata is unusable', isIncompleteRareReply(' \n<r '))
+  t.check('legitimate short text and quoted markers survive', !isIncompleteRareReply('<', 'stop')
+    && ['好', 'x<r', '<ruby>注音</ruby>', '这里的 <r 是什么意思'].every(value => !isIncompleteRareReply(value, 'length')))
   for (const input of ['罕见', '稀有', '你不太常见', '不常见', '稀罕', '难得一见', '汉奸', '漢奸']) {
     t.check(`rare direct fallback covers ${input}`, isRareProvocation(input))
   }
@@ -142,6 +152,12 @@ async function run(t) {
     })
     t.check('rare retry removes markers and propagates latest verdict', meta.rareConfirmed === true
       && retried.finalReply.includes('骂谁罕见') && !retried.finalReply.includes('rare_provocation'))
+    for (const randomTriggered of [false, true]) {
+      const clipped = await finalizeChatReply({ reply: '拉黑你', session, ctx: harness.ctx,
+        options: { randomTriggered }, callModel: async () => '<r' })
+      t.check('guard retry with a marker fragment respects send mode: ' + randomTriggered,
+        clipped.shouldSend === !randomTriggered && !clipped.finalReply.includes('<r') && Boolean(clipped.finalReply) === !randomTriggered)
+    }
   })
   for (const input of ['你不太常见', '稀有', '汉奸', 'You are uncommon.', 'What a rare specimen you are!', '君は珍しいね', '너 참 희귀하네', 'Tu es un spécimen rare.', 'Du bist eine Seltenheit.', 'Eres poco común.', 'Ты редкий экземпляр.', 'أنت نادر', '你真是个 rare specimen']) {
     await runRareChatCase(t, input, true)

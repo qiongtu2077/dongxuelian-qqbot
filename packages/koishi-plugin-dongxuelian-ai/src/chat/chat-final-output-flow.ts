@@ -194,6 +194,7 @@ async function retryUnsafeReply({
   return reply
 }
 
+// 清洗最终可见回复并落实本轮的发送决策。
 async function finalizeChatReply({
   reply = '',
   messages = [],
@@ -224,8 +225,6 @@ async function finalizeChatReply({
   // 重试和人格兜底同样移除内部标记，避免进入可见回复。
   const callRareAwareModel: CallModelFn = async (...args) => readRareDecision(await callModel(...args))
   reply = readRareDecision(reply)
-  // 上游只输出判定标记时仍给出可见回复，不能让非空协议正文变成静默丢消息。
-  if (!reply.trim()) reply = rareConfirmed ? '骂谁罕见。' : '这句我先重组织一下。'
   reply = await retryUnsafeReply({
     reply,
     messages,
@@ -239,6 +238,8 @@ async function finalizeChatReply({
     usedReminderActionTool,
     usedUploadedFileVariantTool,
   })
+  // 首答或守卫重试只剩判定标记时，明确发问需要可见回复，随机插话沿用空回复决策。
+  if (!reply.trim() && !isRandomTriggered) reply = rareConfirmed ? '骂谁罕见。' : '这句我先重组织一下。'
 
   let finalReply = trimReply(
     stripMarkdownForQQ(sanitizeReply(reply, userName)),
