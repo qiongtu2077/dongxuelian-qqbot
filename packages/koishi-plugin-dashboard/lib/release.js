@@ -234,6 +234,8 @@ function verifyReleaseManifest(releaseRoot) {
 module.exports = {
     MANIFEST_NAME,
     RELEASE_PACKAGES,
+    sha256File,
+    resolveReleasePath,
     buildDashboardRelease,
     verifyReleaseManifest,
     verifyBrowserAssets,

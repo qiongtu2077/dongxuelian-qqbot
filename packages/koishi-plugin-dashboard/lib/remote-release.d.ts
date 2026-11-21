@@ -48,6 +48,10 @@ interface PreviewRelease {
     files: ReleaseFile[];
     totalBytes: number;
 }
+interface DeltaArchive {
+    bytes: number;
+    sha256: string;
+}
 interface RemoteReleasePreview {
     schemaVersion: 1;
     previewId: string;
@@ -69,6 +73,7 @@ interface RemoteReleasePreview {
         };
     };
     release: PreviewRelease | null;
+    transfer?: DeltaArchive;
     requiredBytes: number;
     changes: ReleaseChangeSummary;
     blockers: string[];
@@ -95,16 +100,31 @@ declare function inspectGitSource(repoRoot: string): GitSourceState;
 declare function isAllowedBuildChange(statusLine: string): boolean;
 declare function buildFrozenRelease(repoRoot: string, worktreeRoot: string, releasesRoot: string, commit: string): FrozenBuildResult;
 declare function describeRemoteProbeFailure(value: unknown): string;
+declare function planReleaseDelta(nextFiles: ReleaseFile[], currentFiles: ReleaseFile[]): {
+    changedPaths: string[];
+    changes: {
+        added: number;
+        modified: number;
+        removed: number;
+        unchanged: number;
+        totalFiles: number;
+        totalBytes: number;
+    };
+};
 declare function summarizeReleaseChanges(nextFiles: ReleaseFile[], currentFiles: ReleaseFile[]): ReleaseChangeSummary;
+declare function buildDeltaArchive(releaseDir: string, archivePath: string, changedPaths: string[]): DeltaArchive;
 declare function isSelfDeploy(sourceHostname: string, server: string, targetHostname: string): boolean;
-declare function collectPreviewBlockers(source: GitSourceState, server: string, requestedAppDir: string, target: RemoteProbe | null, release: PreviewRelease | null, remoteError?: string): string[];
+declare function collectPreviewBlockers(source: GitSourceState, server: string, requestedAppDir: string, target: RemoteProbe | null, release: PreviewRelease | null, remoteError?: string, archiveBytes?: number): string[];
 declare function isPreviewReleaseDirectory(releasesRoot: string, releaseDir: string, releaseId: string): boolean;
 declare function cleanupExpiredPreviews(previewsDir: string, releasesRoot: string, now?: number): void;
 declare function createRemoteReleasePreview(options: CreatePreviewOptions): RemoteReleasePreview;
 declare function readRemoteReleasePreview(previewsDir: string, previewId: unknown): RemoteReleasePreview;
 declare function compareRemoteBaseline(preview: RemoteReleasePreview, target: RemoteProbe): string[];
 declare function assertPreviewCanStart(preview: RemoteReleasePreview, confirmed: unknown, now?: number): void;
-declare function validateRemoteReleasePreview(options: ValidatePreviewOptions): RemoteReleasePreview;
+declare function validateRemoteReleasePreview(options: ValidatePreviewOptions): RemoteReleasePreview & {
+    archivePath: string;
+    transfer: DeltaArchive;
+};
 declare function toPublicRemoteReleasePreview(preview: RemoteReleasePreview): Record<string, unknown>;
 declare const _default: {
     PREVIEW_TTL_MS: number;
@@ -114,6 +134,8 @@ declare const _default: {
     buildFrozenRelease: typeof buildFrozenRelease;
     describeRemoteProbeFailure: typeof describeRemoteProbeFailure;
     summarizeReleaseChanges: typeof summarizeReleaseChanges;
+    planReleaseDelta: typeof planReleaseDelta;
+    buildDeltaArchive: typeof buildDeltaArchive;
     isSelfDeploy: typeof isSelfDeploy;
     collectPreviewBlockers: typeof collectPreviewBlockers;
     compareRemoteBaseline: typeof compareRemoteBaseline;

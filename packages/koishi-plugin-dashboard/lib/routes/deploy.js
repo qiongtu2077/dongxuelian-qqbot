@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { exec, execSync } = require('child_process');
-const { json, collectBody, log, shellQuote, isInsidePath, copyRecursiveSync, getOptionalErrorMessage: getLegacyErrorMessage, } = require('../utils');
+const { json, collectBody, log, shellQuote, commandQuote, isInsidePath, copyRecursiveSync, getOptionalErrorMessage: getLegacyErrorMessage, } = require('../utils');
 const { KOISHI_DIR, DATA_DIR, PLUGIN_ROOT, FE_DIR, DIST_DIR, LOCAL_DEPLOY_MANIFEST_FILE, LOCAL_NAPCAT_DIR_FILE, PORT, toProjectRel } = require('../paths');
 const { requireAdmin, requireStrictAdmin } = require('../auth');
 const { getCommandInfo, getLocalToolCommand, checkPortState } = require('../tools');
@@ -285,14 +285,17 @@ function handlePostSafeDeployRun(req, res) {
             json(res, { ok: true, taskId });
             const remoteReleaseRoot = dh.remoteJoin(task.appDir, '.lian-releases');
             const remoteNext = dh.remoteJoin(remoteReleaseRoot, release.releaseId + '.next');
+            const remoteArchive = dh.remoteJoin(remoteNext, '.upload.tgz');
             const remoteResult = dh.remoteJoin(task.appDir, 'data', 'deploy-tasks', taskId + '.remote.json');
             const unitName = 'lian-release-' + release.releaseId.replace(/[^a-z0-9-]/g, '-');
+            const assembleArgs = [remoteReleaseRoot, release.releaseId, task.baselineManifestHash, release.manifestHash, preview.transfer.sha256].map(shellQuote).join(' ');
+            const assembler = commandQuote(path.join(__dirname, '..', 'assemble-release-delta.js'));
             // 只为本次受管理员保护的发布单元设置环境，不改变服务的永久连接要求。
             const activationEnvironment = task.allowOnebotOffline ? ' --setenv=LIAN_DEPLOY_ALLOW_ONEBOT_OFFLINE=1' : '';
             const commands = [
-                { stage: 'prepare_remote_version', command: dh.sshCommand(task.server, `mkdir -p ${shellQuote(remoteReleaseRoot)} ${shellQuote(path.dirname(remoteResult))} && rm -rf ${shellQuote(remoteNext)}`), timeout: 30000 },
-                { stage: 'upload_release', command: dh.scpCommand(release.releaseDir, dh.scpRemoteTarget(task.server, remoteNext), { recursive: true }), timeout: 10 * 60 * 1000 },
-                { stage: 'verify_remote_manifest', command: dh.sshCommand(task.server, `node ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'verify-release-manifest.js'))} ${shellQuote(remoteNext)}`), timeout: 3 * 60 * 1000 },
+                { stage: 'prepare_remote_version', command: dh.sshCommand(task.server, `mkdir -p ${shellQuote(path.dirname(remoteResult))} && mkdir ${shellQuote(remoteNext)}`), timeout: 30000 },
+                { stage: 'upload_delta', command: dh.scpCommand(preview.archivePath, dh.scpRemoteTarget(task.server, remoteArchive)), timeout: 10 * 60 * 1000 },
+                { stage: 'assemble_release', command: `${dh.sshCommand(task.server, 'node --input-type=commonjs - ' + assembleArgs)} < ${assembler}`, timeout: 3 * 60 * 1000 },
                 { stage: 'start_detached_activation', command: dh.sshCommand(task.server, `systemd-run --unit=${shellQuote(unitName)} --collect --quiet --no-block --property=Type=oneshot --property=TimeoutStartSec=1800${activationEnvironment} /bin/bash ${shellQuote(dh.remoteJoin(remoteNext, 'scripts', 'activate-dashboard-release.sh'))} ${shellQuote(task.appDir)} ${shellQuote(release.releaseId)} ${shellQuote(remoteResult)} ${shellQuote(task.baselineManifestHash)}`), timeout: 30000 },
             ];
             runSafeDeployCommands(task, commands, () => {

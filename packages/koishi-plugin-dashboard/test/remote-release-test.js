@@ -172,6 +172,7 @@ function main() {
     testConnectionAndSource(tempRoot)
     testPreviewComparison()
     testPreviewGates()
+    require('./release-delta-test').runReleaseDeltaTests(tempRoot)
     testDetachedBuild(tempRoot)
     console.log('remote release preview tests passed')
   } finally {

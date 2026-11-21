@@ -56,6 +56,7 @@ function arrangeDeployResponses() {
       source: { hostname: 'source-host', repoRoot: '/source', commit: 'b'.repeat(40), clean: true },
       target: { server: 'test-server', hostname: 'target-host', appDir: '/srv/test-app', availableBytes: 1024 * 1024 * 1024, release: { releaseId: 'old-release' } },
       release: { releaseId: 'new-release', totalBytes: 1024, fileCount: 10 },
+      uploadBytes: 315,
       requiredBytes: 64 * 1024 * 1024,
       changes: { added: 1, modified: 2, removed: 3, unchanged: 4 },
     },
@@ -99,6 +100,7 @@ describe('DeployPanel 持久化任务轮询闭环', () => {
     const wrapper = await mountRemote()
 
     await startConfirmedPreview(wrapper)
+    expect(wrapper.text()).toContain('315 B，复用 4 个文件')
     await jest.advanceTimersByTimeAsync(0)
     expect(dashboardApi.getDeployProgress).toHaveBeenCalledTimes(1)
     expect(dashboardApi.getDeployProgress).toHaveBeenLastCalledWith('task123')

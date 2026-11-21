@@ -249,6 +249,8 @@ function verifyReleaseManifest(releaseRoot: string): ReleaseManifest {
 export = {
   MANIFEST_NAME,
   RELEASE_PACKAGES,
+  sha256File,
+  resolveReleasePath,
   buildDashboardRelease,
   verifyReleaseManifest,
   verifyBrowserAssets,

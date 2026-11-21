@@ -6,7 +6,7 @@ const os = require('os') as typeof import('os')
 const path = require('path') as typeof import('path')
 const { execFileSync, execSync } = require('child_process') as typeof import('child_process')
 const { shellQuote } = require('./utils') as typeof import('./utils')
-const { buildDashboardRelease, verifyReleaseManifest, RELEASE_PACKAGES } = require('./release') as typeof import('./release')
+const { buildDashboardRelease, verifyReleaseManifest, RELEASE_PACKAGES, MANIFEST_NAME, sha256File, resolveReleasePath } = require('./release') as typeof import('./release')
 const dh = require('./deploy-helpers') as typeof import('./deploy-helpers')
 
 interface ReleaseFile {
@@ -62,6 +62,11 @@ interface PreviewRelease {
   totalBytes: number
 }
 
+interface DeltaArchive {
+  bytes: number
+  sha256: string
+}
+
 interface RemoteReleasePreview {
   schemaVersion: 1
   previewId: string
@@ -80,6 +85,7 @@ interface RemoteReleasePreview {
     lock: { present: boolean, owner: string }
   }
   release: PreviewRelease | null
+  transfer?: DeltaArchive
   requiredBytes: number
   changes: ReleaseChangeSummary
   blockers: string[]
@@ -290,9 +296,10 @@ function normalizeReleaseIdentity(value: unknown): ReleaseIdentity | null {
   return { schemaVersion: 1, releaseId: String(raw.releaseId), version: String(raw.version || ''), commit: String(raw.commit || ''), builtAt: String(raw.builtAt || ''), files, contentHash: String(raw.contentHash), manifestHash: String(raw.manifestHash) }
 }
 
-// Compares two complete manifests without reading any user data.
-function summarizeReleaseChanges(nextFiles: ReleaseFile[], currentFiles: ReleaseFile[]): ReleaseChangeSummary {
+// 按最终发布路径和内容比较清单，让预览统计与传输文件使用同一个差异结果。
+function planReleaseDelta(nextFiles: ReleaseFile[], currentFiles: ReleaseFile[]) {
   const current = new Map(currentFiles.map(file => [file.path, file]))
+  const changedPaths: string[] = []
   let added = 0
   let modified = 0
   let unchanged = 0
@@ -300,12 +307,51 @@ function summarizeReleaseChanges(nextFiles: ReleaseFile[], currentFiles: Release
   for (const file of nextFiles) {
     totalBytes += file.size
     const previous = current.get(file.path)
-    if (!previous) added += 1
-    else if (previous.size !== file.size || previous.sha256 !== file.sha256) modified += 1
-    else unchanged += 1
+    if (previous && previous.size === file.size && previous.sha256 === file.sha256) unchanged += 1
+    else {
+      changedPaths.push(file.path)
+      if (previous) modified += 1
+      else added += 1
+    }
     current.delete(file.path)
   }
-  return { added, modified, removed: current.size, unchanged, totalFiles: nextFiles.length, totalBytes }
+  const changes = { added, modified, removed: current.size, unchanged, totalFiles: nextFiles.length, totalBytes }
+  return { changedPaths, changes }
+}
+
+// 保留现有清单统计接口。
+function summarizeReleaseChanges(nextFiles: ReleaseFile[], currentFiles: ReleaseFile[]): ReleaseChangeSummary {
+  return planReleaseDelta(nextFiles, currentFiles).changes
+}
+
+// 临时收集变更文件供 tar 遍历，避免 Windows 文件列表编码或命令行长度改变文件名。
+function buildDeltaArchive(releaseDir: string, archivePath: string, changedPaths: string[]): DeltaArchive {
+  fs.mkdirSync(path.dirname(archivePath), { recursive: true })
+  const staging = fs.mkdtempSync(path.join(path.dirname(archivePath), 'delta-files-'))
+  try {
+    for (const relativePath of [MANIFEST_NAME, ...changedPaths]) {
+      const source = resolveReleasePath(releaseDir, relativePath)
+      const target = resolveReleasePath(staging, relativePath)
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(source, target, fs.constants.COPYFILE_FICLONE)
+    }
+    // 只传清单和顶层条目，避免归档临时根目录的权限并覆盖服务器版本目录的权限。
+    const roots = fs.readdirSync(staging).map(name => './' + name)
+    execFileSync('tar', ['-czf', archivePath, ...roots], {
+      cwd: staging, timeout: 3 * 60 * 1000, stdio: ['ignore', 'ignore', 'pipe'],
+    })
+    return { bytes: fs.statSync(archivePath).size, sha256: sha256File(archivePath) }
+  } catch (error) {
+    fs.rmSync(archivePath, { force: true })
+    throw error
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true })
+  }
+}
+
+// 目标机在独立目录中组装完整版本，并短暂保存上传包。
+function requiredReleaseBytes(release: PreviewRelease, archiveBytes: number): number {
+  return release.totalBytes + archiveBytes + Math.max(DISK_SAFETY_BYTES, Math.ceil(release.totalBytes * 0.1))
 }
 
 // Returns true only when a target is clearly the source machine itself.
@@ -317,7 +363,7 @@ function isSelfDeploy(sourceHostname: string, server: string, targetHostname: st
 }
 
 // Produces explicit blockers from one frozen source, release and remote probe.
-function collectPreviewBlockers(source: GitSourceState, server: string, requestedAppDir: string, target: RemoteProbe | null, release: PreviewRelease | null, remoteError = ''): string[] {
+function collectPreviewBlockers(source: GitSourceState, server: string, requestedAppDir: string, target: RemoteProbe | null, release: PreviewRelease | null, remoteError = '', archiveBytes = 0): string[] {
   const blockers: string[] = []
   if (!source.clean) blockers.push(`发布源工作区不干净（${source.changes.length} 项），请提交或移除改动后重新预览`)
   if (remoteError) blockers.push(`远端只读探测失败：${remoteError}`)
@@ -327,7 +373,7 @@ function collectPreviewBlockers(source: GitSourceState, server: string, requeste
     if (!target.release) blockers.push(`远端当前发布无法完整校验：${target.releaseError || '尚无不可变发布记录'}`)
     if (target.lock.present) blockers.push(`远端存在发布锁${target.lock.owner ? `：${target.lock.owner}` : ''}`)
     if (release) {
-      const requiredBytes = release.totalBytes + Math.max(DISK_SAFETY_BYTES, Math.ceil(release.totalBytes * 0.1))
+      const requiredBytes = requiredReleaseBytes(release, archiveBytes)
       if (target.availableBytes < requiredBytes) blockers.push(`远端磁盘不足：需要至少 ${requiredBytes} 字节，可用 ${target.availableBytes} 字节`)
     }
   }
@@ -369,6 +415,7 @@ function cleanupExpiredPreviews(previewsDir: string, releasesRoot: string, now =
       const startedStillActive = preview.startedAt > 0 && now - preview.startedAt <= STARTED_PREVIEW_RETENTION_MS
       if (preview.expiresAt > now || startedStillActive) continue
       if (preview.release?.releaseDir && isPreviewReleaseDirectory(releasesRoot, preview.release.releaseDir, preview.release.releaseId)) fs.rmSync(preview.release.releaseDir, { recursive: true, force: true })
+      fs.rmSync(file + '.tgz', { force: true })
       fs.rmSync(file, { force: true })
     } catch { /* malformed records are left for explicit operator inspection */ }
   }
@@ -397,9 +444,15 @@ function createRemoteReleasePreview(options: CreatePreviewOptions): RemoteReleas
   let remoteError = ''
   try { target = probeRemoteTarget(targetConfig.server, targetConfig.appDir) }
   catch (error) { remoteError = String((error as { message?: unknown })?.message || error || '远端只读探测失败').slice(0, 1000) }
-  const blockers = collectPreviewBlockers(source, targetConfig.server, targetConfig.appDir, target, release, remoteError)
-  const currentFiles = target?.release?.files || []
-  const changes = release ? summarizeReleaseChanges(release.files, currentFiles) : { added: 0, modified: 0, removed: 0, unchanged: 0, totalFiles: 0, totalBytes: 0 }
+  const { changes, changedPaths } = planReleaseDelta(release?.files || [], (release && target?.release?.files) || [])
+  let transfer: DeltaArchive | undefined
+  let archiveError = ''
+  if (release && target?.release) {
+    try { transfer = buildDeltaArchive(release.releaseDir, previewFile(previewsDir, previewId) + '.tgz', changedPaths) }
+    catch (error) { archiveError = '无法生成增量包：' + (error instanceof Error ? error.message : String(error)) }
+  }
+  const blockers = collectPreviewBlockers(source, targetConfig.server, targetConfig.appDir, target, release, remoteError, transfer?.bytes)
+  if (archiveError) blockers.push(archiveError)
   const preview: RemoteReleasePreview = {
     schemaVersion: 1,
     previewId,
@@ -418,7 +471,8 @@ function createRemoteReleasePreview(options: CreatePreviewOptions): RemoteReleas
       lock: target?.lock || { present: false, owner: '' },
     },
     release,
-    requiredBytes: release ? release.totalBytes + Math.max(DISK_SAFETY_BYTES, Math.ceil(release.totalBytes * 0.1)) : 0,
+    transfer,
+    requiredBytes: release ? requiredReleaseBytes(release, transfer?.bytes || 0) : 0,
     changes,
     blockers,
   }
@@ -456,7 +510,7 @@ function assertPreviewCanStart(preview: RemoteReleasePreview, confirmed: unknown
 }
 
 // Revalidates the source, frozen release and remote baseline before creating a task.
-function validateRemoteReleasePreview(options: ValidatePreviewOptions): RemoteReleasePreview {
+function validateRemoteReleasePreview(options: ValidatePreviewOptions): RemoteReleasePreview & { archivePath: string, transfer: DeltaArchive } {
   const preview = readRemoteReleasePreview(options.previewsDir, options.previewId)
   assertPreviewCanStart(preview, options.confirmed)
   if (!preview.release) throw new Error('部署预览没有冻结发布物')
@@ -470,9 +524,16 @@ function validateRemoteReleasePreview(options: ValidatePreviewOptions): RemoteRe
   const target = probeRemoteTarget(preview.target.server, preview.target.requestedAppDir)
   const baselineChanges = compareRemoteBaseline(preview, target)
   if (baselineChanges.length) throw new Error(`${baselineChanges.join('；')}，请重新生成预览`)
+  const archivePath = previewFile(options.previewsDir, preview.previewId) + '.tgz'
+  if (!target.release) throw new Error('目标缺少已校验的发布基线')
+  // 旧版尚未使用的预览仍从真实清单生成增量，已冻结的包则必须匹配原摘要。
+  const transfer = preview.transfer || buildDeltaArchive(preview.release.releaseDir, archivePath, planReleaseDelta(manifest.files, target.release.files).changedPaths)
+  if (fs.statSync(archivePath, { throwIfNoEntry: false })?.size !== transfer.bytes || sha256File(archivePath) !== transfer.sha256) throw new Error('冻结增量包已变化，请重新生成预览')
+  if (target.availableBytes < requiredReleaseBytes(preview.release, transfer.bytes)) throw new Error('远端可用磁盘不足以组装增量发布')
+  preview.transfer = transfer
   preview.startedAt = Date.now()
   writePreview(options.previewsDir, preview)
-  return preview
+  return { ...preview, archivePath, transfer }
 }
 
 // Removes private paths and full manifests before returning a preview to the browser.
@@ -494,6 +555,7 @@ function toPublicRemoteReleasePreview(preview: RemoteReleasePreview): Record<str
     release: preview.release ? { releaseId: preview.release.releaseId, commit: preview.release.commit, manifestHash: preview.release.manifestHash, contentHash: preview.release.contentHash, totalBytes: preview.release.totalBytes, fileCount: preview.release.files.length } : null,
     requiredBytes: preview.requiredBytes,
     changes: preview.changes,
+    uploadBytes: preview.transfer?.bytes,
     blockers: preview.blockers,
     canDeploy: !!preview.release && preview.blockers.length === 0 && Date.now() < preview.expiresAt,
   }
@@ -507,6 +569,8 @@ export = {
   buildFrozenRelease,
   describeRemoteProbeFailure,
   summarizeReleaseChanges,
+  planReleaseDelta,
+  buildDeltaArchive,
   isSelfDeploy,
   collectPreviewBlockers,
   compareRemoteBaseline,

@@ -50,6 +50,8 @@ remoteRelease.validateRemoteReleasePreview = function validate(options) {
   assert.strictEqual(options.confirmed, true)
   return {
     previewId: 'fixture-preview',
+    archivePath: path.join(dataDir, 'fixture-preview.json.tgz'),
+    transfer: { bytes: 512, sha256: 'f'.repeat(64) },
     target: { server: 'root@example.invalid', requestedAppDir: '/srv/app', release: { manifestHash: 'c'.repeat(64) } },
     release: { releaseId: 'fixture-release', releaseDir: path.join(dataDir, 'frozen'), commit: 'd'.repeat(40), manifestHash, contentHash },
   }
@@ -105,6 +107,14 @@ async function startTask(options = {}) {
   for (let index = 0; index < 3; index += 1) {
     const command = commands.shift()
     assert(command, 'preparation did not advance')
+    if (index === 1) {
+      assert.match(command.command, /scp .*fixture-preview\.json\.tgz.*fixture-release\.next\/\.upload\.tgz/)
+      assert(!command.command.includes(' -r '), 'upload must send one delta archive')
+    }
+    if (index === 2) {
+      assert(command.command.includes('assemble-release-delta.js'))
+      assert(command.command.includes(manifestHash) && command.command.includes('f'.repeat(64)))
+    }
     command.callback(null, '', '')
   }
   const activation = commands.shift()
@@ -125,6 +135,20 @@ function progress(taskId) {
 }
 
 // --- 部署回执回归 ---
+
+// 增量组装失败时记录准确阶段，并阻止启动远端激活单元。
+async function testAssemblyFailure() {
+  remoteResult = new Error('SSH result unavailable')
+  const { taskId } = await callRoute('POST', '/dashboard/api/deploy/run', { previewId: 'fixture-preview', confirmed: true })
+  commands.shift().callback(null, '', '')
+  commands.shift().callback(null, '', '')
+  commands.shift().callback(new Error('delta verification failed'), '', '')
+  const stopped = await progress(taskId)
+  assert.strictEqual(stopped.state, 'failed')
+  assert.strictEqual(stopped.stage, 'assemble_release')
+  assert.strictEqual(commands.length, 0, 'activation started after assembly failure')
+  passed += 1
+}
 
 // 离线部署只能由单次管理员请求显式开启，默认发布不得携带放宽连接要求的环境变量。
 async function testOfflineDeploymentOption() {
@@ -260,6 +284,7 @@ async function testReleaseRecordFailure() {
 // Run the real route regressions with isolated files and restore every replaced dependency and environment value.
 async function main() {
   try {
+    await testAssemblyFailure()
     await testOfflineDeploymentOption()
     await testSlowActivation()
     await testDisconnectedActivation()

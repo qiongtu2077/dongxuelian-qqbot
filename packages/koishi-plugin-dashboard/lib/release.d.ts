@@ -18,12 +18,16 @@ interface BuildReleaseResult {
     manifestPath: string;
     manifest: ReleaseManifest;
 }
+declare function resolveReleasePath(root: string, relativePath: string): string;
+declare function sha256File(filePath: string): string;
 declare function buildDashboardRelease(repoRoot: string, outputRoot: string): BuildReleaseResult;
 declare function verifyBrowserAssets(releaseRoot: string, manifest: ReleaseManifest): void;
 declare function verifyReleaseManifest(releaseRoot: string): ReleaseManifest;
 declare const _default: {
     MANIFEST_NAME: string;
     RELEASE_PACKAGES: string[];
+    sha256File: typeof sha256File;
+    resolveReleasePath: typeof resolveReleasePath;
     buildDashboardRelease: typeof buildDashboardRelease;
     verifyReleaseManifest: typeof verifyReleaseManifest;
     verifyBrowserAssets: typeof verifyBrowserAssets;

@@ -304,6 +304,7 @@
           <div><span>冻结发布</span><code>{{ deployPreview.release?.releaseId || '未生成' }}</code></div>
           <div><span>有效期至</span><strong>{{ formatTimestamp(deployPreview.expiresAt) }}</strong></div>
           <div><span>文件变化</span><strong>新增 {{ deployPreview.changes?.added || 0 }} / 修改 {{ deployPreview.changes?.modified || 0 }} / 删除 {{ deployPreview.changes?.removed || 0 }}</strong></div>
+          <div v-if="deployPreview.uploadBytes != null"><span>增量上传</span><strong>{{ formatSize(deployPreview.uploadBytes) }}，复用 {{ deployPreview.changes?.unchanged || 0 }} 个文件</strong></div>
           <div><span>远端空间</span><strong>{{ formatSize(deployPreview.target?.availableBytes || 0) }}（需要 {{ formatSize(deployPreview.requiredBytes || 0) }}）</strong></div>
         </div>
         <div v-if="deployPreview.blockers?.length" class="remote-preview-blockers">
@@ -534,6 +535,7 @@ interface RemoteDeployPreviewData {
   }
   release?: { releaseId?: string, commit?: string, manifestHash?: string, totalBytes?: number, fileCount?: number } | null
   requiredBytes?: number
+  uploadBytes?: number
   changes?: { added?: number, modified?: number, removed?: number, unchanged?: number, totalFiles?: number, totalBytes?: number }
 }
 
