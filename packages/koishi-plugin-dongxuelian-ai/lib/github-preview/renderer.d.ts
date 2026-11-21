@@ -9,5 +9,6 @@ export declare function loadGithubAvatar(raw: string, context: GithubWorkContext
 export declare function buildGithubCardFrame(metadata: GithubMetadata, kind: 'ISSUE' | 'PULL REQUEST' | 'REPOSITORY' | 'USER', content: string, note?: string): string;
 export declare function buildGithubCardHtml(metadata: GithubMetadata, avatar: Buffer | null, note?: string): string;
 export declare function splitGithubImage(raw: Buffer, context: GithubWorkContext): Promise<Buffer[]>;
+export declare function renderGithubHtml(html: string, context: GithubWorkContext): Promise<Buffer>;
 export declare function renderGithubCard(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult>;
 export declare function githubTextFallback(metadata: GithubMetadata): string;

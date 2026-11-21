@@ -27,13 +27,14 @@ export interface GithubMetadata {
 }
 export interface GithubImageResult { images: Buffer[]; incomplete?: boolean; note?: string; capturedAt: number }
 export interface GithubWorkContext { signal: AbortSignal; deadline: number; taskId: string }
+// 截图准入和运行中监控共用同一可用内存下限。
+const GITHUB_MIN_MEMORY_MB = 100
 export const GITHUB_LIMITS = Object.freeze({
   loadMs: 25000, targetMs: 30000, assetMs: 10000, captureMs: 5000, runMs: 45000, queueMs: 15000, maxQueued: 20,
   maxTargets: 3, cooldownMs: 120000, cacheMs: 300000, staleMs: 1800000,
   cacheEntries: 100, cacheBytes: 20 * 1024 * 1024, imageBytes: 10 * 1024 * 1024,
   padding: 24, imageHeight: 2000, maxImages: 3, viewportWidth: 1280,
-  // 本地离线卡片串行渲染；启动预留 100 MB，运行中仍低于 350 MB 即停止。
-  minMemoryMb: 450, stopMemoryMb: 350,
+  minMemoryMb: GITHUB_MIN_MEMORY_MB, stopMemoryMb: GITHUB_MIN_MEMORY_MB,
   bodyBytes: 256 * 1024, metadataBytes: 8 * 1024 * 1024, htmlBytes: 512 * 1024,
 })
 

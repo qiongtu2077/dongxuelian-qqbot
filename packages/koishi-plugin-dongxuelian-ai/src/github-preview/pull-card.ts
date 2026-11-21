@@ -5,12 +5,9 @@
  */
 import type { GithubMetadata, GithubImageResult, GithubWorkContext, GithubPullTheme } from './models'
 import { GITHUB_LIMITS, assertGithubWork } from './models'
-import { escapeGithubText as esc, loadGithubAvatar, splitGithubImage } from './renderer'
+import { escapeGithubText as esc, loadGithubAvatar, renderGithubHtml, splitGithubImage } from './renderer'
 import { cleanGithubBody, prepareGithubBody } from './body-content'
 import { buildGithubIssueHtml } from './issue-renderer'
-const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer') as {
-  renderHtmlToImage(html: string, context: { signal: AbortSignal; deadlineMs: number; workDeadlineMs: number; taskId: string; source: string; networkPolicy: 'offline'; captureSelector: string }): Promise<Buffer>
-}
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
 
 // --- 固定模板（看板详情两套皮肤令牌） --- //
@@ -178,12 +175,11 @@ export async function renderGithubPullCard(metadata: GithubMetadata, context: Gi
     const boardHtml = buildGithubPullHtml(metadata, summary, avatar, note, theme)
     const classicHtml = buildGithubIssueHtml(metadata, body.html, avatar, note)
     if ([boardHtml, classicHtml].some(html => Buffer.byteLength(html, 'utf8') > GITHUB_LIMITS.htmlBytes)) throw new Error('正文模板超过大小限制，请查看原文')
-    const render = { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline' as const, captureSelector: '#github-preview' }
     // Render sequentially under one deadline: the single board comes before the existing body slices.
-    const card = await splitGithubImage(await renderHtmlToImage(boardHtml, render), work)
+    const card = await splitGithubImage(await renderGithubHtml(boardHtml, work), work)
     if (card.length !== 1) throw new Error('看板详情卡片超过单图限制，请查看原文')
     assertGithubWork(work)
-    const pages = await splitGithubImage(await renderHtmlToImage(classicHtml, render), work)
+    const pages = await splitGithubImage(await renderGithubHtml(classicHtml, work), work)
     const images = [...card, ...pages]
     if (images.reduce((sum, image) => sum + image.length, 0) > GITHUB_LIMITS.imageBytes) throw new Error('正文图片超过大小限制，请查看原文')
     assertGithubWork(work)

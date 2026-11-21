@@ -92,16 +92,16 @@ function readLinuxMemAvailableMb() {
     }
 }
 // 读取当前渲染内存状态，供预检、渲染和日志复用。
-function getRenderMemoryStatus() {
+function getRenderMemoryStatus(minMemoryMb) {
     return {
         availableMb: readLinuxMemAvailableMb(),
-        minMb: RENDER_MIN_AVAILABLE_MB,
+        minMb: minMemoryMb,
         forced: /^(1|true|yes|on)$/i.test(String(process.env.DAILY_REPORT_RENDER_FORCE || '').trim()),
     };
 }
 // 校验 Chromium 渲染所需的最低可用内存。
-function assertEnoughMemoryForRender() {
-    const status = getRenderMemoryStatus();
+function assertEnoughMemoryForRender(minMemoryMb = RENDER_MIN_AVAILABLE_MB) {
+    const status = getRenderMemoryStatus(minMemoryMb);
     if (status.forced || status.availableMb === null || status.availableMb >= status.minMb)
         return status;
     throw new Error(`available memory is too low for Chromium render (${status.availableMb}MB < ${status.minMb}MB)`);
@@ -436,7 +436,7 @@ async function renderHtmlToImage(htmlContent, context = {}) {
     const htmlBytes = Buffer.byteLength(String(htmlContent || ''), 'utf8');
     if (htmlBytes > MAX_HTML_BYTES)
         throw new Error('render HTML is too large');
-    const memoryStatus = assertEnoughMemoryForRender();
+    const memoryStatus = assertEnoughMemoryForRender(context.minMemoryMb);
     logRenderStep('memory ok', formatMemoryStatus(memoryStatus));
     logRenderStep('html accepted', `${htmlBytes} bytes`);
     const releaseRendererSlot = await acquireRendererSlot(context);

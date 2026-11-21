@@ -5,7 +5,6 @@ exports.renderGithubIssue = renderGithubIssue;
 const models_1 = require("./models");
 const renderer_1 = require("./renderer");
 const body_content_1 = require("./body-content");
-const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer');
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot');
 // --- 固定模板 --- //
 // Build the yellow/gray/white/black card with original metadata and already cleaned HTML only.
@@ -43,7 +42,7 @@ async function renderGithubIssue(metadata, context) {
         const html = buildGithubIssueHtml(metadata, body.html, avatar, note);
         if (Buffer.byteLength(html, 'utf8') > models_1.GITHUB_LIMITS.htmlBytes)
             throw new Error('正文模板超过大小限制，请查看原文');
-        const raw = await renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' });
+        const raw = await (0, renderer_1.renderGithubHtml)(html, work);
         const images = await (0, renderer_1.splitGithubImage)(raw, work);
         (0, models_1.assertGithubWork)(work);
         return { images, capturedAt: Date.now(), incomplete: body.missing > 0 || avatarMissing, note };

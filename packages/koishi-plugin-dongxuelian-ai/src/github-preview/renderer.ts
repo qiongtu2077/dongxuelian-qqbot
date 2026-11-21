@@ -6,7 +6,9 @@
 import type { GithubMetadata, GithubImageResult, GithubWorkContext } from './models'
 import { GITHUB_LIMITS, assertGithubWork } from './models'
 const sharp = require('sharp') as typeof import('sharp')
-const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer') as { renderHtmlToImage(html: string, context: { signal: AbortSignal; deadlineMs: number; workDeadlineMs: number; taskId: string; source: string; networkPolicy: 'offline'; captureSelector: string }): Promise<Buffer> }
+const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer') as {
+  renderHtmlToImage(html: string, context: { signal: AbortSignal; deadlineMs: number; workDeadlineMs: number; taskId: string; source: string; minMemoryMb: number; networkPolicy: 'offline'; captureSelector: string }): Promise<Buffer>
+}
 const avatarCache = new Map<string, { image: Buffer; capturedAt: number }>()
 
 // Escape all official strings before inserting into fixed template text slots.
@@ -95,6 +97,15 @@ export async function splitGithubImage(raw: Buffer, context: GithubWorkContext):
   }
   return images
 }
+// 各类 GitHub 卡片使用同一渲染预算、离线策略和裁剪范围。
+export function renderGithubHtml(html: string, context: GithubWorkContext): Promise<Buffer> {
+  return renderHtmlToImage(html, {
+    signal: context.signal, deadlineMs: context.deadline, workDeadlineMs: context.deadline,
+    taskId: context.taskId, source: 'github-preview', minMemoryMb: GITHUB_LIMITS.minMemoryMb,
+    networkPolicy: 'offline', captureSelector: '#github-preview',
+  })
+}
+
 // Render all cards through the same offline, cropped and padded browser lifecycle.
 export async function renderGithubCard(metadata: GithubMetadata, context: GithubWorkContext): Promise<GithubImageResult> {
   assertGithubWork(context)
@@ -102,7 +113,7 @@ export async function renderGithubCard(metadata: GithubMetadata, context: Github
   assertGithubWork(context)
   const incomplete = Boolean(metadata.avatar && !avatar)
   const note = incomplete ? '头像暂未载入，请查看原文。' : ''
-  const raw = await renderHtmlToImage(buildGithubCardHtml(metadata, avatar, note), { signal: context.signal, deadlineMs: context.deadline, workDeadlineMs: context.deadline, taskId: context.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' })
+  const raw = await renderGithubHtml(buildGithubCardHtml(metadata, avatar, note), context)
   const images = await splitGithubImage(raw, context)
   return { images, capturedAt: Date.now(), incomplete, note }
 }

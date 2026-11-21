@@ -56,6 +56,7 @@ interface AnalysisResult extends ReportDisplayState {
 interface RenderContext {
     taskId?: string;
     source?: string;
+    minMemoryMb?: number;
     deadlineMs?: number;
     workDeadlineMs?: number;
     signal?: AbortSignal;
@@ -68,7 +69,7 @@ interface RenderMemoryStatus {
     minMb: number;
     forced: boolean;
 }
-declare function assertEnoughMemoryForRender(): RenderMemoryStatus;
+declare function assertEnoughMemoryForRender(minMemoryMb?: number): RenderMemoryStatus;
 declare function assertRenderEnvironment(): void;
 declare function renderHtmlToImage(htmlContent: string, context?: RenderContext): Promise<Buffer>;
 declare function renderReport(data: ReportData, analysis: AnalysisResult, context?: RenderContext): Promise<Buffer>;

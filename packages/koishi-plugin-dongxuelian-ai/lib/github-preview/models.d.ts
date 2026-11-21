@@ -107,8 +107,8 @@ export declare const GITHUB_LIMITS: Readonly<{
     imageHeight: 2000;
     maxImages: 3;
     viewportWidth: 1280;
-    minMemoryMb: 450;
-    stopMemoryMb: 350;
+    minMemoryMb: 100;
+    stopMemoryMb: 100;
     bodyBytes: number;
     metadataBytes: number;
     htmlBytes: number;

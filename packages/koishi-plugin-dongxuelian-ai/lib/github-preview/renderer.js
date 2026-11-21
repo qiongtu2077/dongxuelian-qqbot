@@ -5,6 +5,7 @@ exports.loadGithubAvatar = loadGithubAvatar;
 exports.buildGithubCardFrame = buildGithubCardFrame;
 exports.buildGithubCardHtml = buildGithubCardHtml;
 exports.splitGithubImage = splitGithubImage;
+exports.renderGithubHtml = renderGithubHtml;
 exports.renderGithubCard = renderGithubCard;
 exports.githubTextFallback = githubTextFallback;
 const models_1 = require("./models");
@@ -116,6 +117,14 @@ async function splitGithubImage(raw, context) {
     }
     return images;
 }
+// 各类 GitHub 卡片使用同一渲染预算、离线策略和裁剪范围。
+function renderGithubHtml(html, context) {
+    return renderHtmlToImage(html, {
+        signal: context.signal, deadlineMs: context.deadline, workDeadlineMs: context.deadline,
+        taskId: context.taskId, source: 'github-preview', minMemoryMb: models_1.GITHUB_LIMITS.minMemoryMb,
+        networkPolicy: 'offline', captureSelector: '#github-preview',
+    });
+}
 // Render all cards through the same offline, cropped and padded browser lifecycle.
 async function renderGithubCard(metadata, context) {
     (0, models_1.assertGithubWork)(context);
@@ -123,7 +132,7 @@ async function renderGithubCard(metadata, context) {
     (0, models_1.assertGithubWork)(context);
     const incomplete = Boolean(metadata.avatar && !avatar);
     const note = incomplete ? '头像暂未载入，请查看原文。' : '';
-    const raw = await renderHtmlToImage(buildGithubCardHtml(metadata, avatar, note), { signal: context.signal, deadlineMs: context.deadline, workDeadlineMs: context.deadline, taskId: context.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' });
+    const raw = await renderGithubHtml(buildGithubCardHtml(metadata, avatar, note), context);
     const images = await splitGithubImage(raw, context);
     return { images, capturedAt: Date.now(), incomplete, note };
 }

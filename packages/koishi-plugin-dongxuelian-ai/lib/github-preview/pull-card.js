@@ -6,7 +6,6 @@ const models_1 = require("./models");
 const renderer_1 = require("./renderer");
 const body_content_1 = require("./body-content");
 const issue_renderer_1 = require("./issue-renderer");
-const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer');
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot');
 // --- 固定模板（看板详情两套皮肤令牌） --- //
 const REVIEW_TEXT = { APPROVED: '✅ 已批准', CHANGES_REQUESTED: '⛔ 要求修改', COMMENTED: '💬 评论', DISMISSED: '已撤销', PENDING: '待提交' };
@@ -165,13 +164,12 @@ async function renderGithubPullCard(metadata, context, theme = 'dark') {
         const classicHtml = (0, issue_renderer_1.buildGithubIssueHtml)(metadata, body.html, avatar, note);
         if ([boardHtml, classicHtml].some(html => Buffer.byteLength(html, 'utf8') > models_1.GITHUB_LIMITS.htmlBytes))
             throw new Error('正文模板超过大小限制，请查看原文');
-        const render = { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' };
         // Render sequentially under one deadline: the single board comes before the existing body slices.
-        const card = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(boardHtml, render), work);
+        const card = await (0, renderer_1.splitGithubImage)(await (0, renderer_1.renderGithubHtml)(boardHtml, work), work);
         if (card.length !== 1)
             throw new Error('看板详情卡片超过单图限制，请查看原文');
         (0, models_1.assertGithubWork)(work);
-        const pages = await (0, renderer_1.splitGithubImage)(await renderHtmlToImage(classicHtml, render), work);
+        const pages = await (0, renderer_1.splitGithubImage)(await (0, renderer_1.renderGithubHtml)(classicHtml, work), work);
         const images = [...card, ...pages];
         if (images.reduce((sum, image) => sum + image.length, 0) > models_1.GITHUB_LIMITS.imageBytes)
             throw new Error('正文图片超过大小限制，请查看原文');

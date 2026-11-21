@@ -697,7 +697,7 @@ async function run(t) {
       const { acquireGithubResources } = require(path.join(AI_ROOT, 'lib/github-preview/runtime'))
       const { acquireResourceGate } = require(path.join(AI_ROOT, 'lib/resource-gate/gate'))
       const available = process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE, total = process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE
-      process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'; process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
+      process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '100'; process.env.RESOURCE_SCHEDULER_MEM_TOTAL_MB_OVERRIDE = '1600'
       let report
       try {
         const release = await acquireGithubResources(githubContext(), '10001')
@@ -706,19 +706,19 @@ async function run(t) {
         await assert.rejects(acquireGithubResources(githubContext(150), '10001'), /繁忙/)
         assert.equal(data.readJson('resource-gate/lock/meta.json').taskId, 'github-report-fixture')
         report.release('fixture-end'); report = null
-        // 覆盖 SL 在线时实际观测到的内存和门槛边界，防止 green/yellow 档被旧 650 MB 门槛永久拒绝。
-        for (const availableMb of [450, 533, 572, 605, 623, 650]) {
+        // 同一截图预算覆盖红、黄、绿三档，以及 SL 在线时实际观测到的可用内存。
+        for (const availableMb of [100, 299, 300, 449, 450, 533, 572, 605, 623, 650]) {
           process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = String(availableMb)
           const release = await acquireGithubResources(githubContext(), '10001')
           assert(fs.existsSync(data.pathFor('resource-gate/lock/meta.json'))); release()
           assert(!fs.existsSync(data.pathFor('resource-gate/lock/meta.json')))
         }
-        for (const availableMb of [449, 350, 299]) {
+        for (const availableMb of [99, 0]) {
           process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = String(availableMb)
-          await assert.rejects(acquireGithubResources(githubContext(), '10001'), error => error.message.includes('资源不足') && error.message.includes(`${availableMb} MB`) && error.message.includes('450 MB') && !error.message.includes('维护'))
+          await assert.rejects(acquireGithubResources(githubContext(), '10001'), error => error.message.includes(`可用内存 ${availableMb} MB`) && error.message.includes('GitHub 截图至少需要 100 MB'))
           assert(!fs.existsSync(data.pathFor('resource-gate/lock/meta.json')))
         }
-        process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '1200'
+        process.env.RESOURCE_SCHEDULER_MEM_AVAILABLE_MB_OVERRIDE = '100'
         data.writeText('ai-paused.txt', 'on')
         try {
           await assert.rejects(acquireGithubResources(githubContext(), '10001'), /维护模式/)

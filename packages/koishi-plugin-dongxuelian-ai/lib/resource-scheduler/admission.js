@@ -102,7 +102,10 @@ function decideAdmission(input, snapshot = readResourceSnapshot()) {
         if (budget.exclusive)
             return buildDecision('queue', 'exclusive task waits for current report', budget, snapshot);
     }
-    if (snapshot.resourceState === 'red') {
+    // GitHub 截图的最低预算低于全局红线，达到预算后仍须通过下方的独占锁检查。
+    const githubPreviewHasMemory = kind === 'browser_action' && budget.source === 'github-preview'
+        && snapshot.memAvailableMb !== null && snapshot.memAvailableMb >= budget.minMemMb;
+    if (snapshot.resourceState === 'red' && !githubPreviewHasMemory) {
         if (isNormalChatKind(kind))
             return buildDecision('silent_drop', 'resource state red silences chat', budget, snapshot);
         if (budget.deferable)

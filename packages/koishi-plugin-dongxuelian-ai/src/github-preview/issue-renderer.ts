@@ -5,11 +5,8 @@
  */
 import type { GithubMetadata, GithubImageResult, GithubWorkContext } from './models'
 import { GITHUB_LIMITS, assertGithubWork } from './models'
-import { escapeGithubText as esc, loadGithubAvatar, buildGithubCardFrame, splitGithubImage } from './renderer'
+import { escapeGithubText as esc, loadGithubAvatar, buildGithubCardFrame, renderGithubHtml, splitGithubImage } from './renderer'
 import { prepareGithubBody } from './body-content'
-const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer') as {
-  renderHtmlToImage(html: string, context: { signal: AbortSignal; deadlineMs: number; workDeadlineMs: number; taskId: string; source: string; networkPolicy: 'offline'; captureSelector: string }): Promise<Buffer>
-}
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
 
 // --- 固定模板 --- //
@@ -45,7 +42,7 @@ export async function renderGithubIssue(metadata: GithubMetadata, context: Githu
     const note = [body.missing ? `正文附件未完整载入：${body.missing} 处图片未载入，请查看原文。` : '', avatarMissing ? '头像暂未载入，请查看原文。' : ''].filter(Boolean).join(' ')
     const html = buildGithubIssueHtml(metadata, body.html, avatar, note)
     if (Buffer.byteLength(html, 'utf8') > GITHUB_LIMITS.htmlBytes) throw new Error('正文模板超过大小限制，请查看原文')
-    const raw = await renderHtmlToImage(html, { signal: work.signal, deadlineMs: work.deadline, workDeadlineMs: work.deadline, taskId: work.taskId, source: 'github-preview', networkPolicy: 'offline', captureSelector: '#github-preview' })
+    const raw = await renderGithubHtml(html, work)
     const images = await splitGithubImage(raw, work)
     assertGithubWork(work)
     return { images, capturedAt: Date.now(), incomplete: body.missing > 0 || avatarMissing, note }
