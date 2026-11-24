@@ -67,7 +67,9 @@ Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
 Environment=HOME=$SERVICE_HOME
-Environment=NODE_OPTIONS=--max-semi-space-size=4
+Environment=MALLOC_ARENA_MAX=2
+Environment="NODE_OPTIONS=--max-semi-space-size=4 --max-old-space-size=96"
+MemoryHigh=72M
 
 [Install]
 WantedBy=multi-user.target

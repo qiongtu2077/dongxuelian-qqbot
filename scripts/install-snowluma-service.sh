@@ -61,6 +61,9 @@ User=root
 WorkingDirectory=$sl_dir/state
 Environment=SNOWLUMA_DIR=$sl_dir
 Environment=KOISHI_APP_DIR=$app_dir
+Environment=MALLOC_ARENA_MAX=2
+# 通过 cgroup v2 软高水位将 QQ 闲置窗口堆温和压入 zram，不触发 OOM Kill。
+MemoryHigh=280M
 ExecCondition=/bin/bash $sl_dir/bin/qq-protocol-gate.sh sl
 ExecStart=/bin/bash $sl_dir/bin/start-snowluma.sh
 Restart=on-failure

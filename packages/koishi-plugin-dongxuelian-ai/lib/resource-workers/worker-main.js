@@ -27,7 +27,7 @@ function resolveBoundedNumber(value, fallback, min, max) {
     return Math.max(min, Math.min(max, parsed));
 }
 const DEFAULT_WORKER_MAX_CONSECUTIVE_FAILURES = resolveBoundedNumber(process.env.RESOURCE_WORKER_MAX_CONSECUTIVE_FAILURES, 5, 1, 20);
-const DEFAULT_WORKER_IDLE_EXIT_MS = resolveBoundedNumber(process.env.RESOURCE_WORKER_IDLE_EXIT_MS, 45000, 30000, 5 * 60 * 1000);
+const DEFAULT_WORKER_IDLE_EXIT_MS = resolveBoundedNumber(process.env.RESOURCE_WORKER_IDLE_EXIT_MS, 20000, 10000, 5 * 60 * 1000);
 // 等待指定毫秒，用于 worker 空转和退避。
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -552,7 +552,7 @@ function shouldExitManagedWorker(options, idleSinceAt, now = Date.now()) {
     const idleSince = Date.parse(String(idleSinceAt || ''));
     if (!Number.isFinite(idleSince))
         return false;
-    const idleExitMs = resolveBoundedNumber(options.idleExitMs, DEFAULT_WORKER_IDLE_EXIT_MS, 30000, 5 * 60 * 1000);
+    const idleExitMs = resolveBoundedNumber(options.idleExitMs, DEFAULT_WORKER_IDLE_EXIT_MS, 10000, 5 * 60 * 1000);
     if (now - idleSince < idleExitMs)
         return false;
     const workerName = getWorkerName(String(options.type || 'daily'), options.workerName || '');

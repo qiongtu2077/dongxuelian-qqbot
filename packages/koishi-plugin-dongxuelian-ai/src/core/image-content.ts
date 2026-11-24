@@ -2,6 +2,10 @@
 const sharp = require('sharp') as typeof import('sharp')
 const { MAX_IMAGE_BYTES } = require('./constants') as typeof import('./constants')
 
+// 小内存环境下关闭 libvips 操作缓存并限制单线程池，避免解码大图后驻留额外 arena 内存。
+sharp.cache(false)
+sharp.concurrency(1)
+
 // 在十兆原始字节边界内完整解码首帧，并返回实际 MIME；不会压缩或替换原图。
 async function validateImageContent(dataUrl: string): Promise<{ mime: string; bytes: number; width: number; height: number; animated: boolean }> {
   const buffer = Buffer.from(dataUrl.replace(/^data:[^;]*;base64,/, ''), 'base64')

@@ -95,8 +95,8 @@ const DEFAULT_WORKER_MAX_CONSECUTIVE_FAILURES = resolveBoundedNumber(
 )
 const DEFAULT_WORKER_IDLE_EXIT_MS = resolveBoundedNumber(
   process.env.RESOURCE_WORKER_IDLE_EXIT_MS,
-  45000,
-  30000,
+  20000,
+  10000,
   5 * 60 * 1000,
 )
 
@@ -595,7 +595,7 @@ function shouldExitManagedWorker(options: WorkerMainOptions, idleSinceAt: string
   if (!String(options.ownerGeneration || '') || !String(options.startToken || '')) return false
   const idleSince = Date.parse(String(idleSinceAt || ''))
   if (!Number.isFinite(idleSince)) return false
-  const idleExitMs = resolveBoundedNumber(options.idleExitMs, DEFAULT_WORKER_IDLE_EXIT_MS, 30000, 5 * 60 * 1000)
+  const idleExitMs = resolveBoundedNumber(options.idleExitMs, DEFAULT_WORKER_IDLE_EXIT_MS, 10000, 5 * 60 * 1000)
   if (now - idleSince < idleExitMs) return false
   const workerName = getWorkerName(String(options.type || 'daily'), options.workerName || '')
   const directive = readWorkerBackgroundDirective(String(options.type || 'daily'), workerName)

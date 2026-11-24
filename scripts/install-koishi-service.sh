@@ -46,8 +46,9 @@ Environment=NODE_ENV=production
 Environment=KOISHI_DIR=$APP_DIR
 Environment=DONGXUELIAN_AI_DATA_DIR=$DATA_DIR
 Environment=NODE_PATH=$APP_DIR/node_modules
-# 小内存机限制 V8 新生代（默认 16MB/semi-space），子 worker 继承该环境变量。
-Environment=NODE_OPTIONS=--max-semi-space-size=4
+Environment=MALLOC_ARENA_MAX=2
+# 小内存机限制 V8 新生代与主进程老生代上限；子 worker 通过命令行显式参数覆盖自身上限。
+Environment="NODE_OPTIONS=--max-semi-space-size=4 --max-old-space-size=192"
 
 [Install]
 WantedBy=multi-user.target

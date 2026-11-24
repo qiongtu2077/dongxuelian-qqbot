@@ -81,8 +81,24 @@ function testKoishiServiceContract() {
   assert.match(source, /Environment=KOISHI_DIR=\$APP_DIR/)
   assert.match(source, /Environment=DONGXUELIAN_AI_DATA_DIR=\$DATA_DIR/)
   assert.match(source, /Environment=NODE_PATH=\$APP_DIR\/node_modules/)
-  assert.match(source, /Environment=NODE_OPTIONS=--max-semi-space-size=4/)
+  assert.match(source, /Environment=MALLOC_ARENA_MAX=2/)
+  assert.match(source, /Environment="NODE_OPTIONS=--max-semi-space-size=4 --max-old-space-size=192"/)
   assert.match(source, /Restart=on-failure/)
+
+  const dashSource = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'install-dashboard-service.sh'), 'utf8')
+  assert.match(dashSource, /Environment=MALLOC_ARENA_MAX=2/)
+  assert.match(dashSource, /Environment="NODE_OPTIONS=--max-semi-space-size=4 --max-old-space-size=96"/)
+  assert.match(dashSource, /MemoryHigh=72M/)
+
+  const slServiceSource = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'install-snowluma-service.sh'), 'utf8')
+  assert.match(slServiceSource, /Environment=MALLOC_ARENA_MAX=2/)
+  assert.match(slServiceSource, /MemoryHigh=280M/)
+
+  const slStartSource = fs.readFileSync(path.join(REPO_ROOT, 'scripts', 'start-snowluma.sh'), 'utf8')
+  assert.match(slStartSource, /export MALLOC_ARENA_MAX=2/)
+  assert.match(slStartSource, /--mute-audio/)
+  assert.match(slStartSource, /AudioServiceOutOfProcess/)
+  assert.match(slStartSource, /--max-old-space-size=128/)
   assert.match(source, /systemctl daemon-reload/)
   assert.match(source, /systemctl enable "\$SERVICE_NAME"/)
 }

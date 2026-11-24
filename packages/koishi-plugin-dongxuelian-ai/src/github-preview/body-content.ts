@@ -8,6 +8,9 @@ import type { GithubWorkContext } from './models'
 import { escapeGithubText } from './renderer'
 const xss = require('xss') as typeof import('xss')
 const sharp = require('sharp') as typeof import('sharp')
+
+sharp.cache(false)
+sharp.concurrency(1)
 const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../core/utils') as typeof import('../core/utils')
 const IMAGE_HOSTS = new Set(['private-user-images.githubusercontent.com', 'user-images.githubusercontent.com', 'camo.githubusercontent.com', 'avatars.githubusercontent.com', 'raw.githubusercontent.com', 'github-production-user-asset-6210df.s3.amazonaws.com'])
 export interface GithubBodyImage { url: string; alt: string }

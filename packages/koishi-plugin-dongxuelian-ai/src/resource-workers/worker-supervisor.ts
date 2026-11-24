@@ -43,9 +43,9 @@ interface SupervisorWorkerSample {
 }
 
 const WORKER_MEMORY_LIMITS: Record<string, number> = {
-  daily: Number(process.env.RESOURCE_DAILY_WORKER_OLD_SPACE_MB || 768),
-  agent: Number(process.env.RESOURCE_AGENT_WORKER_OLD_SPACE_MB || 768),
-  media: Number(process.env.RESOURCE_MEDIA_WORKER_OLD_SPACE_MB || 512),
+  daily: Number(process.env.RESOURCE_DAILY_WORKER_OLD_SPACE_MB || 256),
+  agent: Number(process.env.RESOURCE_AGENT_WORKER_OLD_SPACE_MB || 256),
+  media: Number(process.env.RESOURCE_MEDIA_WORKER_OLD_SPACE_MB || 192),
 }
 const DEFAULT_WORKER_TYPES = ['agent', 'daily', 'media']
 const DEFERRED_RESTORE_MAX_ACTIVE = Math.max(
@@ -314,7 +314,7 @@ function getSupervisorStateFile(): string {
 // 构造独立 worker 的 Node 启动参数。
 function buildWorkerLaunchSpec(type: string, generation = ''): WorkerLaunchSpec {
   const normalized = String(type || 'daily')
-  const maxOldSpaceMb = WORKER_MEMORY_LIMITS[normalized] || 512
+  const maxOldSpaceMb = WORKER_MEMORY_LIMITS[normalized] || 256
   const ownerGeneration = String(generation || `${process.pid}-${Date.now()}`)
   const startToken = `${ownerGeneration}-${normalized}-${Math.random().toString(36).slice(2, 10)}`
   return {
@@ -325,6 +325,7 @@ function buildWorkerLaunchSpec(type: string, generation = ''): WorkerLaunchSpec 
     maxOldSpaceMb,
     command: process.execPath,
     args: [
+      '--max-semi-space-size=4',
       `--max-old-space-size=${maxOldSpaceMb}`,
       path.join(__dirname, 'worker-main.js'),
       '--type',
@@ -350,6 +351,7 @@ function startWorkerProcess(type: string, generation = ''): Record<string, unkno
   const spec = buildWorkerLaunchSpec(type, generation)
   const child = spawn(spec.command, spec.args, {
     cwd: process.cwd(),
+    env: { ...process.env, MALLOC_ARENA_MAX: process.env.MALLOC_ARENA_MAX || '2' },
     detached: false,
     stdio: 'ignore',
     windowsHide: true,

@@ -9,6 +9,7 @@ export XDG_DATA_HOME="$HOME/.local/share"
 export XDG_RUNTIME_DIR="$sl_dir/run"
 export SNOWLUMA_HOOK_RUNTIME_DIR="$sl_dir/run"
 export DISPLAY=:199
+export MALLOC_ARENA_MAX=2
 export SNOWLUMA_WEBUI_HOST=127.0.0.1
 export SNOWLUMA_WEBUI_PORT=5099
 export SNOWLUMA_HOOK_AUTOLOAD=0
@@ -26,7 +27,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-Xvfb "$DISPLAY" -screen 0 1024x768x24 -nolisten tcp &
+Xvfb "$DISPLAY" -screen 0 800x600x16 -nolisten tcp &
 children+=("$!")
 for _ in $(seq 1 50); do
   if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then break; fi
@@ -37,13 +38,13 @@ openbox --sm-disable &
 children+=("$!")
 x11vnc -display "$DISPLAY" -rfbport 5909 -localhost -nopw -forever -shared -noxdamage -quiet &
 children+=("$!")
-"$sl_dir/qq/opt/QQ/qq" --no-sandbox --disable-gpu --disable-dev-shm-usage --user-data-dir="$HOME/.config/QQ" &
+"$sl_dir/qq/opt/QQ/qq" --no-sandbox --disable-gpu --disable-dev-shm-usage --mute-audio --alsa-output-device=null --disable-features=AudioServiceOutOfProcess,Translate,BackForwardCache --user-data-dir="$HOME/.config/QQ" &
 qq_pid=$!
 children+=("$qq_pid")
 printf '%s\n' "$qq_pid" > "$sl_dir/qq.pid"
 cd "$sl_dir/state"
-# 只限制 SL 运行时的 V8 新生代；QQ 已在上方启动，不继承该变量。
-NODE_OPTIONS=--max-semi-space-size=4 "$sl_dir/runtime/node" "$sl_dir/runtime/index.mjs" &
+# 限制 SL 运行时的 V8 新生代与老生代；QQ 已在上方启动，不继承该变量。
+NODE_OPTIONS="--max-semi-space-size=4 --max-old-space-size=128" "$sl_dir/runtime/node" "$sl_dir/runtime/index.mjs" &
 children+=("$!")
 # 任一核心进程退出即结束服务，由 systemd 整组清理并重试。
 wait -n "${children[@]}"
