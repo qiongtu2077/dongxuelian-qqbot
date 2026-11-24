@@ -77,11 +77,11 @@ async function runEvidenceCases(t) {
 
 // 使用单一 DeepSeek 节点验证连接错误、响应体断开和脱敏。
 async function runTransportCases(t) {
-  await withApi([], async ({ api, data, mocked }) => {
+  await withApi([], async ({ api, notifier, data, mocked, notifications }) => {
     seedCapabilityConfig(data, { text: [CHAIN[0]] })
     const ipv4 = Object.assign(new Error('private connection payload'), { code: 'ETIMEDOUT', syscall: 'connect', address: '192.0.2.1' })
     const ipv6 = Object.assign(new Error('private connection payload'), { code: 'ENETUNREACH', syscall: 'connect' })
-    const cause = new AggregateError([ipv4, ipv6], 'test-deepseek-key')
+    const cause = new AggregateError([ipv4, ipv6, ipv4, ipv6], 'test-deepseek-key')
     mocked.push({ error: new TypeError('fetch failed', { cause }) }, OK, OK, { invalidJson: true })
     const diagnosticFile = 'ai-call-diagnostics/recent.json'
     const key = 'text:' + CHAIN[0].provider + ':' + CHAIN[0].model
@@ -90,14 +90,23 @@ async function runTransportCases(t) {
     const failed = data.readJson(diagnosticFile)[key]
     t.checkEqual('connection diagnostics keep the network error classification', error?.code, 'NETWORK_ERROR')
     t.checkEqual('connection diagnostics retain each socket failure and stage', JSON.stringify(failed.transport),
-      JSON.stringify({ phase: 'request', errors: [{ code: 'ETIMEDOUT', syscall: 'connect' }, { code: 'ENETUNREACH', syscall: 'connect' }] }))
+      JSON.stringify({ phase: 'request', errors: [
+        { code: 'ETIMEDOUT', syscall: 'connect' }, { code: 'ENETUNREACH', syscall: 'connect' },
+        { code: 'ETIMEDOUT', syscall: 'connect' }, { code: 'ENETUNREACH', syscall: 'connect' },
+      ] }))
     t.check('connection logs omit addresses, keys and raw exceptions', !/192\.0\.2\.1|test-deepseek-key|private connection payload/.test(JSON.stringify(failed)))
+    t.check('connection failure notification surfaces deduplicated transport codes without leaking addresses or keys',
+      notifications.length > 0
+      && notifications.every(item => item.message.includes('传输诊断：请求连接（connect ETIMEDOUT、connect ENETUNREACH）')
+        && !/192\.0\.2\.1|test-deepseek-key|private connection payload/.test(item.message)),
+      JSON.stringify(notifications))
     await api.requestChatCompletions([], CONFIG)
     const recovered = data.readJson(diagnosticFile)[key]
     t.check('success records its own fields and retains only the historical failure summary', recovered.status === 'success'
       && !recovered.code && !recovered.reason && recovered.httpStatus === undefined && !recovered.transport
       && recovered.lastFailureAt === failed.createdAt && recovered.lastFailureReason === failed.reason)
 
+    notifications.length = 0
     global.fetch = async (...args) => {
       const response = await mocked.fetch(...args)
       return { ...response, async json() {
@@ -109,12 +118,29 @@ async function runTransportCases(t) {
     t.check('response body failure retains HTTP status and socket code', error?.code === 'NETWORK_ERROR'
       && interrupted.httpStatus === 200 && interrupted.transport?.phase === 'response_body'
       && interrupted.transport.errors[0]?.code === 'UND_ERR_SOCKET')
+    t.check('response body failure notification surfaces response_body transport code safely',
+      notifications.length > 0
+      && notifications.every(item => item.message.includes('传输诊断：响应读取（UND_ERR_SOCKET）') && !item.message.includes('private socket data')),
+      JSON.stringify(notifications))
 
+    notifications.length = 0
     global.fetch = mocked.fetch
     try { await api.requestChatCompletions([], CONFIG) } catch (caught) { error = caught }
     const malformed = data.readJson(diagnosticFile)[key]
     t.check('malformed JSON remains a format error with the received HTTP status', error?.code === 'INVALID_RESPONSE'
       && malformed.httpStatus === 200 && !malformed.transport)
+    t.check('malformed JSON notification omits transport line when no socket error occurred',
+      notifications.length > 0 && notifications.every(item => !item.message.includes('传输诊断：')),
+      JSON.stringify(notifications))
+
+    notifications.length = 0
+    await notifier.notifyCapabilityStepFailure('deepseek', CHAIN[0].model, 'text', {
+      code: 'NETWORK_ERROR',
+      transport: { phase: 'request', errors: [{ code: 'http://192.0.2.1/sk-secret', syscall: 'connect; leak' }] },
+    })
+    t.check('notifier rejects untrusted transport codes or syscalls',
+      notifications.length > 0 && notifications.every(item => !item.message.includes('传输诊断：') && !/192\.0\.2\.1|sk-secret|leak/.test(item.message)),
+      JSON.stringify(notifications))
     t.check('transport verification stays on DeepSeek', mocked.calls.length === 4 && mocked.calls.every(call => call.requestBody.model === CHAIN[0].model))
   })
 }
@@ -293,6 +319,24 @@ async function runMediaUsageCases(t) {
     const day = Object.values(JSON.parse(fs.readFileSync(data.pathFor('token-usage.json'), 'utf8'))).find(item => item.capabilities?.['voice-asr'])
     t.check('ASR failed call preserves actual usage', day.capabilities['voice-asr'].models['gpt-4o-transcribe'].total === 15)
     t.check('ASR failed call notifies with Chinese reason', notifications.length > 0 && notifications.every(item => item.message.includes('语音识别模型调用失败') && item.message.includes('未返回可见答案')))
+    notifications.length = 0
+    const asrNetCause = new AggregateError([
+      Object.assign(new Error('asr socket payload'), { code: 'ETIMEDOUT', syscall: 'connect', address: '198.51.100.8' }),
+      Object.assign(new Error('asr socket payload'), { code: 'ENETUNREACH', syscall: 'connect' }),
+    ], 'test-openai-key')
+    global.fetch = async (url, options) => {
+      if (String(url).includes('/audio/transcriptions')) throw new TypeError('fetch failed', { cause: asrNetCause })
+      return mockFetch([{ json: { choices: [{ message: { content: '备用识别成功' } }], usage: { total_tokens: 5 } } }]).fetch(url, options)
+    }
+    t.checkEqual('ASR dual-stack connect error falls back to backup', await voice.callModelAsr(data.pathFor('sample.wav')), '备用识别成功')
+    const asrFailed = data.readJson('ai-call-diagnostics/recent.json')['voice-asr:openai:gpt-4o-transcribe']
+    t.check('ASR network failure records sanitized transport and notifies admin',
+      asrFailed?.transport?.phase === 'request'
+      && asrFailed.transport.errors.length === 2
+      && notifications.length > 0
+      && notifications.every(item => item.message.includes('传输诊断：请求连接（connect ETIMEDOUT、connect ENETUNREACH）')
+        && !/198\.51\.100\.8|test-openai-key|asr socket payload/.test(item.message)),
+      JSON.stringify({ asrFailed, notifications }))
   })
   await withApi([{ json: { choices: [{ message: { audio: { data: Buffer.from('not audio').toString('base64') } } }], usage: { total_tokens: 17, input_tokens: 10, output_tokens: 7 } } }], async ({ data, api, notifications }) => {
     seedCapabilityConfig(data, { 'voice-tts': [{ provider: 'mimorium', model: 'mimo-v2.5-tts' }] })

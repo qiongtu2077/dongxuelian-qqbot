@@ -176,9 +176,12 @@ function recordImageRequestEvent(event) {
 function createDiagnosticRequestId() { return randomUUID(); }
 // 将媒体调用的已分类异常转换为通知字段，未知本地异常不输出原文。
 function buildModelFailureNotice(error, timedOut, requestId, purpose) {
-    const failure = error instanceof ModelRequestError ? error : new ModelRequestError('模型调用失败', timedOut ? 'TIMEOUT' : error instanceof TypeError ? 'NETWORK_ERROR' : 'UNKNOWN_FAILURE', true);
+    const failure = error instanceof ModelRequestError
+        ? error
+        : new ModelRequestError('模型调用失败', timedOut ? 'TIMEOUT' : error instanceof TypeError ? 'NETWORK_ERROR' : 'UNKNOWN_FAILURE', true, 0, { transport: readModelTransportFailure(error, 'request') });
     return { requestId, purpose, reason: getModelFailureReason(failure), status: failure.status, code: failure.code,
-        summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId };
+        summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId,
+        ...(failure.details.transport ? { transport: failure.details.transport } : {}) };
 }
 // 有界持久化脱敏证据；日志写入失败只报告本地错误，不改变上游结果。
 function recordModelDiagnostic(event) {

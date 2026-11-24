@@ -11,6 +11,13 @@ interface NotificationContext {
     bot?: NotificationBot;
 }
 type FailureSender = (adminId: string, message: string) => Promise<unknown>;
+interface FailureTransport {
+    phase: 'request' | 'response_body';
+    errors: Array<{
+        code: string;
+        syscall?: string;
+    }>;
+}
 interface FailureNotice {
     purpose?: string;
     reason?: string;
@@ -20,6 +27,7 @@ interface FailureNotice {
     upstreamCode?: string;
     upstreamRequestId?: string;
     requestId?: string;
+    transport?: FailureTransport;
 }
 declare function setCapabilityFailureSender(sender: FailureSender | null): void;
 declare function registerCapabilityFailureContext(ctx: NotificationContext): void;

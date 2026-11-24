@@ -11,6 +11,24 @@ const { sanitizeDiagnosticText, formatModelHttpStatus } = require('./request-dia
 const FAILURE_NOTIFICATION_COOLDOWN_MS = 0;
 const CAPABILITY_LABELS = { text: '文字', vision: '识图', 'voice-asr': '语音识别', 'voice-tts': '语音合成' };
 let failureSender = null;
+const SAFE_TRANSPORT_CODE_RE = /^(?:E[A-Z0-9_]{2,47}|UND_ERR_[A-Z0-9_]{1,39}|CERT_[A-Z0-9_]{1,43}|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_[A-Z0-9_]{2,38})$/;
+const SAFE_SYSCALL_RE = /^[a-z_]{1,24}$/;
+// 仅输出白名单连接错误码与系统调用名，过滤重复地址尝试并拒绝原始异常文本或地址进入通知。
+function formatFailureTransportNotice(transport) {
+    if (!transport || !Array.isArray(transport.errors) || !transport.errors.length)
+        return '';
+    const labels = [];
+    for (const item of transport.errors.slice(0, 8)) {
+        if (!item || typeof item.code !== 'string' || !SAFE_TRANSPORT_CODE_RE.test(item.code))
+            continue;
+        const label = typeof item.syscall === 'string' && SAFE_SYSCALL_RE.test(item.syscall) ? `${item.syscall} ${item.code}` : item.code;
+        if (!labels.includes(label))
+            labels.push(label);
+    }
+    if (!labels.length)
+        return '';
+    return `${transport.phase === 'response_body' ? '响应读取' : '请求连接'}（${labels.join('、')}）`;
+}
 // --- 发送器注册 ---
 // 注册可测试的私聊发送器；传 null 可在插件卸载时清理上下文引用。
 function setCapabilityFailureSender(sender) {
@@ -38,12 +56,14 @@ async function notifyCapabilityStepFailure(providerId, model, capability, detail
     const modelName = String(model || 'unknown');
     const admins = [...getAdminUserIds(true)];
     const purposes = { chat: '聊天', vision: '识图', topic_switch: '话题判断', identity_judge: '身份判断', retaliation_score: '敌意评分', 'voice-asr': '语音识别', 'voice-tts': '语音合成' };
+    const transportNotice = formatFailureTransportNotice(details.transport);
     const message = [
         details.purpose === 'retaliation_score' ? '敌意评分节点调用失败' : `${CAPABILITY_LABELS[capability]}模型调用失败`,
         `用途：${purposes[details.purpose || ''] || details.purpose || CAPABILITY_LABELS[capability]}`,
         `供应商：${sanitizeDiagnosticText(providerName)}`, `模型：${sanitizeDiagnosticText(modelName)}`,
         `时间：${new Date().toISOString()}`, `原因：${sanitizeDiagnosticText(details.reason || '原因未明')}`,
         `状态：${formatModelHttpStatus(details.status || 0)}${details.code ? `｜${details.code}` : ''}`,
+        ...(transportNotice ? [`传输诊断：${transportNotice}`] : []),
         ...(details.upstreamCode ? [`上游错误码：${sanitizeDiagnosticText(details.upstreamCode)}`] : []),
         `上游说明：${sanitizeDiagnosticText(details.summary || '未提供')}`,
         `请求编号：${details.requestId || '未提供'}`, `上游请求编号：${sanitizeDiagnosticText(details.upstreamRequestId || '未提供')}`,

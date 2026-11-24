@@ -81,6 +81,7 @@ declare function readImageRequestDiagnostic(value: unknown): {
 declare function recordImageRequestEvent(event: ImageRequestEvent): void;
 declare function createDiagnosticRequestId(): string;
 declare function buildModelFailureNotice(error: unknown, timedOut: boolean, requestId: string, purpose: string): {
+    transport?: TransportFailure | undefined;
     requestId: string;
     purpose: string;
     reason: string;
