@@ -26,7 +26,7 @@ fixture_root="$(mktemp -d /tmp/lian-qq-cache-test.XXXXXX)"
 case "$fixture_root" in /tmp/lian-qq-cache-test.*) ;; *) exit 1 ;; esac
 trap 'rm -rf -- "$fixture_root"' EXIT
 trap 'echo "ops fixture failed at line $LINENO" >&2' ERR
-for script in qq-cache-cleaner.sh install-qq-cache-cleaner.sh install-logrotate.sh install-release-retention.sh; do
+for script in qq-cache-cleaner.sh install-qq-cache-cleaner.sh sl-memory-trimmer.sh install-sl-memory-trimmer.sh install-logrotate.sh install-release-retention.sh; do
   sh -n "$scripts/$script"
 done
 bash -n "$scripts/activate-dashboard-release.sh"

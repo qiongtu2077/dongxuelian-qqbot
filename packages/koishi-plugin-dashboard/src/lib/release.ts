@@ -156,7 +156,7 @@ function copyReleasePayload(repoRoot: string, releaseRoot: string): void {
   for (const entry of ['frontend/src', 'frontend/public', 'frontend/dist', 'frontend/index.html', 'frontend/package.json', 'frontend/vite.config.ts', 'frontend/tsconfig.json']) copyReleaseEntry(repoRoot, releaseRoot, `${dashboardRoot}/${entry}`, true)
   for (const script of ['activate-dashboard-release.sh', 'verify-release-manifest.js', 'restart-bot.sh', 'seal-data-dir.sh', 'watchdog.sh', 'install-dashboard-service.sh', 'install-koishi-service.sh', 'install-logrotate.sh']) copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true)
   for (const script of ['qq-protocol-gate.sh', 'start-snowluma.sh', 'install-snowluma-service.sh']) copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true)
-  for (const script of ['qq-cache-cleaner.sh', 'install-qq-cache-cleaner.sh']) copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true)
+  for (const script of ['qq-cache-cleaner.sh', 'install-qq-cache-cleaner.sh', 'sl-memory-trimmer.sh', 'install-sl-memory-trimmer.sh']) copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true)
   copyReleaseEntry(repoRoot, releaseRoot, 'scripts/cleanup-dashboard-releases.js', true)
   copyReleaseEntry(repoRoot, releaseRoot, 'scripts/install-release-retention.sh', true)
   for (const packageName of RELEASE_PACKAGES) {

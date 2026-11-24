@@ -72,6 +72,7 @@ const CHECK_FILES = [
   'scripts/dashboard-click-smoke.js',
   'scripts/resource-cleanup.js',
   'scripts/qq-cache-cleaner-test.js',
+  'scripts/sl-memory-trimmer-test.js',
   'scripts/cleanup-dashboard-releases.js',
   'scripts/cleanup-dashboard-releases-test.js',
   'scripts/verify-release-manifest.js',

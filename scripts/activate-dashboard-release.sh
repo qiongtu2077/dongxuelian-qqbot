@@ -240,6 +240,10 @@ STAGE="prepare_qq_cache_cleaner"
 write_result running "$STAGE"
 bash "$NEXT_DIR/scripts/install-qq-cache-cleaner.sh"
 
+STAGE="prepare_sl_memory_trimmer"
+write_result running "$STAGE"
+bash "$NEXT_DIR/scripts/install-sl-memory-trimmer.sh"
+
 STAGE="prepare_release_retention"
 write_result running "$STAGE"
 KOISHI_APP_DIR="$APP_DIR" bash "$NEXT_DIR/scripts/install-release-retention.sh"

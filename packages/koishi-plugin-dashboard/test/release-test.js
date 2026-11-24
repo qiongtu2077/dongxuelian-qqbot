@@ -148,6 +148,9 @@ case "\${1:-}" in
     if [ "\${FAIL_QQ_CACHE_CLEANER:-0}" = "1" ]; then exit 48; fi
     printf 'install-qq-cache-cleaner\\n' >> "$TEST_APP_DIR/activation-command.log"
     exit 0 ;;
+  *install-sl-memory-trimmer.sh)
+    printf 'install-sl-memory-trimmer\\n' >> "$TEST_APP_DIR/activation-command.log"
+    exit 0 ;;
   *install-release-retention.sh)
     printf 'install-release-retention\\n' >> "$TEST_APP_DIR/activation-command.log"
     exit 0 ;;
@@ -216,6 +219,8 @@ function testReleaseManifest(tempRoot) {
   assert(listed.has('scripts/install-koishi-service.sh'))
   assert(listed.has('scripts/qq-cache-cleaner.sh'))
   assert(listed.has('scripts/install-qq-cache-cleaner.sh'))
+  assert(listed.has('scripts/sl-memory-trimmer.sh'))
+  assert(listed.has('scripts/install-sl-memory-trimmer.sh'))
   assert(listed.has('scripts/cleanup-dashboard-releases.js'))
   assert(listed.has('scripts/install-release-retention.sh'))
   const forcedPersona = 'koishi-plugin-dongxuelian-ai/data/ai-skills/modes/SKILL.persona-forced-abusive.md'
@@ -336,6 +341,7 @@ function readActivationCommandLog(appDir) {
 // Asserts that activation prepares both services before switching and performs the two health phases in order.
 function assertActivationOrder(log, releaseId, expectCleanup = true) {
   const cacheCleanerInstall = log.indexOf('install-qq-cache-cleaner')
+  const trimmerInstall = log.indexOf('install-sl-memory-trimmer')
   const dashboardInstall = log.indexOf('install-dashboard-service')
   const koishiInstall = log.indexOf('install-koishi-service')
   const restartBot = log.indexOf(`restart-bot:${releaseId}`)
@@ -345,7 +351,7 @@ function assertActivationOrder(log, releaseId, expectCleanup = true) {
   const stabilityWait = log.indexOf('sleep:10')
   const secondHealth = log.indexOf(`curl:${releaseId}`, firstHealth + 1)
   const cleanup = log.indexOf('cleanup-releases')
-  assert(cacheCleanerInstall >= 0 && cacheCleanerInstall < dashboardInstall, `QQ cache cleaner was not installed before services: ${log.join(', ')}`)
+  assert(cacheCleanerInstall >= 0 && trimmerInstall > cacheCleanerInstall && trimmerInstall < dashboardInstall, `maintenance timers were not installed before services: ${log.join(', ')}`)
   assert(dashboardInstall >= 0 && koishiInstall > dashboardInstall, `service installation order is invalid: ${log.join(', ')}`)
   assert(restartBot > koishiInstall && restartDashboard > restartBot, `service restart order is invalid: ${log.join(', ')}`)
   assert.strictEqual(directKoishiRestart, -1, `normal activation bypassed restart-bot.sh: ${log.join(', ')}`)

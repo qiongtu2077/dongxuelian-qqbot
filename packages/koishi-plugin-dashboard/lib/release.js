@@ -134,7 +134,7 @@ function copyReleasePayload(repoRoot, releaseRoot) {
         copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
     for (const script of ['qq-protocol-gate.sh', 'start-snowluma.sh', 'install-snowluma-service.sh'])
         copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
-    for (const script of ['qq-cache-cleaner.sh', 'install-qq-cache-cleaner.sh'])
+    for (const script of ['qq-cache-cleaner.sh', 'install-qq-cache-cleaner.sh', 'sl-memory-trimmer.sh', 'install-sl-memory-trimmer.sh'])
         copyReleaseEntry(repoRoot, releaseRoot, `scripts/${script}`, true);
     copyReleaseEntry(repoRoot, releaseRoot, 'scripts/cleanup-dashboard-releases.js', true);
     copyReleaseEntry(repoRoot, releaseRoot, 'scripts/install-release-retention.sh', true);
