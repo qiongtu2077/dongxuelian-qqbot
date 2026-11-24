@@ -19,7 +19,7 @@ interface ThinkingOptions {
     managed?: boolean;
     explicitKeys?: string[];
 }
-declare function supportsModelReasoningEffort(config: ThinkingConfig): boolean;
+declare function supportsModelReasoningEffort(config: ThinkingConfig, effort?: string): boolean;
 declare function buildModelThinkingArgs(config: ThinkingConfig, enabled?: boolean): ModelThinkingArgs;
 declare function resolveModelThinkingFields(config: ThinkingConfig, fields: Record<string, unknown>, options: ThinkingOptions): Record<string, unknown>;
 declare const _default: {

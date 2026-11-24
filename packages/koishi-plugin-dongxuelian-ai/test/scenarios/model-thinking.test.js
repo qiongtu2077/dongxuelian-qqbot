@@ -7,6 +7,7 @@ const { seedCapabilityConfig } = require('../helpers/ai-capability-fixture')
 
 const QWEN = { provider: 'dashscope', model: 'qwen3.6-35b-a3b', baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1', apiKey: 'test-qwen', chatProtocol: 'openai-chat' }
 const GLM = { provider: 'custom-thinking1', model: 'glm-5.3-flash', baseURL: 'https://llm.pko.svcfusion.com/v1', apiKey: 'test-glm', chatProtocol: 'openai-chat' }
+const DEEPSEEK_FLASH = { provider: 'custom-deepseek2', model: 'deepseek-flash', baseURL: 'https://direct.neartoken.cc/v1', apiKey: 'test-ds', chatProtocol: 'openai-chat' }
 const MESSAGES = [{ role: 'user', content: 'Reply OK.' }]
 
 // 使用真实 API/配置模块及按请求体拒绝错误参数的模拟上游；不替换思考适配函数。
@@ -156,23 +157,66 @@ async function runProviderPortability(t) {
   }
 }
 
-// 单次公共请求跨越 Qwen、GLM、未知节点，验证自动 low 也不会污染后续节点。
+// 实测采用 reasoning_effort 控制思考开销的 deepseek-flash：默认用 low 抑制长链思考，开启时切 high，不带外来字段。
+async function runEffortSwitchableDeepseekFlashCases(t) {
+  await withThinkingApi([DEEPSEEK_FLASH], async ({ api, runtime, calls }) => {
+    const chat = require(path.join(AI_ROOT, 'lib/chat'))
+    const offReply = await chat.callOpenAI(MESSAGES, false)
+    t.checkEqual('deepseek-flash chat off returns visible answer', offReply, 'THINKING_OK')
+    t.checkEqual('deepseek-flash chat off uses low effort', calls.at(-1).body.reasoning_effort, 'low')
+    t.check('deepseek-flash chat off omits foreign thinking fields',
+      !['enable_thinking', 'thinking'].some(key => Object.hasOwn(calls.at(-1).body, key)))
+
+    runtime.setThinkingEnabled(true)
+    try {
+      const onReply = await chat.callOpenAI(MESSAGES, false)
+      t.checkEqual('deepseek-flash chat on returns visible answer', onReply, 'THINKING_OK')
+      t.checkEqual('deepseek-flash chat on uses high effort', calls.at(-1).body.reasoning_effort, 'high')
+      await api.requestChatCompletions(MESSAGES, DEEPSEEK_FLASH, { _purpose: 'topic_switch' })
+      t.checkEqual('deepseek-flash auxiliary topic_switch keeps low effort even when global thinking is on',
+        calls.at(-1).body.reasoning_effort, 'low')
+    } finally {
+      runtime.setThinkingEnabled(false)
+    }
+
+    const reportPath = require.resolve('koishi-plugin-daily-report/lib/report-model')
+    const previousReport = require.cache[reportPath]
+    delete require.cache[reportPath]
+    try {
+      const profile = await require(reportPath).createGroundedModelRequest({
+        configuredNode: { provider: DEEPSEEK_FLASH.provider, model: DEEPSEEK_FLASH.model },
+      })
+      const report = await profile.request('classification', 1, 'Return JSON.', '{}', 512, {})
+      t.check('deepseek-flash daily report entry uses low effort without forced thinking tag',
+        report === 'THINKING_OK' && calls.at(-1).body.reasoning_effort === 'low' && !Object.hasOwn(calls.at(-1).body, 'thinking'))
+    } finally {
+      if (previousReport) require.cache[reportPath] = previousReport
+      else delete require.cache[reportPath]
+    }
+  })
+}
+
+// 单次公共请求跨越 Qwen、deepseek-flash、GLM、未知节点，验证自动参数不会污染后续节点。
 async function runCrossProviderIsolation(t) {
   await withThinkingApi([GLM], async ({ api, calls }) => {
     const unknown = { ...GLM, model: 'unknown-model', baseURL: 'https://unverified.invalid/v1' }
     const previousFetch = global.fetch
     global.fetch = async (url, options) => {
       const response = await previousFetch(url, options)
-      return JSON.parse(options.body).model === GLM.model ? new Response('{}', { status: 503 }) : response
+      const model = JSON.parse(options.body).model
+      return model === GLM.model || model === DEEPSEEK_FLASH.model ? new Response('{}', { status: 503 }) : response
     }
     try {
       const result = await api.requestChatCompletions(MESSAGES, QWEN, {
-        _frozenRoute: api.freezeChatRoute(QWEN, [QWEN, GLM, unknown]), _thinkingEnabled: false,
+        _frozenRoute: api.freezeChatRoute(QWEN, [QWEN, DEEPSEEK_FLASH, GLM, unknown]), _thinkingEnabled: false,
       })
-      t.checkEqual('three-node chain returns final answer', result.content, 'THINKING_OK')
-      t.checkEqual('three-node chain reaches every node', calls.length, 3)
+      t.checkEqual('four-node chain returns final answer', result.content, 'THINKING_OK')
+      t.checkEqual('four-node chain reaches every node', calls.length, 4)
+      t.check('deepseek-flash node uses only low effort',
+        calls[1].body.reasoning_effort === 'low' && !['thinking', 'enable_thinking'].some(key => Object.hasOwn(calls[1].body, key)))
       t.check('GLM automatic fields stay local to its node',
-        calls[1].body.reasoning_effort === 'low' && !['thinking', 'reasoning_effort', 'enable_thinking'].some(key => Object.hasOwn(calls[2].body, key)))
+        calls[2].body.thinking?.type === 'enabled' && calls[2].body.reasoning_effort === 'low'
+        && !['thinking', 'reasoning_effort', 'enable_thinking'].some(key => Object.hasOwn(calls[3].body, key)))
     } finally { global.fetch = previousFetch }
   })
 }
@@ -183,6 +227,7 @@ async function run(t) {
   await runChatFallback(t)
   await runForcedThinkingEntrypoints(t)
   await runOfficialGlmCases(t)
+  await runEffortSwitchableDeepseekFlashCases(t)
   await runProviderPortability(t)
   await runUnknownModelDefaults(t)
   await runCrossProviderIsolation(t)

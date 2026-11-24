@@ -11,20 +11,37 @@ const SWITCHABLE_THINKING_MODELS = new Set([
 ]);
 // 来源: https://docs.z.ai/guides/capabilities/thinking-mode 。相同型号与协议复用能力，不绑定接入地址。
 const REQUIRED_THINKING_MODELS = new Set(['glm-5.3', 'glm-5.3-flash']);
-// 判断该模型在当前调用协议下是否支持已核实的 low/high/max 推理深度。
-function supportsModelReasoningEffort(config) {
-    return (!config.chatProtocol || config.chatProtocol === 'openai-chat')
-        && REQUIRED_THINKING_MODELS.has(String(config.model || '').toLowerCase());
+// 实测 OpenAI 兼容协议下通过 reasoning_effort 控制思考开销的型号；关闭思考时用 low 抑制长链推理。
+const EFFORT_SWITCHABLE_THINKING_MODELS = new Set(['deepseek-flash']);
+function isOpenAiChatProtocol(config) {
+    return !config.chatProtocol || config.chatProtocol === 'openai-chat';
+}
+function isRequiredThinkingModel(config) {
+    return isOpenAiChatProtocol(config) && REQUIRED_THINKING_MODELS.has(String(config.model || '').toLowerCase());
+}
+function isEffortSwitchableThinkingModel(config) {
+    return isOpenAiChatProtocol(config) && EFFORT_SWITCHABLE_THINKING_MODELS.has(String(config.model || '').toLowerCase());
+}
+// 判断该模型在当前调用协议下是否支持已核实的推理深度档位。
+function supportsModelReasoningEffort(config, effort) {
+    if (isRequiredThinkingModel(config))
+        return effort === undefined || ['low', 'high', 'max'].includes(effort);
+    if (isEffortSwitchableThinkingModel(config))
+        return effort === undefined || ['low', 'high'].includes(effort);
+    return false;
 }
 // --- 每节点请求参数 ---
 // 强制思考模型忽略全局关闭设置；未核实组合不自动发送思考控制字段。
 function buildModelThinkingArgs(config, enabled = false) {
-    if (config.chatProtocol && config.chatProtocol !== 'openai-chat')
+    if (!isOpenAiChatProtocol(config))
         return {};
-    if (supportsModelReasoningEffort(config))
+    if (isRequiredThinkingModel(config))
         return { thinking: { type: 'enabled' }, reasoning_effort: 'low' };
-    if (SWITCHABLE_THINKING_MODELS.has(String(config.model || '').toLowerCase()))
+    const model = String(config.model || '').toLowerCase();
+    if (SWITCHABLE_THINKING_MODELS.has(model))
         return { enable_thinking: enabled };
+    if (EFFORT_SWITCHABLE_THINKING_MODELS.has(model))
+        return { reasoning_effort: enabled ? 'high' : 'low' };
     return {};
 }
 // 清除上一节点自动生成的字段，再应用当前节点规则；调用方显式参数仍受强制思考约束。
@@ -37,11 +54,15 @@ function resolveModelThinkingFields(config, fields, options) {
                 delete next[key];
     }
     const result = { ...buildModelThinkingArgs(config, options.enabled), ...next };
-    if (supportsModelReasoningEffort(config)) {
+    if (isRequiredThinkingModel(config)) {
         // 旧调用方的 disabled/enable_thinking:false 不能覆盖模型硬约束，也不能跨节点污染。
         delete result.enable_thinking;
         result.thinking = { type: 'enabled' };
         result.reasoning_effort = next.reasoning_effort ?? 'low';
+    }
+    else if (isEffortSwitchableThinkingModel(config)) {
+        delete result.enable_thinking;
+        delete result.thinking;
     }
     return result;
 }

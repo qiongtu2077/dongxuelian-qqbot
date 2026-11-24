@@ -766,8 +766,8 @@ async function executeChatCompletions(messages: ChatMessage[], config: ApiConfig
   if (extraBody.reasoning_effort !== undefined) {
     if (!['low', 'high', 'max'].includes(extraBody.reasoning_effort)
       || attempts.slice(startIndex).some(node => !supportsModelReasoningEffort({ ...node,
-        chatProtocol: node.chatProtocol || getProviderCatalogEntry(node.provider)?.chatProtocol || 'openai-chat' }))) {
-      throw new Error('推理深度仅核实OpenAI兼容协议GLM-5.3系列的low/high/max配置')
+        chatProtocol: node.chatProtocol || getProviderCatalogEntry(node.provider)?.chatProtocol || 'openai-chat' }, extraBody.reasoning_effort))) {
+      throw new Error('推理深度仅核实OpenAI兼容协议GLM-5.3系列与deepseek-flash的受支持配置')
     }
     filtered.reasoning_effort = extraBody.reasoning_effort
   }
