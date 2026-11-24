@@ -81,6 +81,7 @@ function testKoishiServiceContract() {
   assert.match(source, /Environment=KOISHI_DIR=\$APP_DIR/)
   assert.match(source, /Environment=DONGXUELIAN_AI_DATA_DIR=\$DATA_DIR/)
   assert.match(source, /Environment=NODE_PATH=\$APP_DIR\/node_modules/)
+  assert.match(source, /Environment=NODE_OPTIONS=--max-semi-space-size=4/)
   assert.match(source, /Restart=on-failure/)
   assert.match(source, /systemctl daemon-reload/)
   assert.match(source, /systemctl enable "\$SERVICE_NAME"/)

@@ -67,6 +67,7 @@ Restart=always
 RestartSec=5
 Environment=NODE_ENV=production
 Environment=HOME=$SERVICE_HOME
+Environment=NODE_OPTIONS=--max-semi-space-size=4
 
 [Install]
 WantedBy=multi-user.target

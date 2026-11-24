@@ -42,7 +42,8 @@ qq_pid=$!
 children+=("$qq_pid")
 printf '%s\n' "$qq_pid" > "$sl_dir/qq.pid"
 cd "$sl_dir/state"
-"$sl_dir/runtime/node" "$sl_dir/runtime/index.mjs" &
+# 只限制 SL 运行时的 V8 新生代；QQ 已在上方启动，不继承该变量。
+NODE_OPTIONS=--max-semi-space-size=4 "$sl_dir/runtime/node" "$sl_dir/runtime/index.mjs" &
 children+=("$!")
 # 任一核心进程退出即结束服务，由 systemd 整组清理并重试。
 wait -n "${children[@]}"

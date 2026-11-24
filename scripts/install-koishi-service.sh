@@ -46,6 +46,8 @@ Environment=NODE_ENV=production
 Environment=KOISHI_DIR=$APP_DIR
 Environment=DONGXUELIAN_AI_DATA_DIR=$DATA_DIR
 Environment=NODE_PATH=$APP_DIR/node_modules
+# 小内存机限制 V8 新生代（默认 16MB/semi-space），子 worker 继承该环境变量。
+Environment=NODE_OPTIONS=--max-semi-space-size=4
 
 [Install]
 WantedBy=multi-user.target
