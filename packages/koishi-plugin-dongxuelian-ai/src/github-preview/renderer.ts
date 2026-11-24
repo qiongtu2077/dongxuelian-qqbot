@@ -6,6 +6,9 @@
 import type { GithubMetadata, GithubImageResult, GithubWorkContext } from './models'
 import { GITHUB_LIMITS, assertGithubWork } from './models'
 const sharp = require('sharp') as typeof import('sharp')
+
+sharp.cache(false)
+sharp.concurrency(1)
 const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer') as {
   renderHtmlToImage(html: string, context: { signal: AbortSignal; deadlineMs: number; workDeadlineMs: number; taskId: string; source: string; minMemoryMb: number; networkPolicy: 'offline'; captureSelector: string }): Promise<Buffer>
 }

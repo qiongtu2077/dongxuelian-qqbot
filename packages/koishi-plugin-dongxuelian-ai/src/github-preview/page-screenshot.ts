@@ -10,6 +10,9 @@ import { GITHUB_LIMITS, assertGithubWork, waitGithubWork } from './models'
 import { parseGithubTarget } from './input'
 const puppeteer = require('puppeteer-core') as typeof import('puppeteer-core')
 const sharp = require('sharp') as typeof import('sharp')
+
+sharp.cache(false)
+sharp.concurrency(1)
 const { resolveAndValidateHostname } = require('../core/utils') as typeof import('../core/utils')
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot') as typeof import('../resource-scheduler/resource-snapshot')
 const { acquireResourceActivityLease, readResourceActivityLease } = require('../resource-scheduler/resource-activity-lease') as typeof import('../resource-scheduler/resource-activity-lease')
@@ -165,7 +168,7 @@ export async function screenshotGithubPage(metadata: GithubMetadata, context: Gi
   let page: Page | undefined
   let blocked = false
   try {
-    browser = await puppeteer.launch({ executablePath: findGithubBrowser(), headless: true, timeout: Math.max(1, Math.min(8000, context.deadline - Date.now())), protocolTimeout: 5000, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-extensions', '--disable-background-networking'] })
+    browser = await puppeteer.launch({ executablePath: findGithubBrowser(), headless: true, timeout: Math.max(1, Math.min(8000, context.deadline - Date.now())), protocolTimeout: 5000, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-extensions', '--disable-background-networking', '--mute-audio', '--no-first-run', '--no-default-browser-check', '--disable-features=Translate,BackForwardCache,AudioServiceOutOfProcess,MediaRouter,OptimizationHints', '--js-flags=--max-old-space-size=96'] })
     browserPid = browser.process()?.pid
     writeProcessCleanupEvent({ event: 'chromium_launched', source: 'github-preview', taskId: context.taskId, browserPid, parentPid: process.pid })
     assertGithubWork(context)

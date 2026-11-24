@@ -10,6 +10,8 @@ exports.renderGithubCard = renderGithubCard;
 exports.githubTextFallback = githubTextFallback;
 const models_1 = require("./models");
 const sharp = require('sharp');
+sharp.cache(false);
+sharp.concurrency(1);
 const { renderHtmlToImage } = require('../../../koishi-plugin-daily-report/lib/html-renderer');
 const avatarCache = new Map();
 // Escape all official strings before inserting into fixed template text slots.

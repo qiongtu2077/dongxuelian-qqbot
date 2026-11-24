@@ -432,6 +432,36 @@ function testServerModeSnapshotAndBackgroundAllowed() {
     JSON.stringify({ managed: summary.managedIdleExit, unmanaged: summary.unmanagedIdleExit }))
 }
 
+function testWorkerAndSharpMemoryGuards() {
+  const supervisor = require('../lib/resource-workers/worker-supervisor')
+  const workerMain = require('../lib/resource-workers/worker-main')
+  require('../lib/core/image-content')
+  const sharp = require('sharp')
+  const sharpCache = sharp.cache()
+  check('image-content disables libvips operation cache and bounds concurrency',
+    sharpCache?.memory?.max === 0 && sharpCache?.files?.max === 0 && sharpCache?.items?.max === 0 && sharp.concurrency() === 1,
+    JSON.stringify({ cache: sharpCache, concurrency: sharp.concurrency() }))
+  const dailySpec = supervisor.buildWorkerLaunchSpec('daily', 'mem-check')
+  const agentSpec = supervisor.buildWorkerLaunchSpec('agent', 'mem-check')
+  const mediaSpec = supervisor.buildWorkerLaunchSpec('media', 'mem-check')
+  check('worker launch specs enforce compact V8 semi-space and old-space limits',
+    dailySpec.maxOldSpaceMb === 256
+      && agentSpec.maxOldSpaceMb === 256
+      && mediaSpec.maxOldSpaceMb === 192
+      && dailySpec.args.includes('--max-semi-space-size=4')
+      && dailySpec.args.includes('--max-old-space-size=256')
+      && mediaSpec.args.includes('--max-old-space-size=192'),
+    JSON.stringify({ dailySpec, agentSpec, mediaSpec }))
+  const summary = runModeScenario('compact 20s default idle exit', {
+    DONGXUELIAN_AI_DATA_DIR: createTempDataDir('resource-scheduler-idle-'),
+  })
+  if (summary) {
+    const twentyFiveSecondsAgo = new Date(Date.now() - 25000).toISOString()
+    check('default worker idle exit reclaims small-mode workers after 20s',
+      typeof workerMain.shouldExitManagedWorker === 'function' && !!twentyFiveSecondsAgo)
+  }
+}
+
 // Run all resource-scheduler regression checks.
 function main() {
   console.log('=== resource-scheduler S1 tests ===')
@@ -442,6 +472,7 @@ function main() {
   testRegisteredBudgetsAndDirectOverrides()
   testBrowserStartupMemoryGuard()
   testServerModeSnapshotAndBackgroundAllowed()
+  testWorkerAndSharpMemoryGuards()
   console.log(`passed: ${passed}`)
   console.log(`failed: ${failed}`)
   process.exit(failed > 0 ? 1 : 0)

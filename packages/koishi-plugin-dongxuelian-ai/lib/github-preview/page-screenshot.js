@@ -16,6 +16,8 @@ const models_1 = require("./models");
 const input_1 = require("./input");
 const puppeteer = require('puppeteer-core');
 const sharp = require('sharp');
+sharp.cache(false);
+sharp.concurrency(1);
 const { resolveAndValidateHostname } = require('../core/utils');
 const { readLinuxMeminfo } = require('../resource-scheduler/resource-snapshot');
 const { acquireResourceActivityLease, readResourceActivityLease } = require('../resource-scheduler/resource-activity-lease');
@@ -210,7 +212,7 @@ async function screenshotGithubPage(metadata, context) {
     let page;
     let blocked = false;
     try {
-        browser = await puppeteer.launch({ executablePath: findGithubBrowser(), headless: true, timeout: Math.max(1, Math.min(8000, context.deadline - Date.now())), protocolTimeout: 5000, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-extensions', '--disable-background-networking'] });
+        browser = await puppeteer.launch({ executablePath: findGithubBrowser(), headless: true, timeout: Math.max(1, Math.min(8000, context.deadline - Date.now())), protocolTimeout: 5000, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-extensions', '--disable-background-networking', '--mute-audio', '--no-first-run', '--no-default-browser-check', '--disable-features=Translate,BackForwardCache,AudioServiceOutOfProcess,MediaRouter,OptimizationHints', '--js-flags=--max-old-space-size=96'] });
         browserPid = browser.process()?.pid;
         writeProcessCleanupEvent({ event: 'chromium_launched', source: 'github-preview', taskId: context.taskId, browserPid, parentPid: process.pid });
         (0, models_1.assertGithubWork)(context);

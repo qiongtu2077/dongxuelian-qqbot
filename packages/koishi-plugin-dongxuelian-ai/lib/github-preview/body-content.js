@@ -12,6 +12,8 @@ const models_1 = require("./models");
 const renderer_1 = require("./renderer");
 const xss = require('xss');
 const sharp = require('sharp');
+sharp.cache(false);
+sharp.concurrency(1);
 const { validatePublicHttpUrl, resolveAndValidateHostname } = require('../core/utils');
 const IMAGE_HOSTS = new Set(['private-user-images.githubusercontent.com', 'user-images.githubusercontent.com', 'camo.githubusercontent.com', 'avatars.githubusercontent.com', 'raw.githubusercontent.com', 'github-production-user-asset-6210df.s3.amazonaws.com']);
 // --- 正文结构 --- //

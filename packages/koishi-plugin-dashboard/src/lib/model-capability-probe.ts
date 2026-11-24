@@ -27,6 +27,8 @@ function silenceWav(): Buffer {
 // 生成确定的红色 PNG，用回答内容排除仅忽略图片却返回成功的接口。
 async function redImage(): Promise<string> {
   const sharp = require('sharp') as typeof import('sharp')
+  sharp.cache(false)
+  sharp.concurrency(1)
   const png = await sharp({ create: { width: 32, height: 32, channels: 3, background: '#ff0000' } }).png().toBuffer()
   return `data:image/png;base64,${png.toString('base64')}`
 }
