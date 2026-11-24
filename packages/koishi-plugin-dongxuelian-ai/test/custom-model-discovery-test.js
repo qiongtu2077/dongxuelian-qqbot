@@ -61,9 +61,31 @@ async function testSanitizedErrors() {
   }), error => error.code === 'DISCOVERY_AUTH_FAILED' && !error.message.includes('sk-secret') && !error.message.includes('upstream-secret-body'))
 }
 
+// 验证独立加载运行时主模块、状态探针或资源 worker 时同样生效，不依赖先加载模型发现模块。
+function testRuntimeEntrypointsConnectTimeout() {
+  const { spawnSync } = require('node:child_process')
+  const path = require('node:path')
+  const pkgRoot = path.resolve(__dirname, '..')
+  for (const entry of ['lib/core/api.js', 'lib/diagnostics/model-connectivity.js', 'lib/resource-workers/worker-main.js', 'lib/index.js']) {
+    const script = [
+      'const net = require("node:net");',
+      'const path = require("node:path");',
+      'require(path.resolve(process.argv[1], process.argv[2]));',
+      'const loadedDiscovery = Object.keys(require.cache).some(k => k.endsWith("model-discovery.js"));',
+      'process.stdout.write(JSON.stringify({ timeout: net.getDefaultAutoSelectFamilyAttemptTimeout(), loadedDiscovery }));',
+    ].join('')
+    const res = spawnSync(process.execPath, ['-e', script, pkgRoot, entry], { encoding: 'utf8', timeout: 15000 })
+    assert.strictEqual(res.status, 0, `${entry} 加载失败: ${res.stderr || res.stdout}`)
+    const parsed = JSON.parse(res.stdout.trim())
+    assert.strictEqual(parsed.timeout, 2000, `${entry} 应将单 IP 连接超时设为 2000ms`)
+    assert.strictEqual(parsed.loadedDiscovery, false, `${entry} 不应依赖加载 model-discovery`)
+  }
+}
+
 // 顺序执行模型发现测试并输出稳定结果。
 async function main() {
   assert.strictEqual(require('node:net').getDefaultAutoSelectFamilyAttemptTimeout(), 2000, '模型请求应给每个 IP 两秒连接时间')
+  testRuntimeEntrypointsConnectTimeout()
   testUrlCandidates()
   await testUrlSecurity()
   await testDiscovery()

@@ -5,6 +5,10 @@
  * 状态: 单份配置指纹缓存保留 60 秒，同配置并发查询共用一次探测。
  */
 const { createHash } = require('crypto') as typeof import('crypto')
+const net = require('net') as typeof import('net')
+
+// 独立加载状态探针时同样为每个候选 IP 留出两秒 TCP 建连时间，整体仍受五秒探针截止约束。
+net.setDefaultAutoSelectFamilyAttemptTimeout(2000)
 const { resolveCapabilityRuntimeSteps } = require('../core/ai-capability-config') as typeof import('../core/ai-capability-config')
 const { buildModelThinkingArgs } = require('../core/model-thinking') as typeof import('../core/model-thinking')
 const { admitTask } = require('../resource-scheduler/admission') as typeof import('../resource-scheduler/admission')

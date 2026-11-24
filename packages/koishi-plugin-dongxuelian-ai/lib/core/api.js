@@ -19,6 +19,9 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
+const net = require('net');
+// 主进程与资源 worker 不加载 model-discovery；统一为每个候选 IP 留出两秒建连时间，避免默认 250ms 提前掐断双栈跨境连接。
+net.setDefaultAutoSelectFamilyAttemptTimeout(2000);
 const { createHash } = require('crypto');
 const MAX_REMOTE_IMAGE_BYTES = MAX_IMAGE_BYTES;
 const REQUEST_TIMEOUT_CAP = parseApiPositiveInt(process.env.AI_REQUEST_TIMEOUT_CAP_MS, 300000, 5000, 600000);
@@ -785,7 +788,7 @@ async function executeChatCompletions(messages, config, extraBody, tools) {
                 contentLength: failure.details.contentLength, reasoningLength: failure.details.reasoningLength, maxTokens: diagnosticMaxTokens, usageReadable: readable,
                 ...(readable ? { inputTokens: failedUsage.input, outputTokens: failedUsage.output } : {}) });
             console.warn(`[ai-api] capability_step_failed capability=${capability} provider=${attempt.provider || 'unknown'} model=${attempt.model} code=${failure.code}`);
-            const notification = outsideModelRequestContext(() => notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model, capability, { requestId, purpose, reason, status: failure.status, code: failure.code, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId })).catch(() => false);
+            const notification = outsideModelRequestContext(() => notifyCapabilityStepFailure(attempt.provider || 'unknown', attempt.model, capability, { requestId, purpose, reason, status: failure.status, code: failure.code, summary: failure.details.summary, upstreamCode: failure.details.upstreamCode, upstreamRequestId: failure.details.requestId, transport: failure.details.transport })).catch(() => false);
             // 通知自身已有 1.5 秒有界等待；聊天阶段不把这段次生工作串进备用窗口。
             if (!timeBudget && !turn)
                 await notification;
