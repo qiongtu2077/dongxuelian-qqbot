@@ -1781,6 +1781,179 @@ async function testShortLinkNormalization() {
   })
 }
 
+// 验证 B 站新版多域名随机短链（bili2233.cn 等）的提取、白名单、大小写隔离、同视频缓存复用与双栈重试。
+async function testOfficialMultiDomainShortLinks() {
+  section('official multi-domain random short links')
+  await withIsolatedPlugin(async ({ plugin }) => {
+    const incidentInputA = '【小刻 又年轻到可以当妈妈了-哔哩哔哩】 https://bili2233.cn/OSXDOAO'
+    const incidentInputB = '【小刻 又年轻到可以当妈妈了-哔哩哔哩】 https://bili2233.cn/ih0TRNA'
+    const incidentBv = 'BV1qHyUztEMr'
+    const incidentP1Url = `https://www.bilibili.com/video/${incidentBv}?p=1`
+
+    check('extracts real bili2233.cn random short links from mobile share text',
+      plugin.extractBiliUrl(incidentInputA) === 'https://bili2233.cn/OSXDOAO'
+      && plugin.extractBiliUrl(incidentInputB) === 'https://bili2233.cn/ih0TRNA'
+      && plugin.extractBiliUrl('【https://bili2233.cn/OSXDOAO】') === 'https://bili2233.cn/OSXDOAO',
+      JSON.stringify([
+        plugin.extractBiliUrl(incidentInputA),
+        plugin.extractBiliUrl(incidentInputB),
+        plugin.extractBiliUrl('【https://bili2233.cn/OSXDOAO】'),
+      ]),
+    )
+    check('standalone detector accepts real bili2233.cn mobile share inputs',
+      plugin.isStandaloneBilibiliVideoInput(incidentInputA)
+      && plugin.isStandaloneBilibiliVideoInput(incidentInputB),
+    )
+
+    const allowedHosts = ['b23.tv', 'bili2233.cn', 'bili22.cn', 'bili33.cn', 'bili23.cn', 'b22.top']
+    check('all official Bilibili short-link domains are extracted, classified, and allowlisted',
+      allowedHosts.every(host => {
+        const sample = `https://${host}/OSXDOAO`
+        return plugin.extractBiliUrl(`看看这个 ${sample}`) === sample
+          && plugin.isBiliShortUrl(sample)
+          && plugin.isAllowedBiliRedirectUrl(sample)
+      }),
+    )
+
+    const blockedHosts = ['evil-bili2233.cn', 'sub.bili2233.cn', 'bili2233.cn.evil.com', 'example.com']
+    check('spoofed and subdomain short-link lookalikes are rejected',
+      blockedHosts.every(host => {
+        const sample = `https://${host}/OSXDOAO`
+        return plugin.extractBiliUrl(sample) === null
+          && !plugin.isBiliShortUrl(sample)
+          && !plugin.isAllowedBiliRedirectUrl(sample)
+      }),
+    )
+
+    const bili2233Card = JSON.stringify({
+      app: 'com.tencent.miniapp_01',
+      prompt: '[QQ小程序]分享视频',
+      meta: { detail_1: { title: '小刻 又年轻到可以当妈妈了', qqdocurl: 'https://bili2233.cn/OSXDOAO' } },
+    })
+    const spoofedCard = JSON.stringify({
+      app: 'com.tencent.miniapp_01',
+      prompt: '[QQ小程序]普通链接',
+      meta: { detail_1: { title: '测试', qqdocurl: 'https://evil-bili2233.cn/OSXDOAO' } },
+    })
+    check('QQ card recognizes bili2233.cn link and rejects spoofed host',
+      plugin.isBilibiliCardInput(bili2233Card)
+      && plugin.extractBiliUrl(bili2233Card) === 'https://bili2233.cn/OSXDOAO'
+      && !plugin.isBilibiliCardInput(spoofedCard)
+      && plugin.extractBiliUrl(spoofedCard) === null,
+    )
+
+    // 模拟端到端：两条真实失败输入经真实中间件进入解析；不同群复用 BV 缓存，同群触发 video-002 去重，并标记 short_link。
+    const ctx = makeCtx()
+    const counters = { probes: 0, downloads: 0, resolutions: 0 }
+    const resolvedByCode = new Map([
+      ['https://bili2233.cn/OSXDOAO', incidentP1Url],
+      ['https://bili2233.cn/ih0TRNA', incidentP1Url],
+    ])
+    const deps = makeDeps(1_000_000, 1_000_000, counters, {
+      probeVideo: async url => {
+        counters.probes += 1
+        return {
+          info: {
+            id: incidentBv,
+            title: '小刻 又年轻到可以当妈妈了',
+            thumbnail: 'https://example.com/thumb.jpg',
+            webpage_url: `https://www.bilibili.com/video/${incidentBv}/`,
+            original_url: url,
+          },
+          picked: { format: '30080+30280', totalSize: 1_000_000, video: {}, audio: {} },
+        }
+      },
+      resolveShortLink: async input => {
+        counters.resolutions += 1
+        const p1Url = resolvedByCode.get(input)
+        return p1Url ? { ok: true, p1Url, hops: 1 } : { ok: false, code: 'http_not_redirect', hops: 0, statusCode: 200 }
+      },
+    })
+
+    const groupASession = makeSession({ guildId: 'bili2233-a', channelId: 'bili2233-a', content: incidentInputA })
+    let nextA = 0
+    const resultA = await plugin.handleStandaloneBilibiliVideoInput(ctx, groupASession, () => { nextA += 1 }, deps)
+    check('real bili2233.cn input A succeeds via standalone middleware without video-001/010/031',
+      resultA === undefined
+      && nextA === 0
+      && counters.resolutions === 1
+      && counters.probes === 1
+      && counters.downloads === 1
+      && groupASession.sent.some(msg => msg.includes('<video'))
+      && groupASession.sent.every(msg => !/video-0(?:01|10|31)/.test(msg)),
+      JSON.stringify({ resultA, nextA, counters, sent: groupASession.sent }),
+    )
+    check('bili2233.cn trace classifies inputType as short_link',
+      ctx.logs.some(entry => entry.msg.includes('inputType="short_link"')),
+      JSON.stringify(ctx.logs.slice(0, 5)),
+    )
+
+    const groupBSession = makeSession({ guildId: 'bili2233-b', channelId: 'bili2233-b', content: incidentInputB })
+    let nextB = 0
+    const resultB = await plugin.handleStandaloneBilibiliVideoInput(ctx, groupBSession, () => { nextB += 1 }, deps)
+    check('different random bili2233.cn link B in another group reuses cached BV file without redownload',
+      resultB === undefined
+      && nextB === 0
+      && counters.resolutions === 2
+      && counters.probes === 1
+      && counters.downloads === 1
+      && groupBSession.sent.some(msg => msg.includes('<video')),
+      JSON.stringify({ resultB, nextB, counters, sent: groupBSession.sent }),
+    )
+
+    const groupADupSession = makeSession({ guildId: 'bili2233-a', channelId: 'bili2233-a', content: incidentInputB })
+    let nextADup = 0
+    const resultADup = await plugin.handleStandaloneBilibiliVideoInput(ctx, groupADupSession, () => { nextADup += 1 }, deps)
+    check('different random bili2233.cn link B for same video in same group hits video-002 dedup',
+      resultADup === undefined
+      && nextADup === 0
+      && groupADupSession.sent.some(msg => msg.includes('video-002')),
+      JSON.stringify({ resultADup, nextADup, sent: groupADupSession.sent }),
+    )
+
+    // 验证短码大小写敏感：OSXDOAO 的缓存结果不能错误命中全小写 osxdoao。
+    const lowerResult = await plugin.downloadAndSend(
+      ctx,
+      makeSession({ guildId: 'bili2233-case', channelId: 'bili2233-case' }),
+      'https://bili2233.cn/osxdoao',
+      'https://bili2233.cn/osxdoao',
+      deps,
+    )
+    check('case-different short code does not hit uppercase resolution cache',
+      String(lowerResult).includes('video-031') && counters.resolutions === 3,
+      JSON.stringify({ lowerResult, resolutions: counters.resolutions }),
+    )
+
+    // 验证跨官方短链域名的多跳重定向 + 双栈 DNS IPv4 优先与重试切换地址。
+    const attemptedDestinations = []
+    const dualStack = await plugin.resolveBiliShortLink('https://bili2233.cn/OSXDOAO', {
+      lookup: async () => [
+        { address: '2001:4860:4860::8888', family: 6 },
+        { address: '8.8.8.8', family: 4 },
+        { address: '8.8.4.4', family: 4 },
+      ],
+      requestRedirect: async (input, _timeoutMs, destination) => {
+        attemptedDestinations.push(`${input}@${destination.address}`)
+        if (input === 'https://bili2233.cn/OSXDOAO' && destination.address === '8.8.8.8') {
+          throw Object.assign(new Error('reset'), { code: 'ECONNRESET' })
+        }
+        if (input === 'https://bili2233.cn/OSXDOAO') {
+          return { statusCode: 302, location: 'https://b23.tv/hop2' }
+        }
+        return { statusCode: 302, location: `https://www.bilibili.com/video/${incidentBv}?p=2` }
+      },
+    })
+    check('dual-stack lookup prefers IPv4, rotates on retry, and allows bili2233.cn -> b23.tv -> bilibili.com',
+      dualStack.ok
+      && dualStack.p1Url === incidentP1Url
+      && dualStack.hops === 2
+      && attemptedDestinations[0] === 'https://bili2233.cn/OSXDOAO@8.8.8.8'
+      && attemptedDestinations[1] === 'https://bili2233.cn/OSXDOAO@8.8.4.4',
+      JSON.stringify({ dualStack, attemptedDestinations }),
+    )
+  })
+}
+
 // 验证短链逐跳安全校验、失败代码、一次重试和失败不缓存。
 async function testShortLinkStructuredFailures() {
   section('short-link structured failures')
@@ -2468,6 +2641,7 @@ async function run() {
   await testTenGroupResourceContention()
   await testQueuedCacheBoundaries()
   await testShortLinkNormalization()
+  await testOfficialMultiDomainShortLinks()
   await testShortLinkStructuredFailures()
   await testCleanupAndSafety()
   await testStagingCleanupAlerts()

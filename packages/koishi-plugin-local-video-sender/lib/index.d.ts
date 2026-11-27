@@ -190,6 +190,7 @@ declare const _default: {
     name: string;
     apply: typeof apply;
     extractBiliUrl: typeof import("./bili-input").extractBiliUrl;
+    isBiliShortUrl: typeof import("./bili-input").isBiliShortUrl;
     isBilibiliCardInput: typeof import("./bili-input").isBilibiliCardInput;
     isStandaloneBilibiliVideoInput: typeof isStandaloneBilibiliVideoInput;
     handleStandaloneBilibiliVideoInput: typeof handleStandaloneBilibiliVideoInput;

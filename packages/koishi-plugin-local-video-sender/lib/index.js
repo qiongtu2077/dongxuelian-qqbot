@@ -11,7 +11,7 @@ const biliInput = require('./bili-input');
 const cookieFile = require('./cookie-file');
 const videoTaskQueueModule = require('./video-task-queue');
 const videoTraceModule = require('./video-trace');
-const { buildBiliKeys, extractBvId, extractBiliUrl, extractVideoBvIds, isBilibiliCardInput, isAllowedBiliRedirectUrl, isPrivateIpAddress, normalizeBiliP1Url, normalizeSharedText, resolveBiliShortLink, uniqueStrings, } = biliInput;
+const { buildBiliKeys, extractBvId, extractBiliUrl, extractVideoBvIds, isBiliShortUrl, isBilibiliCardInput, isAllowedBiliRedirectUrl, isPrivateIpAddress, normalizeBiliP1Url, normalizeSharedText, resolveBiliShortLink, uniqueStrings, } = biliInput;
 const { clearBiliCookieHealthCache, getBiliCookieHealth, resolveBiliCookiePath, } = cookieFile;
 const name = 'local-video-sender';
 const DEFAULT_MAX_SIZE = 60000000;
@@ -1319,11 +1319,8 @@ function detectBiliInputType(url, source) {
     const normalizedSource = normalizeSharedText(source).trim();
     if (/^BV[0-9A-Za-z]{10}(?:\?p=\d+)?$/i.test(normalizedSource))
         return 'bare_bv';
-    try {
-        if (new URL(url).hostname.toLowerCase() === 'b23.tv')
-            return 'short_link';
-    }
-    catch { /* 已归一化 URL 的最终校验由 bili-input 负责。 */ }
+    if (isBiliShortUrl(url))
+        return 'short_link';
     if (isBilibiliCardInput(normalizedSource))
         return 'qq_card';
     return 'long_link';
@@ -1684,6 +1681,7 @@ module.exports = {
     name,
     apply,
     extractBiliUrl,
+    isBiliShortUrl,
     isBilibiliCardInput,
     isStandaloneBilibiliVideoInput,
     handleStandaloneBilibiliVideoInput,

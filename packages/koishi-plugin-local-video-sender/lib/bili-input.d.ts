@@ -53,6 +53,7 @@ export declare function extractVideoBvIds(input?: string): string[];
 export declare function buildBiliKeys(input?: string): string[];
 export declare function extractBvId(input?: string): string;
 export declare function normalizeBiliP1Url(input?: string): string;
+export declare function isBiliShortUrl(input?: string): boolean;
 export declare function isAllowedBiliRedirectUrl(input: string): boolean;
 export declare function isPrivateIpAddress(address: string): boolean;
 export declare function resolveBiliShortLink(input: string, options?: ShortLinkResolutionOptions): Promise<ShortLinkResolutionResult>;

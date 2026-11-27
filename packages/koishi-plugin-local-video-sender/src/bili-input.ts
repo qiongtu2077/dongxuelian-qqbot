@@ -1,6 +1,6 @@
 /**
  * MODULE: Bilibili input and short-link boundary.
- * 职责: 归一化分享文本、生成稳定键，并在 DNS/重定向安全检查后解析 b23 短链。
+ * 职责: 归一化分享文本、生成稳定键，并在 DNS/重定向安全检查后解析 B 站官方短链。
  * 边界: 不下载媒体、不发送消息、不接触资源门禁。
  */
 const dns = require('dns/promises') as typeof import('dns/promises')
@@ -20,7 +20,7 @@ interface ResolvedHost {
 }
 
 type HostResolutionResult =
-  | { ok: true, destination: ResolvedHost }
+  | { ok: true, destinations: ResolvedHost[] }
   | { ok: false, code: 'dns_empty' | 'dns_private_address' | 'redirect_outside_allowlist' }
 
 export type ShortLinkFailureCode =
@@ -75,9 +75,28 @@ export interface ResolveBiliInputOptions {
 }
 
 const SHORT_LINK_CACHE_TTL_MS = 10 * 60 * 1000
+const SHORT_LINK_CACHE_MAX_ENTRIES = 500
 const SHORT_LINK_MAX_REDIRECTS = 5
 const SHORT_LINK_TIMEOUT_MS = 5000
 const SHORT_LINK_MAX_HEADER_BYTES = 16 * 1024
+const BILI_SHORT_LINK_HOSTS = [
+  'b23.tv',
+  'bili2233.cn',
+  'bili22.cn',
+  'bili33.cn',
+  'bili23.cn',
+  'b22.top',
+] as const
+const BILI_SHORT_LINK_HOST_SET = new Set<string>(BILI_SHORT_LINK_HOSTS)
+const BILI_SHORT_LINK_HOST_PATTERN = BILI_SHORT_LINK_HOSTS.map(host => host.replace(/\./g, '\\.')).join('|')
+const BILI_URL_EXTRACT_RE = new RegExp(
+  `https?:\\/\\/(?:www\\.bilibili\\.com|m\\.bilibili\\.com|bilibili\\.com|${BILI_SHORT_LINK_HOST_PATTERN})\\/[^\\s"'<>\\\\\\]}),，。！？、；】）《》]+`,
+  'i',
+)
+const BILI_CARD_BRAND_RE = new RegExp(
+  `(?:bilibili|哔哩哔哩|(?<![a-z0-9.-])(?:${BILI_SHORT_LINK_HOST_PATTERN})(?![a-z0-9.-]))`,
+  'i',
+)
 const shortLinkResolutionCache = new Map<string, ShortLinkResolutionEntry>()
 const blockedIpv4Ranges = new net.BlockList()
 const blockedIpv6Ranges = new net.BlockList()
@@ -155,7 +174,7 @@ function normalizeBiliIdentifier(identifier: string = ''): string {
   return `bv:${value.replace(/^bv/i, '').toLowerCase()}`
 }
 
-// 将 B 站地址转换为忽略查询和尾斜杠的缓存键。
+// 将 B 站地址转换为忽略查询和尾斜杠的缓存键；短链保留短码路径原始大小写。
 function normalizeBiliUrlKey(input: string = ''): string {
   const value = normalizeSharedText(input).trim()
   if (!value) return ''
@@ -163,7 +182,8 @@ function normalizeBiliUrlKey(input: string = ''): string {
     const parsed = new URL(value)
     const host = parsed.hostname.toLowerCase()
     const pathname = parsed.pathname.replace(/\/+$/, '')
-    return host ? `url:${host}${pathname.toLowerCase()}` : ''
+    const normalizedPath = BILI_SHORT_LINK_HOST_SET.has(host) ? pathname : pathname.toLowerCase()
+    return host ? `url:${host}${normalizedPath}` : ''
   } catch {
     return `url:${value.replace(/[?#].*$/, '').replace(/\/+$/, '').toLowerCase()}`
   }
@@ -172,7 +192,7 @@ function normalizeBiliUrlKey(input: string = ''): string {
 // 从普通文字中提取 B 站视频 URL 或裸 BV 号。
 function extractBiliUrlFromText(input: string = ''): string | null {
   const text = normalizeSharedText(input)
-  const urlMatch = text.match(/https?:\/\/(?:www\.bilibili\.com|m\.bilibili\.com|bilibili\.com|b23\.tv)\/[^\s"'<>\\\]}),，。！？、]+/i)
+  const urlMatch = text.match(BILI_URL_EXTRACT_RE)
   if (urlMatch) return urlMatch[0]
   const bvMatch = text.match(/\bBV[0-9A-Za-z]{10}\b/i)
   return bvMatch ? `https://www.bilibili.com/video/${bvMatch[0]}` : null
@@ -213,7 +233,7 @@ function extractBiliUrlFromCardValue(value: unknown, fieldName: string = ''): st
 // 判断消息是否为带 B 站品牌标识的结构化 QQ 卡片。
 export function isBilibiliCardInput(input: string = ''): boolean {
   const card = parseSharedCardJson(input)
-  return !!card && /(?:bilibili|哔哩哔哩|b23\.tv)/i.test(JSON.stringify(card))
+  return !!card && BILI_CARD_BRAND_RE.test(JSON.stringify(card))
 }
 
 // 从普通文字或结构化卡片的链接字段提取 B 站视频地址。
@@ -272,10 +292,12 @@ export function normalizeBiliP1Url(input: string = ''): string {
   }
 }
 
-// 判断 URL 是否为需要轻量解析的 b23.tv 短链。
-function isB23ShortUrl(input: string = ''): boolean {
+// 判断 URL 是否为需要轻量解析的 B 站官方短链。
+export function isBiliShortUrl(input: string = ''): boolean {
   try {
-    return new URL(input).hostname.toLowerCase() === 'b23.tv'
+    const parsed = new URL(input)
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+      && BILI_SHORT_LINK_HOST_SET.has(parsed.hostname.toLowerCase())
   } catch {
     return false
   }
@@ -289,7 +311,7 @@ export function isAllowedBiliRedirectUrl(input: string): boolean {
     const parsed = new URL(input)
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
     const host = parsed.hostname.toLowerCase()
-    return host === 'b23.tv' || host === 'bilibili.com' || host.endsWith('.bilibili.com')
+    return BILI_SHORT_LINK_HOST_SET.has(host) || host === 'bilibili.com' || host.endsWith('.bilibili.com')
   } catch {
     return false
   }
@@ -304,7 +326,7 @@ export function isPrivateIpAddress(address: string): boolean {
   return true
 }
 
-// 解析并验证白名单域名，返回已通过公网检查的固定连接地址。
+// 解析并验证白名单域名，返回全部已通过公网检查的固定连接地址（IPv4 优先以降低双栈残缺环境重置率）。
 async function resolvePublicBiliHost(input: string, lookup: ShortLinkResolutionOptions['lookup']): Promise<HostResolutionResult> {
   if (!isAllowedBiliRedirectUrl(input)) return { ok: false, code: 'redirect_outside_allowlist' }
   const hostname = new URL(input).hostname
@@ -312,7 +334,9 @@ async function resolvePublicBiliHost(input: string, lookup: ShortLinkResolutionO
   const addresses = await resolveHost(hostname)
   if (!addresses.length) return { ok: false, code: 'dns_empty' }
   if (addresses.some(item => isPrivateIpAddress(item.address))) return { ok: false, code: 'dns_private_address' }
-  return { ok: true, destination: addresses[0] }
+  const ipv4 = addresses.filter(item => item.family === 4)
+  const other = addresses.filter(item => item.family !== 4)
+  return { ok: true, destinations: ipv4.concat(other) }
 }
 
 // 固定到已校验 IP 读取短链响应，保留原域名 Host 和 TLS SNI。
@@ -382,11 +406,11 @@ async function runWithinShortLinkDeadline<T>(action: () => Promise<T>, timeoutMs
   }
 }
 
-// 沿受限重定向链把一个 b23 短链归一化为第一分 P 地址。
+// 沿受限重定向链把一个 B 站官方短链归一化为第一分 P 地址。
 export async function resolveBiliShortLink(input: string, options: ShortLinkResolutionOptions = {}): Promise<ShortLinkResolutionResult> {
   let current = String(input || '').trim()
   const direct = normalizeBiliP1Url(current)
-  if (!isB23ShortUrl(current)) return direct
+  if (!isBiliShortUrl(current)) return direct
     ? { ok: true, p1Url: direct, hops: 0 }
     : { ok: false, code: 'final_url_not_bv', hops: 0 }
 
@@ -415,7 +439,8 @@ export async function resolveBiliShortLink(input: string, options: ShortLinkReso
           return failure
         }
         const requestRemaining = deadline - now()
-        response = await runWithinShortLinkDeadline(() => requestRedirect(current, requestRemaining, hostResult.destination), requestRemaining)
+        const destination = hostResult.destinations[attempt % hostResult.destinations.length]
+        response = await runWithinShortLinkDeadline(() => requestRedirect(current, requestRemaining, destination), requestRemaining)
       } catch (error) {
         const failureCode = classifyRequestFailure(error)
         const safe = getSafeUrlParts(current)
@@ -477,13 +502,25 @@ function getCachedShortLinkResolution(urlKey: string, now: number = Date.now()):
   return entry && entry.expiresAt > now ? entry : null
 }
 
+// 写入短链解析缓存，同时清理过期项并限制最大条目数。
+function setCachedShortLinkResolution(urlKey: string, entry: ShortLinkResolutionEntry, now: number = Date.now()): void {
+  for (const [key, item] of shortLinkResolutionCache) if (item.expiresAt <= now) shortLinkResolutionCache.delete(key)
+  shortLinkResolutionCache.delete(urlKey)
+  shortLinkResolutionCache.set(urlKey, entry)
+  while (shortLinkResolutionCache.size > SHORT_LINK_CACHE_MAX_ENTRIES) {
+    const oldestKey = shortLinkResolutionCache.keys().next().value
+    if (!oldestKey) break
+    shortLinkResolutionCache.delete(oldestKey)
+  }
+}
+
 // 在媒体探测前生成统一的第一分 P 地址，并补齐去重和缓存查询键。
 export async function resolveBiliInput(options: ResolveBiliInputOptions): Promise<ResolvedBiliInput> {
   const { url, source } = options
   const keys = uniqueStrings(buildBiliKeys(source).concat(buildBiliKeys(url)))
   const directP1Url = normalizeBiliP1Url(url) || normalizeBiliP1Url(source)
   if (directP1Url) return { keys: uniqueStrings(keys.concat(buildBiliKeys(directP1Url))), p1Url: directP1Url }
-  if (!isB23ShortUrl(url)) return { keys, p1Url: '' }
+  if (!isBiliShortUrl(url)) return { keys, p1Url: '' }
   const urlKey = normalizeBiliUrlKey(url)
   const cached = getCachedShortLinkResolution(urlKey)
   if (cached) return {
@@ -505,7 +542,7 @@ export async function resolveBiliInput(options: ResolveBiliInputOptions): Promis
       options.onError?.(failure)
       return { keys, p1Url: '', shortLink: failure }
     }
-    shortLinkResolutionCache.set(urlKey, { bvKey, p1Url, expiresAt: Date.now() + SHORT_LINK_CACHE_TTL_MS })
+    setCachedShortLinkResolution(urlKey, { bvKey, p1Url, expiresAt: Date.now() + SHORT_LINK_CACHE_TTL_MS })
     return { keys: uniqueStrings(keys.concat(bvKey).concat(buildBiliKeys(p1Url))), p1Url, shortLink }
   } catch (error) {
     const failure = { ok: false as const, code: classifyRequestFailure(error), hops: 0 }

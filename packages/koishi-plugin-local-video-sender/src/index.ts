@@ -31,6 +31,7 @@ const {
   extractBvId,
   extractBiliUrl,
   extractVideoBvIds,
+  isBiliShortUrl,
   isBilibiliCardInput,
   isAllowedBiliRedirectUrl,
   isPrivateIpAddress,
@@ -1608,9 +1609,7 @@ async function processInitialVideoRequest(ctx: ContextLike, session: VideoSessio
 function detectBiliInputType(url: string, source: string): string {
   const normalizedSource = normalizeSharedText(source).trim()
   if (/^BV[0-9A-Za-z]{10}(?:\?p=\d+)?$/i.test(normalizedSource)) return 'bare_bv'
-  try {
-    if (new URL(url).hostname.toLowerCase() === 'b23.tv') return 'short_link'
-  } catch { /* 已归一化 URL 的最终校验由 bili-input 负责。 */ }
+  if (isBiliShortUrl(url)) return 'short_link'
   if (isBilibiliCardInput(normalizedSource)) return 'qq_card'
   return 'long_link'
 }
@@ -1970,6 +1969,7 @@ export = {
   name,
   apply,
   extractBiliUrl,
+  isBiliShortUrl,
   isBilibiliCardInput,
   isStandaloneBilibiliVideoInput,
   handleStandaloneBilibiliVideoInput,
